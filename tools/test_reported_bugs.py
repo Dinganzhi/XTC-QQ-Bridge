@@ -1517,6 +1517,44 @@ def test_sticker_kind_comes_from_the_bubble() -> None:
     check("语音气泡判为 text", xtc_v.latest_kind() == "text", xtc_v.latest_kind())
 
 
+def test_forward_text_uses_kind_for_prefix() -> None:
+    """转发文字的前缀由**类型**决定：表情 `[表情] 名字`、照片 `[图片]`、文本原样。
+
+    这是用户 10-19 所报"表情只发出'表情'两个字、没有前缀、没有图"的验收点：
+    表情（kind=sticker）必须带 `[表情]`，手打的"表情"（kind=text）必须原样。
+    """
+    root = tmp_root()
+    sent: list[str] = []
+
+    class _Fwd:
+        def send(self, t, i, m):
+            sent.append(m)
+            return True
+
+        def send_detail(self, t, i, m):
+            sent.append(m)
+            return True, ""
+
+    try:
+        br = bridge_mod.MessageBridge(
+            {"target": {"qq_private": 10001}, "xiaotiancai": {}, "webhook": {}},
+            adb=None, xtc=None, forwarder=_Fwd(), logger=None)
+        br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
+        br._cmd_done_file = str(_paths(root)["done"])
+        br._do_forward_job("小宝", "表情大哭", "10-19 20:00", kind="sticker")
+        check("表情带 [表情] 前缀与名字",
+              bool(sent) and "[表情] 大哭" in sent[-1], str(sent[-1:]))
+        br._do_forward_job("小宝", "表情", "10-19 20:01", kind="sticker")
+        check("无名字的表情也带 [表情] 前缀",
+              bool(sent) and sent[-1].strip().endswith("[表情]"), str(sent[-1:]))
+        br._do_forward_job("小宝", "表情包发我", "10-19 20:02", kind="text")
+        check("手打文本原样转发（不加前缀）",
+              bool(sent) and "表情包发我" in sent[-1] and "[表情]" not in sent[-1],
+              str(sent[-1:]))
+    finally:
+        cleanup(root)
+
+
 def test_png_encoder_and_crop() -> None:
     """表情包转发用的纯标准库 PNG 编码 + 抠图（不引 Pillow）。
 
@@ -5405,6 +5443,7 @@ def main() -> int:
                test_typed_text_starting_with_sticker_word_is_text,
                test_run_log_path_per_startup,
                test_sticker_kind_comes_from_the_bubble,
+               test_forward_text_uses_kind_for_prefix,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,
