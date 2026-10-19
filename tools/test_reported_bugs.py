@@ -1437,37 +1437,45 @@ def test_run_log_path_per_startup() -> None:
 
     用户要求：以后再启动不要再往同一个文件里追加 —— 每次启动一个
     `logs/bridge-YYYYmmdd-HHMMSS.log`，按日期时间命名。
+
+    注意：**必须用独立的临时目录**（绝对路径）。曾经直接在仓库的 `logs/` 下跑这个用例，
+    结果把正在运行的桥接日志写成了 "legacy"，还顺手清理掉了真实的启动日志。
     """
+    import tempfile
+
     from utils.logger import run_log_path
 
-    root = tmp_root()
-    try:
-        folder = root / "logs"
-        folder.mkdir(parents=True, exist_ok=True)
-        base = str(folder / "bridge.log")
-        p1 = run_log_path(base, keep=0)
-        check("首次启动会给出带启动时间的文件名",
-              re.fullmatch(r"bridge-\d{8}-\d{6}\.log", p1.name) is not None, p1.name)
-        p1.write_text("first", encoding="utf-8")
-        p2 = run_log_path(base, keep=0)
-        check("同一秒内再次启动也不会重名", p2.name != p1.name, f"{p1.name} / {p2.name}")
-        p2.write_text("second", encoding="utf-8")
-        check("两次启动的内容互不覆盖",
-              p1.read_text(encoding="utf-8") == "first"
-              and p2.read_text(encoding="utf-8") == "second")
-        # 造 12 个更早的启动日志 -> keep=3 只留最近 3 个
-        for i in range(12):
-            (folder / f"bridge-2020010{i % 9 + 1}-{i:06d}.log").write_text("x", encoding="utf-8")
-        run_log_path(base, keep=3)
-        left = sorted(p.name for p in folder.glob("bridge-2*.log"))
-        check("更早的启动日志会被清理（只留最近 keep 次）",
-              len(left) <= 3, f"{len(left)} 个: {left}")
-        # 不是本次启动命名的文件（例如旧的固定名 bridge.log）不会被误删
-        (folder / "bridge.log").write_text("legacy", encoding="utf-8")
-        run_log_path(base, keep=1)
-        check("旧的固定名日志不会被误删", (folder / "bridge.log").exists())
-    finally:
-        cleanup(root)
+    with tempfile.TemporaryDirectory(prefix="xtc-logtest-") as tmp:
+        try:
+            folder = Path(tmp) / "logs"
+            folder.mkdir(parents=True, exist_ok=True)
+            base = str(folder / "bridge.log")
+            p1 = run_log_path(base, keep=0)
+            check("首次启动会给出带启动时间的文件名",
+                  re.fullmatch(r"bridge-\d{8}-\d{6}\.log", p1.name) is not None, p1.name)
+            p1.write_text("first", encoding="utf-8")
+            p2 = run_log_path(base, keep=0)
+            check("同一秒内再次启动也不会重名", p2.name != p1.name, f"{p1.name} / {p2.name}")
+            p2.write_text("second", encoding="utf-8")
+            check("两次启动的内容互不覆盖",
+                  p1.read_text(encoding="utf-8") == "first"
+                  and p2.read_text(encoding="utf-8") == "second")
+            for i in range(12):
+                (folder / f"bridge-2020010{i % 9 + 1}-{i:06d}.log").write_text(
+                    "x", encoding="utf-8")
+            run_log_path(base, keep=3)
+            left = sorted(p.name for p in folder.glob("bridge-2*.log"))
+            check("更早的启动日志会被清理（只留最近 keep 次）",
+                  len(left) <= 3, f"{len(left)} 个: {left}")
+            # 不是"本次启动命名"的文件（例如旧的固定名 bridge.log）不会被误删
+            (folder / "bridge.log").write_text("legacy", encoding="utf-8")
+            run_log_path(base, keep=1)
+            check("旧的固定名日志不会被误删", (folder / "bridge.log").exists())
+            check("清理只作用于传入的目录（不碰仓库 logs/）",
+                  not any(Path("logs").glob("bridge-2020010*")),
+                  str(sorted(p.name for p in Path("logs").glob("bridge-2020010*"))))
+        finally:
+            cleanup(tmp_root())
 
 
 def test_sticker_kind_comes_from_the_bubble() -> None:
