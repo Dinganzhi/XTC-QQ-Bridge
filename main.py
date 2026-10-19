@@ -224,12 +224,23 @@ def main() -> None:
     # 速度/稳定档位：把 performance.profile 的默认值**填空**进 cfg（用户写死的键不动）
     import speed_profile
     _profile, _filled, _pinned = speed_profile.apply_profile(cfg)
-    log = setup_logger(level=(cfg.get("logging") or {}).get("level", "INFO"),
-                       file=(cfg.get("logging") or {}).get("file"))
+    # 日志文件：**每次启动新建一个**，按启动时间命名（logs/bridge-YYYYmmdd-HHMMSS.log）。
+    # 想在单文件里连续追加，把 logging.per_run 设成 false。
+    _log_cfg = cfg.get("logging") or {}
+    _log_file = _log_cfg.get("file") or "logs/bridge.log"
+    if _log_cfg.get("per_run", True):
+        from utils.logger import run_log_path
+        try:
+            _log_file = str(run_log_path(_log_file,
+                                         keep=int(_log_cfg.get("keep_runs", 20) or 0)))
+        except Exception as e:  # noqa: BLE001 生成失败就退回固定文件
+            print(f"[警告] 生成本次日志文件失败（改用固定日志文件）: {e}")
+    log = setup_logger(level=_log_cfg.get("level", "INFO"), file=_log_file)
     if not args.no_banner:
         log.info(f"小天才 <-> QQ 桥接 v{__version__} | 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
+        log.info(f"日志文件: {log.handlers[-1].baseFilename if log.handlers else '-'}")
         log.info(f"速度档位: {_profile}（套用了 {len(_filled)} 项默认值；"
                  f"config.yaml -> performance.profile 可改，单独写某个键可覆盖档位）")
         if _pinned:

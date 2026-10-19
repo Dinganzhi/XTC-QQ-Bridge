@@ -1150,6 +1150,12 @@ def test_catchup_max_age_skips_stale() -> None:
         check("被跳过的也不会每轮再翻出来（已记历史）",
               br._forward_backlog(None, "小宝") == 0 and not fwd.sent,
               f"sent={fwd.sent}")
+        # 日志也不能反复刷：实测每 5 分钟一条"这条是 N 分钟前的…跳过不转发"的循环
+        logged: list[str] = []
+        br._log = lambda level, msg, **kw: logged.append(msg)
+        br._forward_backlog(None, "小宝")
+        check("第二次扫描不再刷'跳过不转发'（修补发循环的日志刷屏）",
+              not any("跳过不转发" in m for m in logged), str(logged))
 
         # 默认（0 = 不限）：老消息照样补（换个干净前缀，别读到上面那轮的历史）
         fwd2 = _Fwd()
@@ -1424,6 +1430,91 @@ def test_typed_text_starting_with_sticker_word_is_text() -> None:
     check("照片（kind=image）标成 [图片]", br._typed_body("图片", "image") == "[图片]")
     check("没有 kind 时退回旧推断（兼容老调用方）",
           br._typed_body("图片") == "[图片]" and br._typed_body("表情啊啊啊") == "[表情] 啊啊啊")
+
+
+def test_run_log_path_per_startup() -> None:
+    """日志文件按启动时间命名、每次启动新建，并只保留最近若干次。
+
+    用户要求：以后再启动不要再往同一个文件里追加 —— 每次启动一个
+    `logs/bridge-YYYYmmdd-HHMMSS.log`，按日期时间命名。
+    """
+    from utils.logger import run_log_path
+
+    root = tmp_root()
+    try:
+        folder = root / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        base = str(folder / "bridge.log")
+        p1 = run_log_path(base, keep=0)
+        check("首次启动会给出带启动时间的文件名",
+              re.fullmatch(r"bridge-\d{8}-\d{6}\.log", p1.name) is not None, p1.name)
+        p1.write_text("first", encoding="utf-8")
+        p2 = run_log_path(base, keep=0)
+        check("同一秒内再次启动也不会重名", p2.name != p1.name, f"{p1.name} / {p2.name}")
+        p2.write_text("second", encoding="utf-8")
+        check("两次启动的内容互不覆盖",
+              p1.read_text(encoding="utf-8") == "first"
+              and p2.read_text(encoding="utf-8") == "second")
+        # 造 12 个更早的启动日志 -> keep=3 只留最近 3 个
+        for i in range(12):
+            (folder / f"bridge-2020010{i % 9 + 1}-{i:06d}.log").write_text("x", encoding="utf-8")
+        run_log_path(base, keep=3)
+        left = sorted(p.name for p in folder.glob("bridge-2*.log"))
+        check("更早的启动日志会被清理（只留最近 keep 次）",
+              len(left) <= 3, f"{len(left)} 个: {left}")
+        # 不是本次启动命名的文件（例如旧的固定名 bridge.log）不会被误删
+        (folder / "bridge.log").write_text("legacy", encoding="utf-8")
+        run_log_path(base, keep=1)
+        check("旧的固定名日志不会被误删", (folder / "bridge.log").exists())
+    finally:
+        cleanup(root)
+
+
+def test_sticker_kind_comes_from_the_bubble() -> None:
+    """表情的类型必须与"读到的那条文本"来自**同一次解析**，否则会被当文本发出去。
+
+    用户实测（10-19）：表情只发出去"表情"两个字，既没有 `[表情]` 前缀也没有图 ——
+    因为类型是事后拿文本去界面上再猜一遍的，猜不到就当成了文本。
+    现在由 `_latest_in_chat` 在选中气泡时同时给出 `latest_kind()`。
+    """
+    named = node_xml(
+        n(cls="android.widget.ImageView", text="",
+          desc="小宝发的消息,表情大哭",
+          rid="com.xtc.watch:id/chat_msg_item_content", bounds="[948,267][1068,387]"))
+    xtc, _ = make_xtc(named, focus="com.xtc.watch/.ChatActivity", ui_cfg={})
+    root = ET.fromstring(named)
+    _c, text, _l = xtc._latest_in_chat(root)
+    check("解析出的文本是表情名字", text == "表情大哭", str(text))
+    check("同一次解析给出的类型是 sticker", xtc.latest_kind() == "sticker",
+          xtc.latest_kind())
+    check("message_kind 也认它是 sticker",
+          xtc.message_kind(root, text) == "sticker", xtc.message_kind(root, text))
+
+    bare = node_xml(
+        n(cls="android.widget.ImageView", text="", desc="小宝发的消息,表情",
+          rid="com.xtc.watch:id/chat_msg_item_content", bounds="[948,267][1068,387]"))
+    xtc_b, _ = make_xtc(bare, focus="com.xtc.watch/.ChatActivity", ui_cfg={})
+    root_b = ET.fromstring(bare)
+    _c, text_b, _l = xtc_b._latest_in_chat(root_b)
+    check("无名字的表情文本就是'表情'", text_b == "表情", str(text_b))
+    check("无名字的表情仍是 sticker", xtc_b.latest_kind() == "sticker", xtc_b.latest_kind())
+    check("message_kind 对无名字表情也返回 sticker",
+          xtc_b.message_kind(root_b, "表情") == "sticker")
+
+    typed = chat_page_xml("表情")
+    xtc_t, _ = make_xtc(typed, focus="com.xtc.watch/.ChatActivity", ui_cfg={})
+    root_t = ET.fromstring(typed)
+    _c, text_t, _l = xtc_t._latest_in_chat(root_t)
+    check("手打文本解析成 text", text_t == "表情" and xtc_t.latest_kind() == "text",
+          f"{text_t} / {xtc_t.latest_kind()}")
+
+    voice = node_xml(
+        n(cls="android.widget.ImageView", text="", desc="小宝发的消息,语音 3秒",
+          rid="com.xtc.watch:id/chat_msg_item_content", bounds="[475,368][611,548]"))
+    xtc_v, _ = make_xtc(voice, focus="com.xtc.watch/.ChatActivity", ui_cfg={})
+    root_v = ET.fromstring(voice)
+    xtc_v._latest_in_chat(root_v)
+    check("语音气泡判为 text", xtc_v.latest_kind() == "text", xtc_v.latest_kind())
 
 
 def test_png_encoder_and_crop() -> None:
@@ -5312,6 +5403,8 @@ def main() -> int:
                test_bare_time_label_in_future_is_yesterday,
                test_content_time_going_backwards_is_duplicate,
                test_typed_text_starting_with_sticker_word_is_text,
+               test_run_log_path_per_startup,
+               test_sticker_kind_comes_from_the_bubble,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,

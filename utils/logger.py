@@ -12,10 +12,73 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+# 每次启动生成的日志文件名：<主干>-YYYYmmdd-HHMMSS.log（例如 bridge-20261018-194217.log）
+_RUN_LOG_RE = re.compile(r"^(?P<stem>.+?)-\d{8}-\d{6}(?:-\d+)?\.log(?:\.\d+)?$")
+
+
+def _resolve(name: str) -> Path:
+    """相对路径按"可写数据目录"解析（Nuitka onefile 下日志写在 exe 旁边）。"""
+    p = Path(name)
+    try:
+        import runtime_paths
+        return runtime_paths.log_path(name)
+    except Exception:  # noqa: BLE001 单独使用本模块时不强依赖
+        return p if p.is_absolute() else Path.cwd() / p
+
+
+def run_log_path(base: str = "logs/bridge.log", keep: int = 20) -> Path:
+    """为**本次启动**生成一个新的日志文件路径，并清理更早的同类文件。
+
+    为什么每次启动一个新文件（用户要求）：桥接通常长时间挂在后台，单个日志会越来越长，
+    出问题时很难定位"这次启动之后发生了什么"。按启动时间分文件后：
+      * 文件名直接给出启动时刻（`bridge-20261018-194217.log`）；
+      * 每次启动只写自己的文件，历史日志按份数保留（默认最近 20 次启动）；
+      * 文件名里的 `-2`、`-3` 用于同一秒内重复启动的去重。
+    """
+    path = _resolve(base)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stem = path.stem
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{stem}-{stamp}.log")
+    n = 1
+    while candidate.exists():                      # 同一秒内重复启动：加序号
+        n += 1
+        candidate = path.with_name(f"{stem}-{stamp}-{n}.log")
+    _prune_run_logs(path.parent, stem, keep)
+    return candidate
+
+
+def _prune_run_logs(folder: Path, stem: str, keep: int) -> None:
+    """只保留最近 keep 个"本次启动"日志（滚动产生的 .1/.2 后缀一起算）。"""
+    if keep <= 0:
+        return
+    try:
+        runs: dict[str, list[Path]] = {}
+        for p in folder.glob(f"{stem}-*.log*"):
+            m = _RUN_LOG_RE.match(p.name)
+            if not m or m.group("stem") != stem:
+                continue
+            # bridge-20261018-194217.log / .log.1 -> 同一组
+            group = re.sub(r"\.log(?:\.\d+)?$", "", p.name)
+            runs.setdefault(group, []).append(p)
+        if len(runs) <= keep:
+            return
+        for group in sorted(runs)[:-keep]:
+            for p in runs[group]:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+    except Exception:  # noqa: BLE001 清理失败不影响启动
+        pass
 
 
 def make_console_tolerant() -> None:

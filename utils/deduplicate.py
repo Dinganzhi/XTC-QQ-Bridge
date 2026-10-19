@@ -159,8 +159,15 @@ class HistoryFilter:
                 return
             with open(self._store_path, "r", encoding="utf-8") as f:
                 items = json.load(f)
-            now = time.monotonic()
-            for key, ts in items:
+            # 注意：落盘用的是**墙钟**（time.time()），不是 time.monotonic()。
+            # monotonic 每次重启都从新的基准开始（Windows 上是开机时长），拿它跨进程比较
+            # 会让 TTL 完全失效（重启后恰好都是"负年龄"，条目永不失效）。
+            now = time.time()
+            for item in items:
+                try:
+                    key, ts = item[0], float(item[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
                 if now - ts <= self.ttl:
                     self._data[key] = ts
         except Exception:  # noqa: BLE001
@@ -172,8 +179,9 @@ class HistoryFilter:
         try:
             os.makedirs(os.path.dirname(self._store_path) or ".", exist_ok=True)
             tmp = self._store_path + ".tmp"
+            now = time.time()
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump([[k, ts] for k, ts in self._data.items()], f, ensure_ascii=False)
+                json.dump([[k, now] for k in self._data], f, ensure_ascii=False)
             os.replace(tmp, self._store_path)
         except Exception:  # noqa: BLE001
             pass
@@ -186,7 +194,7 @@ class HistoryFilter:
             self._data.popitem(last=False)
 
     def seen(self, *parts) -> bool:
-        now = time.monotonic()
+        now = time.time()                     # 墙钟：与落盘格式一致（见 _load）
         key = _hash(*[normalize(p) for p in parts])
         with self._lock:
             self._purge(now)
@@ -195,7 +203,7 @@ class HistoryFilter:
     def mark(self, *parts) -> None:
         if not any(parts):
             return
-        now = time.monotonic()
+        now = time.time()                     # 墙钟：与落盘格式一致（见 _load）
         key = _hash(*[normalize(p) for p in parts])
         with self._lock:
             self._data[key] = now

@@ -617,9 +617,12 @@ class MessageBridge:
                     # 图片/表情：媒体（原图/贴纸）可能**还没下载完**（App 先画出占位图，
                     # 原图要过几秒~几分钟才落盘）。这时不能马上按"文字"转发 ——
                     # 否则 QQ 只会收到"图片"两个字（用户实测：22:12 检测到、22:19 原图才出现）。
-                    # **类型一律以气泡本身为准**：用户实测手打了一条内容就是"表情"的文本，
+                    # **类型一律以气泡本身为准**：实测手打了一条内容就是"表情"的文本，
                     # 按前缀判成表情包后等了 10 分钟，最后发出一条没有图的"[表情]"（空气消息）。
-                    kind = self.xtc.message_kind(root, text) if text else "text"
+                    # 优先用 `latest_kind()`：它与上面那条 text 来自**同一次解析**；
+                    # 只有它拿不到（空）时才回退到拿界面再核对一遍。
+                    kind = ((self.xtc.latest_kind() if text else "") or
+                            (self.xtc.message_kind(root, text) if text else "text"))
                     is_media = kind in ("sticker", "image")
                     mkey = self._fwd_key(contact, text, label)
                     if not dup and is_media and mkey in self._pending_media:
@@ -770,14 +773,17 @@ class MessageBridge:
             if self._catchup_max_age > 0:
                 age = self._label_age(ident or disp_lbl)
                 if age is not None and age > self._catchup_max_age:
-                    # 太旧的积压消息不补发（用户实测：21:48 突然收到 16:38 的消息，很困惑）。
-                    # 记进历史，避免每轮都把它当成"库里没有"再翻出来。
-                    self._log_once(f"stale:{text[:16]}",
-                                   f"[补发] 这条是 {age / 60:.0f} 分钟前的，超过 "
-                                   f"catchup_max_age（{self._catchup_max_age / 60:.0f} 分钟），"
-                                   f"跳过不转发: {text[:24]!r}", interval=300)
-                    self.history.mark("xtc", contact or "", text, ident)
-                    continue
+                    # 太旧的积压消息不转发：它必然排在已发过的更新消息后面（错位）。
+                    # 只提示一次并记住，随后静默；再往上的消息只会更旧，本轮直接停止扫描。
+                    # （旧实现每轮都把它当成"库里没有"重新翻出来，日志里就是每 5 分钟一条
+                    #   "[补发] 这条是 N 分钟前的…" 的循环。）
+                    if not self.history.seen("xtc", contact or "", text, ident):
+                        self._log("info",
+                                  f"[补发] 这条是 {age / 60:.0f} 分钟前的消息，超过 "
+                                  f"catchup_max_age（{self._catchup_max_age / 60:.0f} 分钟），"
+                                  f"跳过不转发: {text[:24]!r}")
+                        self.history.mark("xtc", contact or "", text, ident)
+                    break
             if self._in_store(contact, text, ident):
                 # 库里有它 -> 不重复转发。但**不能就此停住往下翻**：用户实测
                 # "16:38 发的两条消息到 21:48 才转发" —— 就是因为更新的那条（19:19 的照片）

@@ -470,6 +470,8 @@ class ADBController:
         # 曾经出现过"屏幕未点亮 -> null root"时置位：此后每次 dump 前先确认/唤醒屏幕，
         # 避免每次都先用 3~8 秒去撞 uiautomator 失败（实机 WSA 上单次 dump 从 45s 降到 2s）。
         self._screen_suspect = False
+        # 限频用：同类提示（息屏/唤醒/读取失败）在短时间内只打一次，避免每轮轮询刷屏
+        self._throttle: dict[str, float] = {}
         # 上次成功的 dump 策略名（见 _dump_strategies）：记住后不再每次都先撞失败
         self._dump_strategy = ""
         self._sdk: int | None = None
@@ -998,6 +1000,23 @@ class ADBController:
             return True
         win_pkg = win.split("/", 1)[0].lower()
         return any(m in win_pkg for m in _SYSTEM_OVERLAY_MARKERS)
+
+    def _log_throttled(self, key: str, msg: str, interval: float = 300.0,
+                       level: str = "info") -> None:
+        """同类提示限频：同一个 key 在 `interval` 秒内只打一次日志。
+
+        为什么要它：WSA 息屏/窗口失焦时每轮读取都会走到"先唤醒屏幕"这条路径，
+        旧实现每轮都打一遍（轮询 2~5 秒一次），日志被同一行刷满，真正的异常反而看不见。
+        日志文件里出现过一小时两百多行重复的息屏提示。
+        """
+        try:
+            now = time.monotonic()
+            if now - float(self._throttle.get(key, 0.0)) < interval:
+                return
+            self._throttle[key] = now
+            getattr(self.logger, level)(msg)
+        except Exception:  # noqa: BLE001 限频失败不该影响主流程
+            pass
 
     def screen_on(self):
         """屏幕是否亮着：True / False / None（无法判断）。
@@ -1531,7 +1550,8 @@ class ADBController:
         thin: ET.Element | None = None
         # 已知这块屏会睡着：先确认/唤醒，别拿 uiautomator 去试错（省下好几秒）
         if self._screen_suspect and self.screen_on() is False:
-            self.logger.info("屏幕处于息屏状态，先唤醒再读取界面")
+            self._log_throttled("screen-off",
+                                "屏幕处于息屏状态，先唤醒再读取界面", interval=120)
             self.wake_up()
         for i in range(retries):
             for name, fn in self._dump_strategies():
@@ -1555,9 +1575,13 @@ class ADBController:
                     self._screen_suspect = True
                     if not woke:
                         woke = True
-                        self.logger.info("界面读取失败像是屏幕未点亮（null root node），正在唤醒屏幕...")
+                        self._log_throttled(
+                            "screen-off-wake",
+                            "界面读取失败像是屏幕未点亮（null root node），正在唤醒屏幕...",
+                            interval=120)
                         if self.wake_up():
-                            self.logger.info("已唤醒屏幕，重试读取界面")
+                            self._log_throttled("screen-off-woke", "已唤醒屏幕，重试读取界面",
+                                                interval=120)
                     break
             if i == 0 and self._looks_like_idle_error(details):
                 self._reapply_animations()

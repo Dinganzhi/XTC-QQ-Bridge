@@ -2481,7 +2481,14 @@ class Xiaotiancai:
             self.log("debug", f"判断消息类型失败（按文本处理）: {e}")
             return "text"
         for it in reversed(items):         # 从新到旧找同一条
-            if (it.get("text") or "").strip() != t:
+            it_text = (it.get("text") or "").strip()
+            if not it_text:
+                continue
+            # 文本可能因为 desc 的写法有一两个字的差别（例如名字没读全），
+            # 这里对"表情"类消息放宽到包含关系；非表情文本必须完全一致。
+            same = (it_text == t) or (t.startswith("表情") and it_text.startswith("表情")
+                                      and (t in it_text or it_text in t))
+            if not same:
                 continue
             if it.get("sticker"):
                 return "sticker"
@@ -2514,9 +2521,11 @@ class Xiaotiancai:
                 return (None, None, "", "", [])
             if self.is_in_chat(root):
                 contact, text, time_label = self._latest_in_chat(root)
+                kind0 = getattr(self, "_last_latest_kind", "")
                 # 偶发的"不完整界面快照"：聊天里有消息，但一个时间标签都没有。
                 # 这时直接转发会退化成"当前时间"（用户报告过 8 点的消息被按当前时间
                 # 转发）。重读一两次通常就有标签了；20 秒内只补救一次，避免拖慢轮询。
+                used_retry = False
                 if (text and not time_label and self._date_count(root) == 0
                         and time.monotonic() - self._last_label_retry >= 20):
                     self._last_label_retry = time.monotonic()
@@ -2529,7 +2538,12 @@ class Xiaotiancai:
                         if l2:
                             root = again                     # 用更完整的那次快照
                             contact, text, time_label = (c2 or contact), t2, l2
+                            used_retry = True
                             break
+                if not used_retry:
+                    # 重读没被采用：类型必须回到**第一次解析**的结果，
+                    # 否则 text 和 kind 来自不同的快照（表情会被当文本）。
+                    self._last_latest_kind = kind0
                 own_recent = self._own_texts_in_chat(root)
                 return (contact, text, time_label,
                         own_recent[0][0] if own_recent else "", own_recent)
@@ -2615,22 +2629,34 @@ class Xiaotiancai:
             # 图片消息（照片）：气泡是 ImageView、没有文字，desc 里写"图片消息，双击查看"
             # （图片还没下完时 desc 可能只有"XX发的消息"）。以前这类消息 text 为空 -> 被
             # 静默丢掉，控制台一行日志都没有（用户报的"图片发不出去、也没提示"）。
-            if self._is_image_bubble(cls, t, b):
+            kind = self._bubble_kind(cls, n.get("text", ""), desc, b)
+            if kind == "image":
                 t = IMAGE_TEXT
+            elif kind == "sticker" and not t:
+                t = desc.split(",", 1)[1].strip() if "," in desc else "表情"
             if not t:
                 continue
             # 桥接系统提示（如"发送成功/发送失败"送达确认）一律不转发，防止循环
             if self._is_system_msg(t):
                 continue
-            candidates.append((n, t, b[3]))
+            candidates.append((n, t, b[3], kind))
         if not candidates:
+            self._last_latest_kind = ""
             return (None, None, "")
-        n, t, y_bottom = max(candidates, key=lambda c: c[2])
+        n, t, y_bottom, kind = max(candidates, key=lambda c: c[2])
+        # 本次"最新一条"的类型：桥接据此决定要不要取图/加 [表情] 标记。
+        # 关键点：这是**同一次解析**里得出的，不靠事后拿文本再猜一遍
+        # （实测事后猜会把表情判成文本，只发出"表情"两个字）。
+        self._last_latest_kind = kind
         # 归属判定要知道**所有**气泡（含自己发的），所以单独收集一份
         all_bubbles = [x for x in root.iter("node")
                        if self._id_tail(x) == "chat_msg_item_content"
                        and self._bounds(x) is not None]
         return (None, t, self._label_for_bubble(n, dates, all_bubbles))
+
+    def latest_kind(self) -> str:
+        """最近一次 `get_latest_message()` 读到的那条消息的类型：sticker/image/text。"""
+        return getattr(self, "_last_latest_kind", "") or "text"
 
     def _label_for_bubble(self, bubble, dates: list, all_bubbles: list | None = None) -> str:
         """取**这条消息自己的**时间（dates = [(top, bottom, text)]，按 top 升序）。
@@ -2744,6 +2770,26 @@ class Xiaotiancai:
         return sorted(labels)
 
     # ------------------------------------------------------------------ 历史消息 / 命令轮询
+    def _bubble_kind(self, cls: str, raw_text: str, desc: str, bounds) -> str:
+        """这条气泡是什么：`'sticker'` / `'image'` / `'text'`（只按气泡本身判断）。
+
+        为什么要有这一个统一入口：实时路径（`_latest_in_chat`）与补发路径
+        （`_chat_bubbles`）必须使用**同一套**判定，否则同一条消息在两条路径上会被算成
+        不同类型 —— 实测就是这样把表情当成文本发了出去（只发出"表情"两个字、
+        没有 `[表情]` 前缀、也没有图）。
+        """
+        body = ""
+        if "," in (desc or ""):
+            body = desc.split(",", 1)[1].strip()
+        raw = (raw_text or "").strip()
+        if body.startswith("表情") and not raw:
+            return "sticker"
+        # 判图片时沿用旧行为：气泡没有文本就用 desc 内容当说明，
+        # 否则"语音"这类 ImageView 气泡（desc 非空、但不含"图片"）会被当成照片。
+        if self._is_image_bubble(cls, raw or body, bounds):
+            return "image"
+        return "text"
+
     def _chat_bubbles(self, root: ET.Element, include_own: bool = False) -> list[dict]:
         """解析一次 UI dump 的聊天消息气泡，按屏幕从上到下（旧->新）排序。
 
@@ -2796,15 +2842,23 @@ class Xiaotiancai:
             else:
                 # 无标注：右侧气泡 = 自己发的消息
                 is_own = filter_own and center_x > screen_w * 0.55
-            # 表情/贴纸：气泡本身没有文字（文字消息的 text 一定非空），
-            # content-desc 给的是"表情<名字>"，例如 '小宝发的消息,表情啊啊啊'。
-            # 只按这个判，避免把"表情包发我"这种真的文字消息当成表情。
-            is_sticker = bool(desc_body.startswith("表情")) and not (n.get("text", "") or "").strip()
-            # 图片（照片）：ImageView 气泡、desc 写"图片消息，双击查看"；下载中可能没有说明文字
-            is_image = self._is_image_bubble(cls, t, b)
+            # 类型只按**气泡本身**判断（见 _bubble_kind）：表情/照片/文本三选一。
+            # 注意传的是气泡**原始** text（`t` 可能已经被 desc 内容替换过）。
+            kind = self._bubble_kind(cls, n.get("text", ""), desc, b)
+            is_sticker = kind == "sticker"
+            is_image = kind == "image"
             if is_image:
                 t = IMAGE_TEXT
-            if not t or t in junk:
+            elif is_sticker and not t:
+                t = desc_body or "表情"
+            if not t:
+                continue
+            # 垃圾文案（"表情"/"语音"/"发送"…）只是**输入栏按钮**的文字：
+            # ① 表情/图片气泡一定是真实消息，永不按垃圾文案丢弃；
+            # ② 带发送方标注（`XX发的消息,…`）的气泡也是真实消息 ——
+            #    实测手打了一句内容就是"表情"的文本，就是被这条规则悄悄丢掉的，
+            #    于是"表情"只能靠猜类型，最后发出没有图的两个字。
+            if t in junk and not (is_sticker or is_image) and not desc:
                 continue
             if self._is_system_msg(t):
                 continue
@@ -2821,7 +2875,8 @@ class Xiaotiancai:
             own_label = self._label_for_bubble(n, dates, all_bubbles)
             out.append({"text": t, "is_own": is_own, "contact": contact,
                         "time_label": time_label, "own_label": own_label, "y_bottom": b[3],
-                        "sticker": is_sticker, "image": is_image, "bounds": b})
+                        "sticker": is_sticker, "image": is_image, "kind": kind,
+                        "bounds": b})
         out.sort(key=lambda it: it["y_bottom"])
         return out
 
