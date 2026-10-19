@@ -225,6 +225,7 @@ def main() -> None:
     import speed_profile
     _profile, _filled, _pinned = speed_profile.apply_profile(cfg)
     # 日志文件：**每次启动新建一个**，按启动时间命名（logs/bridge-YYYYmmdd-HHMMSS.log）。
+    # 默认**不清理任何旧日志**；需要留最近 N 份时把 logging.keep_runs 设成 N。
     # 想在单文件里连续追加，把 logging.per_run 设成 false。
     _log_cfg = cfg.get("logging") or {}
     _log_file = _log_cfg.get("file") or "logs/bridge.log"
@@ -232,7 +233,7 @@ def main() -> None:
         from utils.logger import run_log_path
         try:
             _log_file = str(run_log_path(_log_file,
-                                         keep=int(_log_cfg.get("keep_runs", 20) or 0)))
+                                         keep=int(_log_cfg.get("keep_runs", 0) or 0)))
         except Exception as e:  # noqa: BLE001 生成失败就退回固定文件
             print(f"[警告] 生成本次日志文件失败（改用固定日志文件）: {e}")
     log = setup_logger(level=_log_cfg.get("level", "INFO"), file=_log_file)

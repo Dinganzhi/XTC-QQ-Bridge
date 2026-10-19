@@ -1433,10 +1433,10 @@ def test_typed_text_starting_with_sticker_word_is_text() -> None:
 
 
 def test_run_log_path_per_startup() -> None:
-    """日志文件按启动时间命名、每次启动新建，并只保留最近若干次。
+    """日志文件按启动时间命名、每次启动新建，**默认永不清理旧日志**。
 
-    用户要求：以后再启动不要再往同一个文件里追加 —— 每次启动一个
-    `logs/bridge-YYYYmmdd-HHMMSS.log`，按日期时间命名。
+    用户要求：以后每次启动都新建一个 `logs/bridge-YYYYmmdd-HHMMSS.log`，
+    并且**不要自动清理** —— 旧日志一直保留，需要清理时才显式设 `logging.keep_runs`。
 
     注意：**必须用独立的临时目录**（绝对路径）。曾经直接在仓库的 `logs/` 下跑这个用例，
     结果把正在运行的桥接日志写成了 "legacy"，还顺手清理掉了真实的启动日志。
@@ -1450,22 +1450,31 @@ def test_run_log_path_per_startup() -> None:
             folder = Path(tmp) / "logs"
             folder.mkdir(parents=True, exist_ok=True)
             base = str(folder / "bridge.log")
-            p1 = run_log_path(base, keep=0)
+            p1 = run_log_path(base)
             check("首次启动会给出带启动时间的文件名",
                   re.fullmatch(r"bridge-\d{8}-\d{6}\.log", p1.name) is not None, p1.name)
             p1.write_text("first", encoding="utf-8")
-            p2 = run_log_path(base, keep=0)
+            p2 = run_log_path(base)
             check("同一秒内再次启动也不会重名", p2.name != p1.name, f"{p1.name} / {p2.name}")
             p2.write_text("second", encoding="utf-8")
             check("两次启动的内容互不覆盖",
                   p1.read_text(encoding="utf-8") == "first"
                   and p2.read_text(encoding="utf-8") == "second")
+
+            # 默认（keep=0）：造再多旧日志也一个都不删
             for i in range(12):
                 (folder / f"bridge-2020010{i % 9 + 1}-{i:06d}.log").write_text(
                     "x", encoding="utf-8")
+            before = {p.name for p in folder.glob("bridge-*.log")}
+            run_log_path(base)
+            after = {p.name for p in folder.glob("bridge-*.log")}
+            check("默认不清理任何旧日志", before <= after,
+                  f"少了: {sorted(before - after)}")
+
+            # 显式 keep=N 才清理（保留最近 N 次启动）
             run_log_path(base, keep=3)
             left = sorted(p.name for p in folder.glob("bridge-2*.log"))
-            check("更早的启动日志会被清理（只留最近 keep 次）",
+            check("显式设置 keep=N 时才清理（只留最近 N 次）",
                   len(left) <= 3, f"{len(left)} 个: {left}")
             # 不是"本次启动命名"的文件（例如旧的固定名 bridge.log）不会被误删
             (folder / "bridge.log").write_text("legacy", encoding="utf-8")

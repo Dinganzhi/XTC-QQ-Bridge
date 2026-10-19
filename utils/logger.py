@@ -34,13 +34,14 @@ def _resolve(name: str) -> Path:
         return p if p.is_absolute() else Path.cwd() / p
 
 
-def run_log_path(base: str = "logs/bridge.log", keep: int = 20) -> Path:
-    """为**本次启动**生成一个新的日志文件路径，并清理更早的同类文件。
+def run_log_path(base: str = "logs/bridge.log", keep: int = 0) -> Path:
+    """为**本次启动**生成一个新的日志文件路径。
 
     为什么每次启动一个新文件（用户要求）：桥接通常长时间挂在后台，单个日志会越来越长，
     出问题时很难定位"这次启动之后发生了什么"。按启动时间分文件后：
       * 文件名直接给出启动时刻（`bridge-20261018-194217.log`）；
-      * 每次启动只写自己的文件，历史日志按份数保留（默认最近 20 次启动）；
+      * 每次启动只写自己的文件，**默认不删除任何旧日志**（`keep=0`）；
+        需要自动清理时才把 `logging.keep_runs` 设成正数（保留最近 N 次启动）；
       * 文件名里的 `-2`、`-3` 用于同一秒内重复启动的去重。
     """
     path = _resolve(base)
@@ -52,12 +53,16 @@ def run_log_path(base: str = "logs/bridge.log", keep: int = 20) -> Path:
     while candidate.exists():                      # 同一秒内重复启动：加序号
         n += 1
         candidate = path.with_name(f"{stem}-{stamp}-{n}.log")
-    _prune_run_logs(path.parent, stem, keep)
+    if keep > 0:
+        _prune_run_logs(path.parent, stem, keep)
     return candidate
 
 
 def _prune_run_logs(folder: Path, stem: str, keep: int) -> None:
-    """只保留最近 keep 个"本次启动"日志（滚动产生的 .1/.2 后缀一起算）。"""
+    """只保留最近 keep 个"本次启动"日志（滚动产生的 .1/.2 后缀一起算）。
+
+    仅在 `logging.keep_runs > 0` 时调用；默认的 0 表示**永不清理**。
+    """
     if keep <= 0:
         return
     try:
