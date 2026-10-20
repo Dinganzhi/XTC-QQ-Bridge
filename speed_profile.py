@@ -19,9 +19,9 @@ PROFILES: dict[str, dict[str, Any]] = {
     # ---------------- 稳定优先：不用盲打、等更久、重试更宽容 ----------------
     "stable": {
         "xiaotiancai.check_interval": 2.0,
-        "xiaotiancai.label_stale_secs": 60,
+        "xiaotiancai.label_now_window": 300,
         "xiaotiancai.catchup_scan": 30,
-        "xiaotiancai.catchup_max_age": 3600,     # 一小时内漏掉的还补（更稳）
+        "xiaotiancai.catchup_max_age": 0,        # 不按年龄丢消息（停了一夜也补）
         "xiaotiancai.ui.blind_send": False,      # 不盲打：每条都先读界面再注入
         "xiaotiancai.ui.fast_send": False,       # 不点缓存坐标
         "xiaotiancai.ui.interaction_delay": 0.8,
@@ -41,9 +41,9 @@ PROFILES: dict[str, dict[str, Any]] = {
     # ---------------- 均衡（默认）：= 一直以来的默认行为 ----------------
     "balanced": {
         "xiaotiancai.check_interval": 2.0,
-        "xiaotiancai.label_stale_secs": 60,
+        "xiaotiancai.label_now_window": 300,
         "xiaotiancai.catchup_scan": 30,
-        "xiaotiancai.catchup_max_age": 1800,     # 超过 30 分钟的积压消息不再补（避免"错位"）
+        "xiaotiancai.catchup_max_age": 0,        # 不按年龄丢消息
         "xiaotiancai.ui.blind_send": True,
         "xiaotiancai.ui.fast_send": True,
         "xiaotiancai.ui.interaction_delay": 0.6,
@@ -63,9 +63,9 @@ PROFILES: dict[str, dict[str, Any]] = {
     # ---------------- 速度优先：先手打字 + 更短等待 + 少一轮 dump 重试 ----------------
     "fast": {
         "xiaotiancai.check_interval": 3.0,       # 轮询留出空隙 -> 发送更容易立刻拿到界面锁
-        "xiaotiancai.label_stale_secs": 60,
+        "xiaotiancai.label_now_window": 300,
         "xiaotiancai.catchup_scan": 20,
-        "xiaotiancai.catchup_max_age": 1800,
+        "xiaotiancai.catchup_max_age": 0,
         "xiaotiancai.ui.blind_send": True,
         "xiaotiancai.ui.fast_send": True,
         "xiaotiancai.ui.interaction_delay": 0.45,
@@ -85,9 +85,9 @@ PROFILES: dict[str, dict[str, Any]] = {
     # ---------------- 极速：能省的都省（代价：失败会更多地如实上报） ----------------
     "turbo": {
         "xiaotiancai.check_interval": 4.0,
-        "xiaotiancai.label_stale_secs": 60,
+        "xiaotiancai.label_now_window": 300,
         "xiaotiancai.catchup_scan": 12,
-        "xiaotiancai.catchup_max_age": 1800,
+        "xiaotiancai.catchup_max_age": 0,
         "xiaotiancai.ui.blind_send": True,
         "xiaotiancai.ui.fast_send": True,
         "xiaotiancai.ui.interaction_delay": 0.3,

@@ -945,13 +945,16 @@ def test_forward_retry_thread_only_retries_failed_targets() -> None:
 
 
 def test_group_time_label_is_not_stale() -> None:
-    """App 的分组时间标签只画在一组消息的第一条上：同组后面的消息其实更晚。
+    """显示时间：刚发生的消息用**真实时间**；补发/旧消息用**原始时间**。
 
-    用户实测：15:41 那条之后同一组里的消息（15:46 才发）也被写成 15:41。
-    规则：同一个 App 标签已经用过、且隔了超过 label_stale_secs（默认 60 秒）-> 用当前时间；
+    用户要求（10-20）：
+      * App 会把时间相近的消息并成一组、只画一个标签，组内后续消息的标签会早 1~2 分钟，
+        所以"刚发生"的消息要按真实时间（当前时间）显示；
+      * 而补发旧消息（实测 10-19 21:30 的消息在 10-20 07:31 被补发）必须显示**原始时间**，
+        绝不能显示成补发时刻 07:31。
     **身份仍用 App 标签**（否则身份会跟着时间漂移，又会出现"同一条被反复转发"）。
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     root = tmp_root()
     try:
@@ -959,18 +962,28 @@ def test_group_time_label_is_not_stale() -> None:
                                       adb=None, xtc=None, forwarder=None, logger=None)
         br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
         br._cmd_done_file = str(_paths(root)["done"])
-        label = "10-09 15:41"
-        check("第一条用 App 标签", br._display_time_label("小宝", label) == label)
-        br._label_used[("小宝", label)] = time.time() - 20
-        check("同一分钟内的第二条仍用 App 标签（正常情况）",
-              br._display_time_label("小宝", label) == label)
-        br._label_used[("小宝", label)] = time.time() - 120
-        got = br._display_time_label("小宝", label)
-        check("同标签隔了 2 分钟 -> 用当前时间（不再写 15:41）",
-              got != label and got == datetime.now().strftime("%m-%d %H:%M"),
-              f"{got!r} vs {label!r}")
-        check("不同联系人互不影响（第一条仍用 App 标签）",
-              br._display_time_label("张三", label) == label)
+        now_hm = datetime.now().strftime("%m-%d %H:%M")
+        # ① 刚发生的消息（标签就是现在）-> 用当前时间（与标签一致，等同真实时间）
+        check("刚发生的消息显示当前时间",
+              br._display_time_label("小宝", now_hm) == now_hm)
+        # ② 组内后续消息：标签早 2 分钟 -> 仍然显示当前时间（真实时间，而不是那 2 分钟前的标签）
+        fresh = (datetime.now() - timedelta(minutes=2)).strftime("%m-%d %H:%M")
+        got = br._display_time_label("小宝", fresh)
+        check("组内后续消息用真实时间（不是早 2 分钟的标签）",
+              got == datetime.now().strftime("%m-%d %H:%M") and got != fresh,
+              f"{got!r} vs {fresh!r}")
+        # ③ 补发的旧消息 -> 保留原始时间（绝不写成补发时刻）
+        old = (datetime.now() - timedelta(hours=10)).strftime("%m-%d %H:%M")
+        check("10 小时前补发的消息保留原始时间",
+              br._display_time_label("小宝", old) == old,
+              br._display_time_label("小宝", old))
+        # ④ 裸时间（只有时分）也能绝对化，并按"未来=昨天"的规则处理
+        bare = (datetime.now() - timedelta(minutes=40)).strftime("%H:%M")
+        got_bare = br._display_time_label("小宝", bare)
+        check("裸时间会绝对化成 MM-DD HH:MM",
+              len(got_bare) == 11 and got_bare[2] == "-" and got_bare[5] == " ",
+              got_bare)
+        # ⑤ 没有标签时给兜底时间（不是空）
         check("没有标签时给兜底时间（不是空）",
               br._display_time_label("小宝", "") != "")
     finally:
@@ -1568,6 +1581,91 @@ def test_forward_text_uses_kind_for_prefix() -> None:
         check("手打文本原样转发（不加前缀）",
               bool(sent) and "表情包发我" in sent[-1] and "[表情]" not in sent[-1],
               str(sent[-1:]))
+    finally:
+        cleanup(root)
+
+
+def test_backlog_scrolls_up_for_older_messages() -> None:
+    """补发时会**向上多翻一屏**：被顶到可见区之外的旧消息（例如那张图片）也能补到。
+
+    用户实测（10-20）：10-19 21:30 的"一张图 + 两句话"因为 ADB 掉线没发出去；07:31 恢复后
+    只补到了两句话，图片在可见区之上、永远没被看到。现在：可见区里一条"库里已有"的都没撞上
+    时，就往上翻一屏继续找（`xiaotiancai.catchup_screens`，默认 1），找完按原路滚回底部。
+    """
+    root = tmp_root()
+    sent: list[str] = []
+
+    class _Fwd:
+        def send(self, t, i, m):
+            sent.append(m)
+            return True
+
+        def send_detail(self, t, i, m):
+            sent.append(m)
+            return True, ""
+
+    def bub(text, label):
+        return {"text": text, "time_label": label, "own_label": label,
+                "sticker": False, "image": False}
+
+    class _ScrollXtc:
+        """假界面：第 0 屏只有后两条，往上翻一屏才能看到最老的那条（已在库里）。"""
+
+        STATE_CHAT = "chat"
+
+        def __init__(self):
+            self.pos = 0
+            self.scrolls: list[int] = []
+
+        def _chat_bubbles(self, root, include_own=False):
+            # 真实 _chat_bubbles 返回"旧 -> 新"（按 y 升序）
+            if self.pos == 0:
+                return [bub("第一句", now_lbl), bub("第二句", now_lbl)]
+            return [bub("十小时前的", old_lbl), bub("第一句", now_lbl),
+                    bub("第二句", now_lbl)]
+
+        def _is_system_msg(self, text):
+            return text.startswith("发送成功")
+
+        def is_in_chat(self):
+            return False
+
+        def chat_view_bounds(self, root):
+            return (0, 0, 400, 800)
+
+        def scroll_chat_by(self, vb, step):
+            self.scrolls.append(step)
+            self.pos = max(0, self.pos + (1 if step > 0 else -1))
+            return True
+
+    from datetime import datetime, timedelta
+
+    now_lbl = datetime.now().strftime("%m-%d %H:%M")
+    old_lbl = (datetime.now() - timedelta(hours=10)).strftime("%m-%d %H:%M")
+    try:
+        fwd = _Fwd()
+        xtc = _ScrollXtc()
+        br = bridge_mod.MessageBridge(
+            {"target": {"xtc_contact": "张三", "qq_private": "10001"},
+             "xiaotiancai": {}, "webhook": {}},
+            adb=None, xtc=xtc, forwarder=fwd, logger=None)
+        prefix = f".bugtest{_SEQ['n']}_"
+        br.msgs = MessageLog(path=str(root / f"{prefix}msg_log.json"))
+        br.history = bridge_mod.HistoryFilter(store_path=str(root / f"{prefix}history.json"))
+        br.echo = bridge_mod.EchoFilter(store_path=str(root / f"{prefix}echo.json"))
+        br._cmd_done_file = str(root / f"{prefix}cmd_done.json")
+        br._catchup_max_age = 0                      # 本用例只看"能不能翻到"
+        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": (
+            br._do_forward_job(c, t, l, sticker=sticker, display_label=display_label))
+        br.msgs.append("xtc", "小宝", "十小时前的")   # 最老的那条已经在库里
+
+        n = br._forward_backlog(ET.fromstring(node_xml("")), "小宝")
+        check("两句话都补发出去", n == 2 and len(sent) == 2, f"n={n} sent={sent}")
+        check("顺序是 旧 -> 新", sent and "第一句" in sent[0] and "第二句" in sent[1], str(sent))
+        check("确实向上翻过一屏", any(s > 0 for s in xtc.scrolls), str(xtc.scrolls))
+        check("翻完按原路滚回底部", any(s < 0 for s in xtc.scrolls), str(xtc.scrolls))
+        check("库里已有的那条没有被重发",
+              not any("十小时前的" in m for m in sent), str(sent))
     finally:
         cleanup(root)
 
@@ -3122,7 +3220,7 @@ def test_missing_time_label_uses_previous_message_time() -> None:
         # 上一条已经很久（>30 分钟）-> 不敢用它的时间，退回原行为（当前时间）
         fwd2 = _Fwd()
         br2 = _backlog_bridge(root, fwd2, [{"text": "噢2", "own_label": "", "time_label": ""}])
-        old = datetime.now() - timedelta(hours=3)
+        old = datetime.now() - timedelta(hours=13)   # 超过 label_fallback_max（12 小时）
         br2.msgs.append("xtc", "小宝", "很久以前", t=old.timestamp())
         br2._forward_backlog(ET.fromstring(node_xml("")), "小宝")
         shown2 = fwd2.sent[0] if fwd2.sent else ""
@@ -5461,6 +5559,7 @@ def main() -> int:
                test_run_log_path_per_startup,
                test_sticker_kind_comes_from_the_bubble,
                test_forward_text_uses_kind_for_prefix,
+               test_backlog_scrolls_up_for_older_messages,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,

@@ -290,13 +290,26 @@ class MessageBridge:
         # 几秒~几分钟后才落盘（实测 22:12 检测到消息、22:19 原图才出现）。
         # 这期间先不转发，否则 QQ 只会收到"图片"两个字。
         self._pending_media: dict[tuple, dict] = {}
-        # 同一 App 时间标签"第一次被用掉"的时刻：同组后续消息其实更晚（用户实测 15:46 被写成
-        # 15:41），超过 label_stale_secs 就用当前时间显示（身份仍用 App 标签）
-        self._label_used: dict[tuple, float] = {}
+        # 显示时间的新规则（用户要求 10-20）：标签距今 <= label_now_window（默认 300 秒）
+        # 就是"刚刚发生"的消息 -> 用**当前真实时间**（App 的分组标签会让组内后续消息早 1~2 分钟）；
+        # 更早的 -> 用**原始标签**，绝不改写成补发时刻（实测 10-19 21:30 的消息被写成 07:31）。
+        # 旧配置名 label_stale_secs 仍兼容。
         try:
-            self._label_stale_secs = max(10.0, float(_xc.get("label_stale_secs", 60) or 60))
+            self._label_now_window = max(10.0, float(
+                _xc.get("label_now_window", _xc.get("label_stale_secs", 300)) or 300))
         except (TypeError, ValueError):
-            self._label_stale_secs = 60.0
+            self._label_now_window = 300.0
+        try:
+            # 没有标签时，"上一条已入库消息的时间"最多能往回用多久（秒）
+            self._label_fallback_max = max(600.0, float(
+                _xc.get("label_fallback_max", 12 * 3600) or 12 * 3600))
+        except (TypeError, ValueError):
+            self._label_fallback_max = 12 * 3600.0
+        try:
+            # 补发时向上多翻几屏继续找（0 = 只看当前可见区）
+            self._catchup_screens = max(0, int(_xc.get("catchup_screens", 1) or 0))
+        except (TypeError, ValueError):
+            self._catchup_screens = 1
         _media = cfg.get("emoji") or {}
         try:
             self._media_retry_max = max(1, int(_media.get("wait_retries", 8) or 8))
@@ -735,98 +748,136 @@ class MessageBridge:
 
         pending: list[tuple[str, str, dict | None, str]] = []
         scanned = 0
+        hit_store = False          # 本屏里撞到过"库里已有"的消息
+        stop_all = False           # 需要整体停止（超龄/超出扫描上限/媒体在等）
+        steps: list[int] = []      # 往上翻过的位移，最后按原路滚回底部
         if self._order_hold_active():
             # 有图片/表情在等原图：这一轮先不补发任何东西（否则更新的那条会插到图前面 = 错位）
             self._log("debug", "[补发] 有图片/表情在等原图，先压一轮不补发（保持顺序）")
             return 0
-        for it in reversed(bubbles):                # 从最新往回走
-            scanned += 1
-            if self._catchup_scan and scanned > self._catchup_scan:
-                # 只扫可见范围内的这么多条（可见区本来就只有几条），避免无界翻找
-                break
-            text = (it.get("text") or "").strip()
-            if not text:
-                continue
-            try:
-                if self.xtc._is_system_msg(text):
-                    continue                        # 送达确认这类系统提示：不转发也不当边界
-            except Exception:  # noqa: BLE001
-                pass
-            if self._xtc_cmd_prefix and text.startswith(self._xtc_cmd_prefix):
-                continue                            # 命令文本由命令流程处理
-            # 身份用**这条消息自己的时间**（`own_label`，与实时路径的 `_label_for_bubble` 同源），
-            # 显示用"它上方最近的时间标签"（`time_label`，App 的分组标签）。
-            # 两条路径的身份必须**同源同格式**，否则同一条消息会被"补发 + 实时"各发一次。
-            own_lbl = (it.get("own_label") or "").strip()
-            disp_lbl = (it.get("time_label") or "").strip()
-            ident = self._abs_time_label(own_lbl) or own_lbl
-            if not own_lbl and not disp_lbl:
-                # 界面上没有时间标签（App 只在一组消息的第一条上方画一个，滚出屏幕就没了）：
-                # 退回用"上一条已入库消息的时间"，而不是"当前时间" —— 否则补发旧消息会写成
-                # 转发时刻（用户实测：22:04 发的"噢"在 22:20 被补发，显示成了 22:20）。
-                disp_lbl = self._estimate_time_label()
-            else:
-                # 显示时间：同组标签"已经用过且隔了 60 秒以上"就用当前时间（用户实测：
-                # 15:46 发的被写成 15:41）。身份 ident 不变，只影响显示。
-                disp_lbl = self._display_time_label(
-                    contact, ident or self._abs_time_label(disp_lbl) or disp_lbl)
-            if self._catchup_max_age > 0:
-                age = self._label_age(ident or disp_lbl)
-                if age is not None and age > self._catchup_max_age:
-                    # 太旧的积压消息不转发：它必然排在已发过的更新消息后面（错位）。
-                    # 只提示一次并记住，随后静默；再往上的消息只会更旧，本轮直接停止扫描。
-                    # （旧实现每轮都把它当成"库里没有"重新翻出来，日志里就是每 5 分钟一条
-                    #   "[补发] 这条是 N 分钟前的…" 的循环。）
-                    if not self.history.seen("xtc", contact or "", text, ident):
-                        self._log("info",
-                                  f"[补发] 这条是 {age / 60:.0f} 分钟前的消息，超过 "
-                                  f"catchup_max_age（{self._catchup_max_age / 60:.0f} 分钟），"
-                                  f"跳过不转发: {text[:24]!r}")
+        try:
+            for _screen in range(self._catchup_screens + 1):
+                for it in reversed(bubbles):            # 从最新往回走
+                    scanned += 1
+                    if self._catchup_scan and scanned > self._catchup_scan:
+                        stop_all = True
+                        break
+                    text = (it.get("text") or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        if self.xtc._is_system_msg(text):
+                            continue                    # 送达确认这类系统提示：不转发也不当边界
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if self._xtc_cmd_prefix and text.startswith(self._xtc_cmd_prefix):
+                        continue                        # 命令文本由命令流程处理
+                    # 身份用**这条消息自己的时间**（`own_label`，与实时路径的 `_label_for_bubble`
+                    # 同源），显示时间由 `_display_time_label` 统一决定（实时=当前时间，
+                    # 补发=原始标签）。两条路径的身份必须同源同格式，否则会被各转发一次。
+                    own_lbl = (it.get("own_label") or "").strip()
+                    disp_src = (it.get("time_label") or "").strip()
+                    ident = self._abs_time_label(own_lbl) or own_lbl
+                    disp_lbl = self._display_time_label(
+                        contact, ident or self._abs_time_label(disp_src) or disp_src)
+                    if self._catchup_max_age > 0:
+                        age = self._label_age(ident or disp_lbl)
+                        if age is not None and age > self._catchup_max_age:
+                            # 太旧的积压消息不转发：它必然排在已发过的更新消息后面（错位）。
+                            # 只提示一次并记住，随后静默；再往上的消息只会更旧，本轮直接停止。
+                            if not self.history.seen("xtc", contact or "", text, ident):
+                                self._log("info",
+                                          f"[补发] 这条是 {age / 60:.0f} 分钟前的消息，超过 "
+                                          f"catchup_max_age（{self._catchup_max_age / 60:.0f} 分钟），"
+                                          f"跳过不转发: {text[:24]!r}")
+                                self.history.mark("xtc", contact or "", text, ident)
+                            stop_all = True
+                            break
+                    if self._in_store(contact, text, ident):
+                        # 库里有它 -> 不重复转发。但**不能就此停住往上翻**：实测
+                        # "16:38 发的两条消息到 21:48 才转发" 就是因为更新的那条已经在库里，
+                        # 旧实现一撞库就 break，把更老、却从没转发过的消息永远挡在外面。
+                        self._log("debug", f"[补发] 库里已有，跳过（继续往上找）: {text[:24]!r}")
+                        hit_store = True
+                        continue
+                    if self._content_went_backwards(contact, text, ident):
+                        # 同内容 + 时间倒流 = 同一条消息的标签漂移（跨零点那类），别补发
+                        self._log("info", f"[补发] 同内容的消息时间倒流了（{ident}），"
+                                          f"判为重复不补发: {text[:24]!r}")
                         self.history.mark("xtc", contact or "", text, ident)
+                        continue
+                    if self.dedup.seen(("xtc", contact or "", text, ident)):
+                        # 刚试过（120 秒内：正在发的、或上次转发失败的）：本轮先跳过它，
+                        # 但不当作边界，继续往上找更老的那几条
+                        self._log("debug", f"[补发] 这条最近试过，先跳过: {text[:24]!r}")
+                        continue
+                    if self._forward_suppressed(contact, text, ident):
+                        # 正在补投 / 刚转发过同一内容（标签跳变也算同一条）：不当作边界，
+                        # 但这一轮不重发（旧实现没有这层，群失败会让同一条每 5 秒重转一次）。
+                        self._log("debug", f"[补发] 这条在补投/内容护栏内，先跳过: {text[:24]!r}")
+                        continue
+                    # 补发的表情/图片也取原图：用上面那份新鲜快照（整轮共用，坐标不会过期）
+                    sticker = None
+                    # 类型以**气泡本身**为准（`it` 就是那条气泡的解析结果）
+                    kind = ("image" if it.get("image")
+                            else ("sticker" if it.get("sticker") else "text"))
+                    if kind in ("sticker", "image"):
+                        mkey = self._fwd_key(contact, text, ident)
+                        if mkey in self._pending_media:
+                            # 已经在"等媒体"队列里：交给 `_retry_pending_media`（那里掌握退避
+                            # 节奏，且不依赖它是不是最新一条）。这里直接停，不往上翻（否则顺序会反）。
+                            self._log("debug", f"[补发] 这条的媒体在等待重试，先跳过: {text[:24]!r}")
+                            stop_all = True
+                            break
+                        sticker = self._capture_sticker(
+                            root, text, near_epoch=self._label_epoch(disp_lbl or own_lbl),
+                            match_label=ident or disp_lbl, kind=kind)
+                        if sticker is None:
+                            # 媒体还没就绪：登记等待重试，这一条先不放行（不发"图片"两个字）
+                            self._media_retry_failed(mkey, contact, text, ident, disp_lbl,
+                                                     "界面上还是占位图、缓存里也还没有原图",
+                                                     kind=kind)
+                            stop_all = True
+                            break
+                    pending.append((text, ident, sticker, disp_lbl, kind))
+
+                if stop_all or hit_store:
+                    break                    # 撞到库/需要停 -> 说明已经接上了，不必再往上翻
+                if len(steps) >= self._catchup_screens:
                     break
-            if self._in_store(contact, text, ident):
-                # 库里有它 -> 不重复转发。但**不能就此停住往下翻**：用户实测
-                # "16:38 发的两条消息到 21:48 才转发" —— 就是因为更新的那条（19:19 的照片）
-                # 已经在库里，旧实现一撞库就 break，把比它更老、却从没转发过的消息永远挡在外面。
-                self._log("debug", f"[补发] 库里已有，跳过（继续往上找）: {text[:24]!r}")
-                continue
-            if self._content_went_backwards(contact, text, ident):
-                # 同内容 + 时间倒流 = 同一条消息的标签漂移（跨零点那类），别补发
-                self._log("info", f"[补发] 同内容的消息时间倒流了（{ident}），"
-                                  f"判为重复不补发: {text[:24]!r}")
-                self.history.mark("xtc", contact or "", text, ident)
-                continue
-            if self.dedup.seen(("xtc", contact or "", text, ident)):
-                # 刚试过（120 秒内：正在发的、或上次转发失败的）：本轮先跳过它，
-                # 但不当作边界，继续往上找更老的那几条
-                self._log("debug", f"[补发] 这条最近试过，先跳过: {text[:24]!r}")
-                continue
-            if self._forward_suppressed(contact, text, ident):
-                # 正在补投 / 刚转发过同一内容（标签跳变也算同一条）：**不当作边界**（库里
-                # 仍没有它），但这一轮不重发。旧实现没有这层，于是一个群失败会让同一条消息
-                # 每 5 秒被重转一次，还连已经成功的私聊一起重发（用户实测的刷屏）。
-                self._log("debug", f"[补发] 这条在补投/内容护栏内，先跳过: {text[:24]!r}")
-                continue
-            # 补发的表情/图片也取原图：用上面那份**新鲜快照**（整轮共用，坐标不会过期）
-            sticker = None
-            # 类型以**气泡本身**为准（`it` 就是那条气泡的解析结果）
-            kind = "image" if it.get("image") else ("sticker" if it.get("sticker") else "text")
-            if kind in ("sticker", "image"):
-                mkey = self._fwd_key(contact, text, ident)
-                if mkey in self._pending_media:
-                    # 已经在"等媒体"队列里：交给 `_retry_pending_media`（那里掌握退避节奏，
-                    # 而且不依赖它是不是最新一条）。这里**直接停**，不往上翻（否则顺序会反）。
-                    self._log("debug", f"[补发] 这条的媒体在等待重试，先跳过: {text[:24]!r}")
+                # 这一屏全都没在库里 -> 上面很可能还有没读到的消息（实测：图片被顶到可见区
+                # 之外就永远补不到）。往上翻一屏继续找，最后按原路滚回底部。
+                try:
+                    vb = self.xtc.chat_view_bounds(root)
+                except Exception as e:  # noqa: BLE001 拿不到可视区就不翻
+                    self._log("debug", f"[补发] 读不到消息列表可视区，不向上翻: {e}")
                     break
-                sticker = self._capture_sticker(
-                    root, text, near_epoch=self._label_epoch(disp_lbl or own_lbl),
-                    match_label=ident or disp_lbl, kind=kind)
-                if sticker is None:
-                    # 媒体还没就绪：登记等待重试，这一条先不放行（不发"图片"两个字）
-                    self._media_retry_failed(mkey, contact, text, ident, disp_lbl,
-                                             "界面上还是占位图、缓存里也还没有原图", kind=kind)
+                step = int((vb[3] - vb[1]) * 0.7) or 200
+                if not self.xtc.scroll_chat_by(vb, step):
                     break
-            pending.append((text, ident, sticker, disp_lbl, kind))
+                steps.append(step)
+                fresh_root = self._fresh_chat_root()
+                if fresh_root is None:
+                    break
+                root = fresh_root
+                try:
+                    bubbles = self.xtc._chat_bubbles(root, include_own=False)
+                except Exception as e:  # noqa: BLE001 解析失败就停在这一屏
+                    self._log("debug", f"[补发] 往上翻后的界面解析失败: {e}")
+                    break
+                if not bubbles:
+                    break
+        finally:
+            # 滚回底部：列表停在中间会让轮询读不到新消息
+            for step in reversed(steps):
+                try:
+                    vb2 = self.xtc.chat_view_bounds(root)
+                except Exception:  # noqa: BLE001
+                    vb2 = None
+                if vb2:
+                    self.xtc.scroll_chat_by(vb2, -step)
+        if steps:
+            self._log("debug", f"[补发] 为了找更早的消息向上翻了 {len(steps)} 屏（已滚回底部）")
 
         if not pending:
             return 0
@@ -847,15 +898,19 @@ class MessageBridge:
             sent += 1
         return sent
 
-    def _estimate_time_label(self, max_gap: float = 1800.0) -> str:
+    def _estimate_time_label(self, max_gap: float | None = None) -> str:
         """消息没有时间标签时的兜底：用**上一条已入库消息的时间**（`MM-DD HH:MM`）。
 
         为什么需要：App 只在"一组消息的第一条"上方画时间标签，那一行滚出屏幕后，组内其余
         消息就没有任何标签了 —— 旧实现直接退化成"当前时间"，补发旧消息时就会写成**转发
         时刻**（实测：22:04 发的"噢"在 22:20 被补发，显示成了 22:20）。
-        消息是严格按时间顺序处理的，所以"上一条已入库消息的时间"是个很接近的下界；
-        只有当它离现在足够近（默认 30 分钟内）才敢用，桥接停了很久时宁可退回"当前时间"。
+        消息是严格按时间顺序处理的，所以"上一条已入库消息的时间"是个很接近的真实时间；
+        窗口默认 12 小时（`xiaotiancai.label_fallback_max`）—— 桥接停了半天再补发时，
+        宁可用"上一条真实消息的时间"，也不要写成补发时刻（实测：10-19 21:30 的消息在
+        10-20 07:31 被补发，被写成了 07:31）。
         """
+        if max_gap is None:
+            max_gap = self._label_fallback_max
         try:
             recent = self.msgs.recent(1)
         except Exception:  # noqa: BLE001 取不到就用旧行为
@@ -994,25 +1049,30 @@ class MessageBridge:
         return max(0.0, time.time() - float(epoch))
 
     def _display_time_label(self, contact, label: str) -> str:
-        """挑一个**显示**用的时间：App 的分组标签只画在一组消息的第一条上方。
+        """决定 QQ 那条消息抬头显示的**时间**（身份/去重不受影响）。
 
-        用户实测：15:41 那条之后同一组里的消息（其实 15:46 才发）也被写成 15:41。
-        规则：同一个 App 标签我们已经用它转发过、且距那时已经超过 `label_stale_secs`
-        （默认 60 秒）-> 说明这条是**同组里更晚**的消息，改用当前时间。
+        用户要求（10-20）：**实时消息用真实时间；补发/旧消息用完全原始的时间**，
+        绝不能把"补发一条 21:30 的消息"写成"转发时的 07:31"。
+
+        规则：
+          1. 标签距今 <= `label_now_window`（默认 300 秒）= 这条就是"刚刚发生"的 ——
+             App 的分组标签只画在组首，组内后续消息会**早 1~2 分钟**（实测），
+             所以这里用**当前时间**（轮询间隔只有 2~4 秒，误差远小于标签的偏差）；
+          2. 更早的标签 = 补发/积压消息 -> 用**原始标签**（绝对化成 `MM-DD HH:MM`），
+             不再替换成当前时间；
+          3. 完全没有标签 -> 用"上一条已入库消息的时间"（见 `_estimate_time_label`）。
         **身份（去重/历史）仍然用 App 标签**，只有显示时间变 —— 否则身份会跟着时间漂移，
         又会出现"同一条被反复转发"的老问题。
         """
-        if not label:
-            return self._estimate_time_label() or datetime.now().strftime("%m-%d %H:%M")
         now = time.time()
-        key = (contact or "", label)
-        first = self._label_used.get(key)
-        if first is None:
-            self._label_used[key] = now
-            return label
-        if now - first > self._label_stale_secs:
+        ident = self._abs_time_label(label) or (label or "")
+        age = self._label_age(ident)
+        if age is not None and age <= self._label_now_window:
             return datetime.fromtimestamp(now).strftime("%m-%d %H:%M")
-        return label
+        if ident:
+            return ident                       # 原始时间（绝对化），不改成"现在"
+        # 完全没有标签、也查不到"上一条已入库消息"时，只能给当前时间
+        return self._estimate_time_label() or datetime.now().strftime("%m-%d %H:%M")
 
     def _fwd_key(self, contact, text: str, label: str) -> tuple:
         """转发身份键（与实时/补发两条路径共用，必须同源）。"""
