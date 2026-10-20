@@ -310,6 +310,14 @@ class MessageBridge:
             self._catchup_screens = max(0, int(_xc.get("catchup_screens", 1) or 0))
         except (TypeError, ValueError):
             self._catchup_screens = 1
+        try:
+            # 每隔多少秒做一次**深度扫描**（无视已处理消息、多翻几屏），0 = 关闭
+            self._catchup_deep_every = max(0.0, float(
+                _xc.get("catchup_deep_every", 600) or 0))
+        except (TypeError, ValueError):
+            self._catchup_deep_every = 600.0
+        self._last_deep_ts = 0.0        # 上次深度扫描的时刻（monotonic）
+        self._force_deep = False        # 一次性补发（--catchup）时强制深度扫描
         _media = cfg.get("emoji") or {}
         try:
             self._media_retry_max = max(1, int(_media.get("wait_retries", 8) or 8))
@@ -346,6 +354,53 @@ class MessageBridge:
         self._load_cmd_done()
 
     # ------------------------------------------------------------------ 生命周期
+    def catchup_now(self, screens: int = 0) -> int:
+        """命令行一次性补发：确保在小天才聊天页，然后走与轮询相同的补发逻辑。
+
+        用途：桥接停过一段时间（ADB 掉线、子系统休眠、窗口失去焦点）后，把积压的图片与
+        文字按原顺序补齐。不启动轮询与 webhook，转发改为**同步执行**（没有工作线程）。
+        screens > 0 时覆盖 `xiaotiancai.catchup_screens`（向上多翻几屏）。
+        返回本次转发的条数。
+        """
+        contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
+        if screens and screens > 0:
+            self._catchup_screens = int(screens)
+        self._force_deep = True        # 命令行补发总是做深度扫描
+        self._catchup_max_age = 0      # 手动补发不受"太旧不补"限制（自动轮询仍然受限）
+        try:
+            with self._op_lock:
+                try:
+                    self.xtc.settle()
+                except Exception as e:  # noqa: BLE001 清弹窗失败不影响补发
+                    self._log("debug", f"[补发] 清理弹窗失败: {e}")
+                if not self.xtc.adb.is_in_foreground(self.xtc.package):
+                    self.xtc.launch()
+                    self.xtc.settle()
+                if not self.xtc.is_in_chat():
+                    if not self.xtc.open_chat(contact):
+                        self._log("error", f"[补发] 打不开与「{contact}」的聊天，未能补发")
+                        return 0
+                    self.xtc.settle()
+        except Exception as e:  # noqa: BLE001 界面准备失败就直接返回
+            self._log("error", f"[补发] 准备界面失败: {e}")
+            return 0
+        root = self.xtc._dump_with_retry(2)
+        if root is None or not self.xtc.is_in_chat(root):
+            self._log("error", "[补发] 当前不在聊天页，未能补发")
+            return 0
+        # 没有工作线程：把"入队"改成同步转发，逻辑（去重/原图/顺序）与线上一致
+        original = self._queue_forward
+
+        def _sync(c, t, l, sticker=None, display_label="", kind=""):
+            self._do_forward_job(c, t, l, sticker=sticker,
+                                 display_label=display_label, kind=kind)
+
+        self._queue_forward = _sync
+        try:
+            return self._forward_backlog(root, contact)
+        finally:
+            self._queue_forward = original
+
     def start(self) -> None:
         self.running = True
         self._thread = threading.Thread(target=self._poll_loop, name="xtc-poll", daemon=True)
@@ -643,7 +698,7 @@ class MessageBridge:
                     if not dup and not is_media and self._order_hold_active():
                         # 有图片/表情还在等原图：这条先压一下，否则它一定排在那张图前面（错位）。
                         # 不丢：等媒体就绪后由补发流程按顺序带出去（最多压 order_hold_secs 秒）。
-                        self._log("debug", f"[顺序] 有图片/表情在等原图，这条先压一下: {text[:24]!r}")
+                        self._log("debug", f"[顺序] 有图片/表情在等原图，这条先暂缓: {text[:24]!r}")
                         dup = True
                     if not dup:
                         self._log("info", f"[收到小天才消息] 来源={self._xtc_source(contact)} "
@@ -695,21 +750,49 @@ class MessageBridge:
             # 一个完整间隔就变成 6 秒一轮（检测延迟白白翻倍）。
             time.sleep(max(0.0, self._poll_interval - (time.monotonic() - loop_started)))
 
+    def _scroll_probe(self, root) -> int:
+        """当前界面能不能向上翻（返回可用的位移，翻不动返回 0）。只读，不真的滚。"""
+        try:
+            vb = self.xtc.chat_view_bounds(root)
+        except Exception:  # noqa: BLE001 读不到可视区 -> 视为不能翻
+            return 0
+        if not vb:
+            return 0
+        step = int((vb[3] - vb[1]) * 0.7) or 200
+        return step if step > 0 else 0
+
     def _in_store(self, contact: str, text: str, label: str = "") -> bool:
         """这条消息"库里有没有"（**补发**时的撞库判定，只认持久记录）。
 
-        依次看：长期已处理表（同一文本 + 同一时间标签）-> 本地消息库（同文本）-> 回声过滤。
+        依次看：长期已处理表（同一文本 + 同一时间标签）-> 本地消息库 -> 回声过滤。
 
-        补发这里刻意**保守**：同文本就算"有"（消息库/长期表都存了文本），
-        宁可少补一条同名消息，也不要往 QQ 刷屏。
+        **消息库必须按"文本 + 时间"判**：所有照片的文本都是"图片"、同一表情的名字也一样，
+        只按文本判会把"另一条同类消息"当成已处理，于是照片永远补不出来
+        （实测：10-19 21:30 的图片在 10-20 07:31 之后一直补不到）。
+        没有时间标签时（`label` 为空），媒体占位文本（"图片"/"表情…"）不按文本兜底。
         注意这里**不看**短期去重表（120 秒那个）：它只是防重发的节流，
         转发失败的消息不该因为它而被当成"已处理"（否则永远不会重试）。
         """
         if self.history.seen("xtc", contact or "", text, label or ""):
             return True
-        if self.msgs.seen(text, "xtc"):
+        if self.echo.is_echo(text):
             return True
-        return bool(self.echo.is_echo(text))
+        if self._is_media_placeholder(text):
+            # 媒体占位文本（"图片"/"表情X"）**必须按"文本 + 时间"判**：
+            # 所有照片的文本都是"图片"，只按文本判会把这批照片当成"已处理"，
+            # 于是照片永远补不出来（实测：10-19 21:30 的图片一直补不到）。
+            epoch = self._label_epoch(label) if label else None
+            if epoch is None:
+                return False               # 没有时间依据 -> 当作"库里没有"，让上层去补
+            return self._msg_stored(text, epoch, window=300.0)
+        # 普通文本：沿用保守规则"同文本即已处理"（宁可少补一条，也不要刷屏）
+        return self.msgs.seen(text, "xtc")
+
+    @staticmethod
+    def _is_media_placeholder(text: str) -> bool:
+        """这条文本是不是"媒体占位"（照片的"图片"、表情的"表情X"）。"""
+        t = (text or "").strip()
+        return t == "图片" or t.startswith("表情")
 
     def _forward_backlog(self, root, contact: str) -> int:
         """从最新一条往回走，把库里没有的消息补齐；**撞到库里已有的就停**。
@@ -744,22 +827,33 @@ class MessageBridge:
                 except Exception as e:  # noqa: BLE001 解析不出来就沿用旧的
                     self._log("debug", f"[补发] 重读后的界面解析失败: {e}")
             else:
-                self._log("debug", "[补发] 没能重新读界面，按现有快照取图")
+                self._log("debug", "[补发] 未能重新读界面，按现有快照取图")
 
         pending: list[tuple[str, str, dict | None, str]] = []
         scanned = 0
-        hit_store = False          # 本屏里撞到过"库里已有"的消息
-        stop_all = False           # 需要整体停止（超龄/超出扫描上限/媒体在等）
+        hit_store = False          # 本屏里撞到过"库里已有"的消息（日志/调试用）
+        stop_all = False           # 需要整体停止（超龄 / 超出扫描上限 / 媒体在等）
         steps: list[int] = []      # 往上翻过的位移，最后按原路滚回底部
+        # 深度扫描：普通轮询在"这一屏全是已处理的"时停；深度扫描无视已处理、一直翻到上限，
+        # 用来找回被埋在已处理消息下面的漏发消息（实测前一天的图片在 3 屏之上）。
+        deep = self._force_deep or (
+            self._catchup_deep_every > 0
+            and time.monotonic() - self._last_deep_ts >= self._catchup_deep_every)
+        if deep:
+            self._last_deep_ts = time.monotonic()
+        screens_limit = max(self._catchup_screens, 5) if deep else self._catchup_screens
+        # 深度扫描要跨屏，条数上限一并放宽（否则没翻两屏就到了上限）
+        scan_limit = max(self._catchup_scan, 120) if deep else self._catchup_scan
         if self._order_hold_active():
             # 有图片/表情在等原图：这一轮先不补发任何东西（否则更新的那条会插到图前面 = 错位）
             self._log("debug", "[补发] 有图片/表情在等原图，先压一轮不补发（保持顺序）")
             return 0
         try:
-            for _screen in range(self._catchup_screens + 1):
+            for _screen in range(screens_limit + 1):
+                screen_all_known = True
                 for it in reversed(bubbles):            # 从最新往回走
                     scanned += 1
-                    if self._catchup_scan and scanned > self._catchup_scan:
+                    if scan_limit and scanned > scan_limit:
                         stop_all = True
                         break
                     text = (it.get("text") or "").strip()
@@ -780,6 +874,19 @@ class MessageBridge:
                     ident = self._abs_time_label(own_lbl) or own_lbl
                     disp_lbl = self._display_time_label(
                         contact, ident or self._abs_time_label(disp_src) or disp_src)
+                    kind = ("image" if it.get("image")
+                            else ("sticker" if it.get("sticker") else "text"))
+                    # 没有时间标签的**媒体**：先尝试向上翻一屏把"这条消息自己的标签"找出来
+                    # （照片单独一条时，标签在可见区之外）。有了标签，身份才稳定、时间才是原始时间；
+                    # 早先试过"用原图文件的写入时间当身份"，但 App 会重写缓存文件（同一张照片
+                    # 出现过 2203046 与 2292962 两个文件、时间也不一样），会把同一条照片重复转发。
+                    if kind in ("sticker", "image") and not ident:
+                        # 只有在"确实翻得动"的时候才先去翻一屏找标签；翻不动（读不到可视区、
+                        # 或者当前环境不支持滑动）就按无标签照常补发，绝不能让照片被漏掉。
+                        if len(steps) < self._catchup_screens and self._scroll_probe(root):
+                            break            # 跳出本屏 -> 外层会上翻一屏再扫
+                        self._log("debug", f"[补发] 这条媒体没有时间标签，按无标签补发: "
+                                          f"{text[:24]!r}")
                     if self._catchup_max_age > 0:
                         age = self._label_age(ident or disp_lbl)
                         if age is not None and age > self._catchup_max_age:
@@ -825,8 +932,12 @@ class MessageBridge:
                         mkey = self._fwd_key(contact, text, ident)
                         if mkey in self._pending_media:
                             # 已经在"等媒体"队列里：交给 `_retry_pending_media`（那里掌握退避
-                            # 节奏，且不依赖它是不是最新一条）。这里直接停，不往上翻（否则顺序会反）。
+                            # 节奏，且不依赖它是不是最新一条）。普通轮询里直接停（保持顺序）；
+                            # 深度扫描里跳过它继续往上找，否则一条永远取不到原图的旧表情会
+                            # 把更上面的漏发消息全部挡住（实测：昨天的图片就是这样被挡住的）。
                             self._log("debug", f"[补发] 这条的媒体在等待重试，先跳过: {text[:24]!r}")
+                            if deep:
+                                continue
                             stop_all = True
                             break
                         sticker = self._capture_sticker(
@@ -837,12 +948,17 @@ class MessageBridge:
                             self._media_retry_failed(mkey, contact, text, ident, disp_lbl,
                                                      "界面上还是占位图、缓存里也还没有原图",
                                                      kind=kind)
+                            if deep:
+                                continue     # 深度扫描：跳过它，继续往上找更早的消息
                             stop_all = True
                             break
                     pending.append((text, ident, sticker, disp_lbl, kind))
+                    screen_all_known = False
 
-                if stop_all or hit_store:
-                    break                    # 撞到库/需要停 -> 说明已经接上了，不必再往上翻
+                if stop_all:
+                    break                    # 超龄 / 媒体在等 / 超出扫描上限
+                if screen_all_known and not deep:
+                    break                    # 这一屏全是已处理的 -> 已经接上了，不必再往上翻
                 if len(steps) >= self._catchup_screens:
                     break
                 # 这一屏全都没在库里 -> 上面很可能还有没读到的消息（实测：图片被顶到可见区
@@ -1531,7 +1647,7 @@ class MessageBridge:
                                   "随转发发给 QQ（缓存里没找到原图）")
                 return {"data": ref, "kind": "png", "animated": False,
                         "source": "screenshot", "label": "图片"}
-            self._log("info", f"[图片] 没能拿到这张照片（气泡 {item.get('bounds')}），按文字转发")
+            self._log("info", f"[图片] 未能拿到这张照片（气泡 {item.get('bounds')}），按文字转发")
             return None
         # ---------------- 表情包 ----------------
         if self._emoji_from_data and self._emoji_store is not None:
@@ -1872,12 +1988,12 @@ class MessageBridge:
             t0 = time.monotonic()
             staged, why = self.xtc.begin_blind_send(text)
             if staged:
-                self._log("info", f"[{tag}] 已先手输入（{time.monotonic() - t0:.1f}s），"
+                self._log("info", f"[{tag}] 已预输入（{time.monotonic() - t0:.1f}s），"
                                   "正在复核…")
                 with self._op_lock:
                     ok, why, retryable = self.xtc.end_blind_send(text)
                 if ok:
-                    self._log("info", f"[{tag}] 先手发送已复核通过"
+                    self._log("info", f"[{tag}] 预输入后发送已复核通过"
                                       f"（总 {time.monotonic() - t0:.1f}s）")
                 else:
                     skip_safe = not retryable
@@ -1885,7 +2001,7 @@ class MessageBridge:
                               f"[{tag}] 先手发送未确认（{why}）"
                               + ("，且不宜重发，按失败上报" if skip_safe else "，改用稳妥流程"))
             else:
-                self._log("debug", f"[{tag}] 先手输入未启用（{why}），走稳妥流程")
+                self._log("debug", f"[{tag}] 预输入未启用（{why}），走稳妥流程")
         # ② 稳妥流程（未走先手 / 先手没发出去且可安全重发时）
         if not ok and not skip_safe:
             with self._op_lock:

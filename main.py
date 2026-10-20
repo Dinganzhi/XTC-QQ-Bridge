@@ -178,6 +178,8 @@ def main() -> None:
     ap.add_argument("--check", action="store_true", help="环境自检后退出")
     ap.add_argument("--debug", choices=["dump-ui", "adb-info"], help="调试命令")
     ap.add_argument("--once", action="store_true", help="轮询一轮后退出")
+    ap.add_argument("--catchup", nargs="?", const="0", default=None, metavar="SCREENS",
+                    help="一次性补发积压消息后退出（可选：向上多翻几屏，默认按配置）")
     ap.add_argument("--no-adbkeyboard", action="store_true", help="跳过 ADBKeyBoard 自动安装")
     ap.add_argument("--paths", action="store_true", help="打印运行路径（配置/日志/数据目录）后退出")
     ap.add_argument("--verify", action="store_true",
@@ -348,6 +350,13 @@ def main() -> None:
         if not (wh_cfg.get("allow_from") or wh_cfg.get("allow_groups")):
             log.warning("webhook 白名单为空：QQ->小天才 将拒绝所有消息，"
                         "请在 config.yaml -> webhook.allow_from（私聊）/ allow_groups（群聊）配置")
+
+    if args.catchup is not None:
+        # 一次性补发：不启动轮询/webhook，只把"库里没有"的消息按原顺序补发出去。
+        # 用途：桥接停过一段时间（ADB 掉线、子系统休眠）后，把积压的图片/文字补齐。
+        n = bridge.catchup_now(screens=int(args.catchup or 0))
+        log.info(f"一次性补发结束：本次共转发 {n} 条")
+        return
 
     bridge.start()
     if args.once:

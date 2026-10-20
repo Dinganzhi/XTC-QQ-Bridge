@@ -1399,7 +1399,7 @@ class Xiaotiancai:
             else:
                 self.log("info", f"小天才 App 不在前台（当前={self.current_activity() or '未知'}），先启动它")
                 if not self.launch():
-                    self.log("warning", "打开聊天失败：小天才 App 没能拉到前台")
+                    self.log("warning", "打开聊天失败：小天才 App 未能拉到前台")
                     return False
                 self._dismiss_blockers()
                 if self.is_in_chat():
@@ -2173,7 +2173,7 @@ class Xiaotiancai:
                     return True
                 self.log("debug", f"第 {attempt + 1} 次学习发送按钮坐标未成功，重试一次")
                 time.sleep(0.5)
-            self.log("debug", "没能学出发送按钮坐标（首次发送仍走稳妥流程）")
+            self.log("debug", "未能学出发送按钮坐标（首次发送仍走稳妥流程）")
             return False
         except Exception as e:  # noqa: BLE001 学不到就退回稳妥流程
             self.log("debug", f"学习发送按钮坐标失败: {e}")
@@ -2211,7 +2211,7 @@ class Xiaotiancai:
             self._clear_chat_input(self._dump_with_retry(1) or snap)
             done = self._send_cache is not None
             if done:
-                self.log("info", "已学出发送按钮坐标（先手打字可用）")
+                self.log("info", "已学出发送按钮坐标（预输入可用）")
             return done
         except Exception as e:  # noqa: BLE001 学不到就退回稳妥流程
             self.log("debug", f"学习发送按钮坐标失败: {e}")
@@ -2300,7 +2300,7 @@ class Xiaotiancai:
         self._tap_send(node, root)
         if edit is not None:
             self._remember_send_point(self._bounds(edit), node, root)
-        self.log("info", "文字还留在输入框里（那一下没点中）-> 就着快照补点一次发送")
+        self.log("info", "文字仍留在输入框（本次点击未命中），依据现有界面快照补点发送一次")
         return self._confirm_sent(text, base_fail, base_own)
 
     def _switch_to_text_mode(self, root: ET.Element) -> bool:
@@ -2908,11 +2908,16 @@ class Xiaotiancai:
             return None
         return self._pick_bubble(items, "sticker", text, match_label)
 
-    @staticmethod
-    def _pick_bubble(items: list[dict], flag: str, text: str, match_label: str = ""):
-        """按 flag(image/sticker) + 文本 + 标签，从旧到新取**最后一条**命中的气泡。"""
+    def _pick_bubble(self, items: list[dict], flag: str, text: str, match_label: str = ""):
+        """按 flag(image/sticker) + 文本 + 标签，从旧到新取**最后一条**命中的气泡。
+
+        `match_label` 可能是**绝对**标签（补发路径传的是 `10-19 21:30`），而界面上的标签
+        是相对的（`昨天 21:30`）—— 两边都归一化成绝对时间再比，否则永远匹配不上
+        （实测：图片因此被判成"界面上没找到气泡"，补发失败）。
+        """
         want = (text or "").strip()
         want_lbl = (match_label or "").strip()
+        want_abs = (self._abs_time_label(want_lbl) or want_lbl) if want_lbl else ""
         hit = None
         for it in items:                      # 已按 y 从小到大（旧->新）
             if not it.get(flag):
@@ -2920,9 +2925,17 @@ class Xiaotiancai:
             if want and it.get("text") != want:
                 continue
             if want_lbl:
-                labels = {str(it.get("own_label") or "").strip(),
-                          str(it.get("time_label") or "").strip()}
-                if want_lbl not in labels:
+                cands = [str(it.get("own_label") or "").strip(),
+                         str(it.get("time_label") or "").strip()]
+                matched = False
+                for c in cands:
+                    if not c:
+                        continue
+                    if c == want_lbl or (want_abs and
+                                         (self._abs_time_label(c) or c) == want_abs):
+                        matched = True
+                        break
+                if not matched:
                     continue
             hit = it
         return hit

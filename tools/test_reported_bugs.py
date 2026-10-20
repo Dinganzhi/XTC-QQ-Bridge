@@ -1117,6 +1117,7 @@ def test_backlog_scans_past_known_messages() -> None:
         br2 = _backlog_bridge(root, fwd2,
                               bubbles(*[f"m{i}" for i in range(10)]), known=[])
         br2._catchup_scan = 3
+        br2._catchup_deep_every = 0    # 本用例只测普通轮询的条数上限
         br2._forward_backlog(None, "小宝")
         check("补发扫描有上限（catchup_scan）", len(br2._pending_media) == 0 and len(fwd2.sent) == 3,
               f"sent={len(fwd2.sent)}")
