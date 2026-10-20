@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import hashlib
 import json
 import os
 import queue
@@ -483,8 +484,10 @@ class MessageBridge:
                     f_sticker = job[4] if len(job) > 4 else None
                     f_disp = job[5] if len(job) > 5 else ""
                     f_kind = job[6] if len(job) > 6 else ""
+                    f_hash = job[7] if len(job) > 7 else ""
                     self._do_forward_job(f_contact, f_text, f_label, sticker=f_sticker,
-                                         display_label=f_disp, kind=f_kind)
+                                         display_label=f_disp, kind=f_kind,
+                                         media_hash=f_hash)
                 elif kind == "confirm":
                     # 小天才聊天里的"发送成功：…"回执：低优先级（见 _queue_confirm_xtc）
                     self._confirm_xtc_delivery(job[1])
@@ -727,6 +730,14 @@ class MessageBridge:
                             else:
                                 self._media_retry_clear(mkey)
                                 skip_media = False
+                                mhash = self._media_hash(sticker)
+                                if mhash and self.history.seen("xtc", contact or "",
+                                                               text, mhash):
+                                    self._log("info", "[跳过] 这张图片/表情之前已转发过"
+                                                      f"（内容相同），不再重复: {text[:24]!r}")
+                                    skip_media = True
+                                elif mhash and not label:
+                                    label = mhash      # 无标签：用内容哈希当身份
                         else:
                             sticker = None
                             skip_media = False
@@ -943,6 +954,18 @@ class MessageBridge:
                         sticker = self._capture_sticker(
                             root, text, near_epoch=self._label_epoch(disp_lbl or own_lbl),
                             match_label=ident or disp_lbl, kind=kind)
+                        if sticker is not None:
+                            mhash0 = self._media_hash(sticker)
+                            if mhash0 and self.history.seen("xtc", contact or "",
+                                                            text, mhash0):
+                                self._log("info", "[补发] 这张图片/表情之前已转发过"
+                                                  f"（内容相同），跳过: {text[:24]!r}")
+                                hit_store = True
+                                continue
+                            if mhash0 and not ident:
+                                # 没有时间标签：用**内容哈希**当身份。否则所有无标签图片
+                                # 都共用一个空身份，第二张就会被当成"刚试过"而漏发。
+                                ident = mhash0
                         if sticker is None:
                             # 媒体还没就绪：登记等待重试，这一条先不放行（不发"图片"两个字）
                             self._media_retry_failed(mkey, contact, text, ident, disp_lbl,
@@ -952,7 +975,8 @@ class MessageBridge:
                                 continue     # 深度扫描：跳过它，继续往上找更早的消息
                             stop_all = True
                             break
-                    pending.append((text, ident, sticker, disp_lbl, kind))
+                    pending.append((text, ident, sticker, disp_lbl, kind,
+                                    self._media_hash(sticker)))
                     screen_all_known = False
 
                 if stop_all:
@@ -1005,12 +1029,12 @@ class MessageBridge:
         self._log("info", f"[补发] 有 {len(pending)} 条消息库里没有，按时间顺序补发")
 
         sent = 0
-        for text, label, sticker, disp, kind in pending:
+        for text, label, sticker, disp, kind, mhash in pending:
             self._log("info", f"[收到小天才消息] 来源={self._xtc_source(contact)} "
                               f"时间={disp or label or '(无)'} 内容={text!r}（补发）")
             # 异步转发：不阻塞读屏（见 _queue_forward）
             self._queue_forward(contact, text, label, sticker=sticker,
-                                display_label=disp, kind=kind)
+                                display_label=disp, kind=kind, media_hash=mhash)
             sent += 1
         return sent
 
@@ -1060,7 +1084,7 @@ class MessageBridge:
 
     def _queue_forward(self, contact: str, text: str, label: str,
                        sticker: dict | None = None, display_label: str = "",
-                       kind: str = "") -> None:
+                       kind: str = "", media_hash: str = "") -> None:
         """把"小天才 -> QQ"的转发丢给工作线程，立刻返回。
 
         为什么异步：插件要等 QQ 侧真实发送结果才回包（最长 30 秒），同步做的话
@@ -1078,7 +1102,7 @@ class MessageBridge:
         # 注意：内容级护栏（_recent_fwd_seen）**不在这里**打点 —— 打点必须发生在
         # "真的要发出去"那一刻（见 _do_forward_job），否则刚入队的这条会被自己挡掉。
         self._job_queue.put(("forward", contact, text, label or "", sticker,
-                             display_label or label or "", kind or ""))
+                             display_label or label or "", kind or "", media_hash or ""))
 
     # ---- 媒体（图片/表情）还没下载完时的"等一会儿再取" ----
     def _media_retry_decision(self, key: tuple) -> str:
@@ -1234,6 +1258,11 @@ class MessageBridge:
         return False
 
     def _forward_suppressed(self, contact, text: str, label: str) -> bool:
+        if self._is_media_placeholder(text):
+            # 图片/表情的文本都是"图片""表情X"，按文本护栏会把**另一张**图片也挡掉
+            # （实测：两张不同的照片，五分钟内第二张被判成"刚转发过"而漏发）。
+            # 这类消息的重复判定交给内容哈希（见 _media_hash）。
+            return False
         """这条消息现在要不要跳过：正在补投 / 刚转发过同一内容。"""
         if self._has_active_plan(contact, text):
             return True
@@ -1305,9 +1334,31 @@ class MessageBridge:
             return age
         return None
 
-    def _mark_forwarded(self, contact, text: str, label: str, disp: str) -> None:
+    @staticmethod
+    def _media_hash(media: dict | None) -> str:
+        """媒体的内容哈希（`img:<16 位>`）：**没有时间标签时也能稳定复现的身份**。
+
+        为什么需要：照片气泡经常读不到时间标签，身份就会退回空串，同一条照片会被重复
+        转发、时间也会变成转发时刻（实测 21:38 的照片在 23:07 又发一遍、抬头写成 23:07）。
+        哈希只看图片内容，与标签无关，天然稳定。
+        """
+        if not media:
+            return ""
+        data = media.get("data")
+        if not data:
+            return ""
+        try:
+            return "img:" + hashlib.sha1(data).hexdigest()[:16]
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _mark_forwarded(self, contact, text: str, label: str, disp: str,
+                        media_hash: str = "") -> None:
         """记入长期历史 + 本地消息库（此后轮询不会再把它当成"库里没有"的消息）。"""
         self.history.mark("xtc", contact or "", text, label or "")
+        if media_hash:
+            # 同一张图片/表情无论标签怎么变，都不再重复转发
+            self.history.mark("xtc", contact or "", text, media_hash)
         self._remember_fwd_clock(contact, text, label)
         epoch = self._label_epoch(disp)
         # 消息库去重必须按**这条消息的身份**（文本 + 时间），不能只按文本：
@@ -1444,7 +1495,7 @@ class MessageBridge:
 
     def _do_forward_job(self, contact: str, text: str, label: str,
                         sticker: dict | None = None, display_label: str = "",
-                        kind: str = "") -> None:
+                        kind: str = "", media_hash: str = "") -> None:
         """小天才 -> QQ 的**第一次**尝试（之后由补投线程只补失败的目标）。
 
         label 是身份标签（去重/历史都用它），display_label 只用于给 QQ 那条消息的抬头时间。
@@ -1467,11 +1518,11 @@ class MessageBridge:
             self._log("warning", f"转发异常: {e}")
             ok, sent, failed = False, [], []
         if ok:
-            self._mark_forwarded(contact, text, label, disp)
+            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash)
             return
         if sent:
             # 部分成功：**立刻**记历史（否则标签一变就会被当成新消息，重发一遍私聊）
-            self._mark_forwarded(contact, text, label, disp)
+            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash)
         self._schedule_fwd_plan(contact, text, label, disp, sticker, failed, kind=kind)
 
     def _warm_emoji_store(self) -> None:
@@ -1835,13 +1886,19 @@ class MessageBridge:
                 ok_all = False
         if ok_all and not queued:
             # 标记原文 + 格式化消息：多实例/重启后也不会再转发同一条
-            self.echo.mark(text)
+            # 媒体占位文本（"图片"/"表情X"）不能记：所有照片的文本都是"图片"，
+            # 一旦记进回声表，后续每张照片都会被当成"自己发的"而跳过。
+            if not self._is_media_placeholder(text):
+                self.echo.mark(text)
             self.echo.mark(message)
             # 小天才侧送达确认（发送成功：<内容>）走**低优先级任务**，不堵住后续发送
             self._queue_confirm_xtc(message)
         elif ok_all and queued:
             # 已交出去但没确认：同样记历史避免重复，但不发"发送成功"（不撒谎）
-            self.echo.mark(text)
+            # 媒体占位文本（"图片"/"表情X"）不能记：所有照片的文本都是"图片"，
+            # 一旦记进回声表，后续每张照片都会被当成"自己发的"而跳过。
+            if not self._is_media_placeholder(text):
+                self.echo.mark(text)
             self.echo.mark(message)
             self._log("info", "小天才侧送达确认已跳过：本次转发未确认（插件排队中）")
         return ok_all, sent, failed
@@ -2013,7 +2070,10 @@ class MessageBridge:
 
     def _do_send_job(self, text: str, user_id: str, group_id: str, request_id: str) -> None:
         """实际执行 QQ->小天才 发送 + 送达确认（工作线程内，按入队顺序）。"""
-        self.echo.mark(text)
+        # 媒体占位文本（"图片"/"表情X"）不能记：所有照片的文本都是"图片"，
+        # 一旦记进回声表，后续每张照片都会被当成"自己发的"而跳过。
+        if not self._is_media_placeholder(text):
+            self.echo.mark(text)
         contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
         if not contact:
             self._log("error", "反向转发需要 config.yaml -> target.xtc_contact")

@@ -1586,6 +1586,55 @@ def test_forward_text_uses_kind_for_prefix() -> None:
         cleanup(root)
 
 
+def test_media_hash_prevents_reforward() -> None:
+    """同一张图片（内容相同）即使标签读不到，也只补发一次。
+
+    用户实测（10-20 23:07）：21:38 已经发过的照片，在 23:07 又发了一遍，抬头还写成了 23:07 ——
+    因为照片气泡没有时间标签时身份会退回空串，标签一变就被当成新消息。
+    现在给媒体加了**内容哈希身份**（`img:<sha1 前 16 位>`）：内容相同就不再发。
+    """
+    root = tmp_root()
+    sent: list[str] = []
+
+    class _Fwd:
+        def send(self, t, i, m):
+            sent.append(m)
+            return True
+
+        def send_detail(self, t, i, m):
+            sent.append(m)
+            return True, ""
+
+    bub = {"text": "图片", "own_label": "", "time_label": "",
+           "image": True, "sticker": False}
+    try:
+        fwd = _Fwd()
+        br = _backlog_bridge(root, fwd, [dict(bub)])
+        br._catchup_max_age = 0
+        br._catchup_screens = 0            # 不向上翻屏
+        br._catchup_deep_every = 0
+        br._capture_sticker = lambda *a, **k: {
+            "data": b"same-photo-bytes", "kind": "png", "animated": False,
+            "source": "screenshot"}
+        n1 = br._forward_backlog(ET.fromstring(node_xml("")), "小宝")
+        check("没有时间标签的图片第一次会补发", n1 == 1 and len(sent) == 1,
+              f"n={n1} sent={sent}")
+        sent.clear()
+        n2 = br._forward_backlog(ET.fromstring(node_xml("")), "小宝")
+        check("同一张图片不会再补发（按内容哈希判重）",
+              n2 == 0 and not sent, f"n={n2} sent={sent}")
+        # 换一张图（内容不同、同样没有标签）应当照常补发
+        br._capture_sticker = lambda *a, **k: {
+            "data": b"another-photo-bytes", "kind": "png", "animated": False,
+            "source": "screenshot"}
+        sent.clear()
+        n3 = br._forward_backlog(ET.fromstring(node_xml("")), "小宝")
+        check("内容不同的新图片仍会补发", n3 == 1 and len(sent) == 1,
+              f"n={n3} sent={sent}")
+    finally:
+        cleanup(root)
+
+
 def test_backlog_scrolls_up_for_older_messages() -> None:
     """补发时会**向上多翻一屏**：被顶到可见区之外的旧消息（例如那张图片）也能补到。
 
@@ -1656,7 +1705,7 @@ def test_backlog_scrolls_up_for_older_messages() -> None:
         br.echo = bridge_mod.EchoFilter(store_path=str(root / f"{prefix}echo.json"))
         br._cmd_done_file = str(root / f"{prefix}cmd_done.json")
         br._catchup_max_age = 0                      # 本用例只看"能不能翻到"
-        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": (
+        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="", media_hash="": (
             br._do_forward_job(c, t, l, sticker=sticker, display_label=display_label))
         br.msgs.append("xtc", "小宝", "十小时前的")   # 最老的那条已经在库里
 
@@ -2808,7 +2857,7 @@ def test_media_pending_retry_when_original_arrives_late() -> None:
         br._emoji_photo = False           # 只走"气泡截图"这条路，避免依赖缓存
         br._emoji_store = None
         queued: list = []
-        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": queued.append(
+        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="", media_hash="": queued.append(
             (c, t, l, sticker, display_label))
 
         # ① 原图还没就绪：登记等待，**不转发**
@@ -3313,7 +3362,7 @@ def test_backlog_media_uses_fresh_dump() -> None:
         adb.bridge = br
         br._emoji_from_data = True
         # 测试里没有工作线程：入队改成同步执行（与 _backlog_bridge 一致）
-        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": br._do_forward_job(
+        br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="", media_hash="": br._do_forward_job(
             c, t, l, sticker=sticker, display_label=display_label)
         br._emoji_store = type("S", (), {
             "find_photo": lambda self, **k: None,
@@ -3355,7 +3404,7 @@ def test_backlog_media_uses_fresh_dump() -> None:
         br2._cmd_done_file = str(root / f"{prefix}cmd_done2.json")
         adb2.bridge = br2
         br2._emoji_from_data = True
-        br2._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": br2._do_forward_job(
+        br2._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="", media_hash="": br2._do_forward_job(
             c, t, l, sticker=sticker, display_label=display_label)
         real_shot = _png_pattern(136, 180, (235, 235, 235), (20, 20, 100, 100), (40, 30, 200))
         adb2.screencap_crop_png = lambda box: real_shot
@@ -5290,8 +5339,8 @@ def _backlog_bridge(root: Path, fwd, bubbles: list, known: list | None = None,
     br._catchup_max = catchup_max
     # 线上是"入队 + 工作线程异步转发"；测试里没有工作线程，
     # 这里把入队替换成同步执行，逻辑（撞库判定/入库/顺序）保持一致。
-    br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="": br._do_forward_job(
-        c, t, l, sticker=sticker, display_label=display_label)
+    br._queue_forward = lambda c, t, l, sticker=None, display_label="", kind="", media_hash="": br._do_forward_job(
+        c, t, l, sticker=sticker, display_label=display_label, media_hash=media_hash)
     for t in (known or []):
         br.msgs.append("xtc", "小宝", t)
     return br
@@ -5561,6 +5610,7 @@ def main() -> int:
                test_sticker_kind_comes_from_the_bubble,
                test_forward_text_uses_kind_for_prefix,
                test_backlog_scrolls_up_for_older_messages,
+               test_media_hash_prevents_reforward,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,
