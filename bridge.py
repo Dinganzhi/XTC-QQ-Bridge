@@ -2398,7 +2398,10 @@ class MessageBridge:
         entries = self.msgs.recent(1000)          # 先取全部，再做来源过滤
         if source:
             entries = self._match_source(entries, source)
-        entries = entries[-count:]
+        # 消息库是**按转发先后**追加的（补发会让顺序与真实时间不一致），
+        # 这里按消息自己的时间排序后再取最近 N 条，历史列表才是时间顺序。
+        entries = sorted(entries, key=lambda e: float(e.get("t") or 0))
+        entries = entries[-max(1, int(count)):]
         if not entries:
             reply = (f"小天才历史消息（来源：{source}）：暂无本地消息记录"
                      if source else
@@ -2428,6 +2431,8 @@ class MessageBridge:
         来源明确写出「手表」「QQ私聊 <号>」「QQ群 <群号>」，末尾附来源统计。
         - 日期用明确数字（昨天/前天 等已由归档时间戳换算成具体日期，如 09-01）；
         - 跳过系统提示（发送成功/发送失败）与命令文本（防御性过滤）；
+        - 图片/表情按类型渲染成 `[图片]`、`[表情] 名字`（消息库里存的是占位文本
+          "图片"/"表情X"，直接输出会让人以为那是一条文本消息）；
         - 超长从最旧截断。"""
         sys_prefixes = self._system_msg_prefixes()
         lines: list[str] = []
@@ -2439,6 +2444,10 @@ class MessageBridge:
             if any(text.startswith(p) for p in sys_prefixes):
                 continue
             if self._xtc_cmd_prefix and text.startswith(self._xtc_cmd_prefix):
+                continue
+            if text.startswith("图片消息"):
+                # 图片气泡的无障碍描述（"图片消息，双击查看"）偶尔会被当成一条文本读进来，
+                # 它和那条 `[图片]` 是同一件事，历史里只保留一条。
                 continue
             sender = (e.get("sender") or "").strip()
             source = (e.get("source") or "").strip()
@@ -2456,7 +2465,12 @@ class MessageBridge:
                 dt = datetime.now()
             short = self._short_source(source)
             tally[short] = tally.get(short, 0) + 1
-            lines.append(f"[{dt:%m-%d} {dt:%H:%M}] [{short}] {sender}: {text}")
+            # 图片/表情：库里存的是占位文本（"图片"/"表情X"），这里渲染成类型标记，
+            # 否则历史列表里看起来就是一条说"图片"的文本消息（用户反馈的问题）。
+            body = text
+            if e.get("kind") == "xtc" and self._is_media_placeholder(text):
+                body = self._typed_body(text)
+            lines.append(f"[{dt:%m-%d} {dt:%H:%M}] [{short}] {sender}: {body}")
         if not lines:
             return "小天才历史消息：暂无本地消息记录"
         dropped = 0

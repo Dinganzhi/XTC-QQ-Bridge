@@ -1266,9 +1266,9 @@ def test_history_store_keeps_every_media() -> None:
         br._mark_forwarded("小宝", "普通文字", "10-12 20:33", "10-12 20:33")
         same = len([e for e in br.msgs.recent(10) if e.get("text") == "普通文字"])
         check("同一条重放不会重复入库", same == 1, f"same={same}")
-        check("历史格式化里真的能看到图片/表情",
-              "图片" in br._format_history_text(br.msgs.recent(10), 10)
-              and "表情开心" in br._format_history_text(br.msgs.recent(10), 10))
+        hist = br._format_history_text(br.msgs.recent(10), 10)
+        check("历史格式化里能看到图片/表情（带类型标记）",
+              "[图片]" in hist and "[表情] 开心" in hist, hist)
     finally:
         cleanup(root)
 
@@ -1582,6 +1582,38 @@ def test_forward_text_uses_kind_for_prefix() -> None:
         check("手打文本原样转发（不加前缀）",
               bool(sent) and "表情包发我" in sent[-1] and "[表情]" not in sent[-1],
               str(sent[-1:]))
+    finally:
+        cleanup(root)
+
+
+def test_history_shows_media_markers() -> None:
+    """`/小天才 历史消息` 里，图片/表情要显示成 `[图片]`、`[表情] 名字`。
+
+    用户反馈（10-21）：QQ 端历史消息记录里只有文本，看不到图片/表情。
+    原因：消息库里存的是占位文本（"图片"/"表情X"），历史格式化时原样输出，
+    看起来就像一条说"图片"普通文本；另外按"转发先后"取最近 N 条会让时间乱序。
+    现在按时间排序，并把占位文本渲染成类型标记。
+    """
+    from datetime import datetime, timedelta
+
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=None, forwarder=None, logger=None)
+        br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
+        base = datetime.now() - timedelta(hours=2)
+        rows = [("图片", 0), ("表情晕", 1), ("普通文字", 2), ("图片", 3)]
+        for text, minutes in rows:
+            br.msgs.append("xtc", "小宝", text,
+                           t=(base + timedelta(minutes=minutes)).timestamp(),
+                           source=br._xtc_source("小宝"), source_id="小宝")
+        entries = sorted(br.msgs.recent(50), key=lambda e: float(e.get("t") or 0))
+        out = br._format_history_text(entries, 50)
+        check("图片渲染成 [图片] 标记", out.count("[图片]") == 2, out)
+        check("表情渲染成 [表情] 名字", "[表情] 晕" in out, out)
+        check("普通文字保持原样", "普通文字" in out, out)
+        check("顺序按消息时间（不是转发先后）",
+              out.index("[图片]") < out.index("[表情] 晕") < out.index("普通文字"), out)
     finally:
         cleanup(root)
 
@@ -5611,6 +5643,7 @@ def main() -> int:
                test_forward_text_uses_kind_for_prefix,
                test_backlog_scrolls_up_for_older_messages,
                test_media_hash_prevents_reforward,
+               test_history_shows_media_markers,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,
