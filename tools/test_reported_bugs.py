@@ -1586,6 +1586,70 @@ def test_forward_text_uses_kind_for_prefix() -> None:
         cleanup(root)
 
 
+def test_sticker_reveal_fallback_keeps_image() -> None:
+    """气泡被列表裁到时先滚进可视区；**滚动后定位失败**也要用滚动前抠下的那张。
+
+    实测（10-22 07:29 表情惊讶）：气泡贴边被裁 -> 滚动 -> App 自动滚回底部 ->
+    重新定位失败 -> 返回 None -> 等图 8 次 -> 最后只发出"[表情] 惊讶"，没有图。
+    现在改成：滚动前先抠一张备用，滚动失败就用它（可能被裁掉一点，但内容对）。
+    """
+    view = n(cls="androidx.recyclerview.widget.RecyclerView",
+             rid="com.xtc.watch:id/rv_chat_msg_chat", bounds="[22,178][472,576]")
+    bubble = n(cls="android.widget.ImageView", text="",
+               desc="小宝发的消息,表情惊讶",
+               rid="com.xtc.watch:id/chat_msg_item_content",
+               bounds="[78,178][198,280]")
+    first = node_xml(view + bubble)
+    second = node_xml(view + bubble)
+    shots = {"n": 0}
+
+    class _Xtc:
+        IMAGE_TEXT = "图片"
+        STATE_CHAT = "chat"
+        adb = None
+
+        def sticker_of_latest(self, root, text="", match_label=""):
+            # 第一次能定位；滚动后（第二次起）定位失败（模拟 App 自动滚回底部）
+            shots["locate"] = shots.get("locate", 0) + 1
+            if shots["locate"] > 1:
+                return None
+            return {"text": text or "表情惊讶", "bounds": (78, 178, 198, 280),
+                    "time_label": "", "own_label": ""}
+
+        def chat_view_bounds(self, root):
+            return (22, 178, 472, 576)
+
+        def bubble_clipped(self, root, bounds):
+            return True
+
+        def capture_sticker(self, bounds):
+            shots["n"] += 1
+            return png_bytes
+
+        def scroll_chat_by(self, vb, step):
+            return True
+
+        def _dump_with_retry(self, attempts=1):
+            return ET.fromstring(second)
+
+        def _is_system_msg(self, text):
+            return False
+
+    # 必须是有内容的真 PNG：空白图会被 looks_blank 判掉，兜底就用不上
+    png_bytes = _png_pattern(120, 120, (255, 255, 255),
+                             (20, 20, 100, 100), (30, 60, 200))
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=_Xtc(), forwarder=None, logger=None)
+        got = br._capture_sticker(ET.fromstring(first), "表情惊讶", kind="sticker")
+        check("滚动后定位失败时仍然拿到图（用滚动前那张）",
+              bool(got) and bool(got.get("data")), str(got and {k: v for k, v in got.items() if k != "data"}))
+        check("确实在滚动前抠过图", shots.get("n", 0) >= 1, f"captures={shots.get('n')}")
+    finally:
+        cleanup(root)
+
+
 def test_history_shows_media_markers() -> None:
     """`/小天才 历史消息` 里，图片/表情要显示成 `[图片]`、`[表情] 名字`。
 
@@ -5644,6 +5708,7 @@ def main() -> int:
                test_backlog_scrolls_up_for_older_messages,
                test_media_hash_prevents_reforward,
                test_history_shows_media_markers,
+               test_sticker_reveal_fallback_keeps_image,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,

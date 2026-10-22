@@ -1585,6 +1585,10 @@ class MessageBridge:
                 return None
 
         item = _locate(root)
+        # 滚动前的快照与位置：万一"滚动取完整图"失败（App 会自动滚回底部，重新定位失败），
+        # 就退回这里取图 —— 宁可截半张，也不要让表情只剩一句"[表情] 名字"。
+        root0, item0 = root, item
+        ref0 = None            # 滚动前先抠一张备用（可能被裁，但内容一定是对的）
         # **气泡被消息列表裁掉时先滚进可视区**：实测贴边那条抠下来只有半张（原图比对
         # 0.78 不过 -> 发出去的是半张 png），往下滚一屏后同一张能到 0.99。
         # 抓完图按原路滚回去（列表停在中间会让轮询读不到新消息）。
@@ -1596,6 +1600,15 @@ class MessageBridge:
             except Exception as e:  # noqa: BLE001 拿不到可视区就按"没被裁"处理
                 self._log("debug", f"读消息列表可视区失败（按未裁处理）: {e}")
                 vb = None
+        clipped0 = bool(item and vb and self.xtc.bubble_clipped(root, item["bounds"]))
+        if clipped0:
+            try:
+                ref0 = self.xtc.capture_sticker(item["bounds"])
+            except Exception as e:  # noqa: BLE001 抠图失败就只走滚动那条路
+                self._log("debug", f"[媒体] 滚动前预抠图失败: {e}")
+                ref0 = None
+            if ref0 and imgtool.looks_blank(ref0):
+                ref0 = None
         for _ in range(2):
             if not item or not vb or not self.xtc.bubble_clipped(root, item["bounds"]):
                 break
@@ -1614,12 +1627,23 @@ class MessageBridge:
             self._log("info", f"[媒体] 这条气泡被消息列表裁到了，已滚动 {len(steps)} 次取完整图"
                               "（抓完会滚回底部）")
         if item is None and not is_image:
-            # 表情气泡本来定位到了、滚动后却找不到了（列表又动了/被顶走）：**不许按时间猜缓存** ——
-            # 实测这条路上猜出过一张 72x72 的小图（错发）。返回 None，让调用方按"稍后重试"处理。
-            self._log("info", "[表情包] 滚动后没再找到这条表情气泡，先不取图（稍后重试，避免发错）")
+            # 表情气泡本来定位到了、滚动后却找不到了（App 自动滚回底部 / 被顶走）：
+            # **不许按时间猜缓存**（实测这条路上猜出过一张 72x72 的小图），
+            # 但可以先回到**滚动前那份快照**把界面上那张抠下来 —— 半张也强于没有图。
             if steps:
                 for step in reversed(steps):
                     self.xtc.scroll_chat_by(vb, -step)
+            if item0 is not None and ref0:
+                # 用**滚动前就抠好的那一张**（那时坐标还是准的）：可能被裁掉一点，
+                # 但内容一定是对的；绝不按旧坐标重新抠（列表已经动过了）。
+                self._log("info", "[表情包] 滚动取完整图失败，改用滚动前抠下的那张"
+                                  "（可能被裁掉一点，但内容是对的）")
+                try:
+                    return self._capture_media_now(root0, text, name, is_image, item0,
+                                                   near_epoch=near_epoch, ref=ref0)
+                except Exception as e:  # noqa: BLE001 兜底也失败就放弃
+                    self._log("debug", f"[表情包] 用滚动前的图收尾失败: {e}")
+            self._log("info", "[表情包] 没能取到这张表情的图，先不取图（稍后重试，避免发错）")
             return None
         try:
             return self._capture_media_now(root, text, name, is_image, item,
@@ -1630,7 +1654,8 @@ class MessageBridge:
                 self.xtc.scroll_chat_by(vb, -step)
 
     def _capture_media_now(self, root, text: str, name: str, is_image: bool, item,
-                           near_epoch: float | None = None) -> dict | None:
+                           near_epoch: float | None = None,
+                           ref: bytes | None = None) -> dict | None:
         """真正取图（气泡已确保完整可见）。拆出来是为了让"滚动 -> 取图 -> 滚回"成对出现。"""
         aspect = None
         if item and item.get("bounds"):
@@ -1640,8 +1665,7 @@ class MessageBridge:
         # **先把界面上的气泡抠下来**：聊天会自动滚动（新消息/送达确认都会把列表顶上去），
         # 任何慢操作（建表情名索引 3~4 秒、扫缓存）之后再抠，坐标就对不上了 —— 实测
         # 晚几秒抠到的是别处的**空白占位图**，转发出去就是一张灰底问号（用户会以为发错了）。
-        ref = None
-        if item and item.get("bounds"):
+        if ref is None and item and item.get("bounds"):
             need_ref = True
             if self._emoji_store is not None and name and not is_image:
                 try:
