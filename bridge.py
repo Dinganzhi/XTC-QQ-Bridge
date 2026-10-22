@@ -318,6 +318,9 @@ class MessageBridge:
         except (TypeError, ValueError):
             self._catchup_deep_every = 600.0
         self._last_deep_ts = 0.0        # 上次深度扫描的时刻（monotonic）
+        # 上次**成功读到聊天界面**的时刻（墙钟）；用来判断"中断了多久"，
+        # 从而把"太旧不补"的年龄上限放宽到中断时长（见 _stale_limit）。
+        self._last_ok_read_ts = 0.0
         self._force_deep = False        # 一次性补发（--catchup）时强制深度扫描
         _media = cfg.get("emoji") or {}
         try:
@@ -565,6 +568,8 @@ class MessageBridge:
                     if state == self.xtc.STATE_CHAT:
                         # 记下"最近一次确认过就在聊天页"（含标题），"先手打字"快发据此放行
                         self._chat_ok_ts = time.monotonic()
+                        if root is not None:
+                            self._last_ok_read_ts = time.time()
                         self._chat_ok_title = self.xtc.chat_title(root)
                         contact, text, time_label, own_text, own_recent = \
                             self.xtc.get_latest_message(root)
@@ -898,15 +903,16 @@ class MessageBridge:
                             break            # 跳出本屏 -> 外层会上翻一屏再扫
                         self._log("debug", f"[补发] 这条媒体没有时间标签，按无标签补发: "
                                           f"{text[:24]!r}")
-                    if self._catchup_max_age > 0:
+                    stale_limit = self._stale_limit()
+                    if stale_limit > 0:
                         age = self._label_age(ident or disp_lbl)
-                        if age is not None and age > self._catchup_max_age:
+                        if age is not None and age > stale_limit:
                             # 太旧的积压消息不转发：它必然排在已发过的更新消息后面（错位）。
                             # 只提示一次并记住，随后静默；再往上的消息只会更旧，本轮直接停止。
                             if not self.history.seen("xtc", contact or "", text, ident):
                                 self._log("info",
                                           f"[补发] 这条是 {age / 60:.0f} 分钟前的消息，超过 "
-                                          f"catchup_max_age（{self._catchup_max_age / 60:.0f} 分钟），"
+                                          f"catchup_max_age（{stale_limit / 60:.0f} 分钟），"
                                           f"跳过不转发: {text[:24]!r}")
                                 self.history.mark("xtc", contact or "", text, ident)
                             stop_all = True
@@ -1316,6 +1322,22 @@ class MessageBridge:
         while len(self._fwd_clock) > 200:      # 只留最近若干条，避免无限增长
             self._fwd_clock.pop(next(iter(self._fwd_clock)), None)
 
+    def _stale_limit(self) -> float:
+        """当前允许补发的最大年龄（秒）：0 = 不限。
+
+        规则：取 `catchup_max_age` 与"距上次成功读界面已过去的时间 + 60 秒"的较大者 ——
+        桥接中断（窗口失去焦点、子系统休眠）期间错过的消息都在这个窗口内，不会被当成
+        "旧消息"丢掉；而连续运行时仍然只补 `catchup_max_age` 以内的。
+        """
+        if self._catchup_max_age <= 0:
+            return 0.0
+        limit = self._catchup_max_age
+        if self._last_ok_read_ts:
+            gap = time.time() - float(self._last_ok_read_ts)
+            if gap > 0:
+                limit = max(limit, gap + 60.0)
+        return limit
+
     def _stale_age(self, *labels) -> float | None:
         """这条消息是不是"太旧"了（超过 `catchup_max_age`）？返回年龄（秒）或 None。
 
@@ -1323,14 +1345,15 @@ class MessageBridge:
         是"九点四十八分才发了个四点半的消息"，而且这条**必然**排在已发过的更新消息后面（错位）。
         默认 30 分钟以内才转发；想全部都要就把 `xiaotiancai.catchup_max_age` 设 0。
         """
-        if self._catchup_max_age <= 0:
+        limit = self._stale_limit()
+        if limit <= 0:
             return None
         age: float | None = None
         for lb in labels:
             a = self._label_age(lb) if lb else None
             if a is not None:
                 age = a if age is None else min(age, a)
-        if age is not None and age > self._catchup_max_age:
+        if age is not None and age > limit:
             return age
         return None
 

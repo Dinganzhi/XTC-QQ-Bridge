@@ -1586,6 +1586,36 @@ def test_forward_text_uses_kind_for_prefix() -> None:
         cleanup(root)
 
 
+def test_stale_limit_grows_with_outage() -> None:
+    """`catchup_max_age` 要随"中断时长"放宽，否则长时间读不到界面会把积压消息全部丢掉。
+
+    实测（10-22）：08:04–23:28 一直读不到界面，恢复后积压消息全被判成"超过 30 分钟"
+    而跳过，用户以为"所有消息都没转发"。现在允许的最大年龄 = max(30 分钟, 中断时长 + 60 秒)。
+    """
+    from datetime import datetime, timedelta
+
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=None, forwarder=None, logger=None)
+        br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
+        br._cmd_done_file = str(_paths(root)["done"])
+        br._catchup_max_age = 1800
+        br._last_ok_read_ts = 0.0
+        check("连续运行：上限就是 catchup_max_age", br._stale_limit() == 1800, br._stale_limit())
+        br._last_ok_read_ts = time.time() - 3 * 3600      # 中断了 3 小时
+        limit = br._stale_limit()
+        check("中断 3 小时后上限放宽到 3 小时以上", limit >= 3 * 3600, limit)
+        two_hours = (datetime.now() - timedelta(hours=2)).strftime("%m-%d %H:%M")
+        check("中断期间的消息不再算太旧", br._stale_age(two_hours) is None, two_hours)
+        br._last_ok_read_ts = time.time()                 # 刚读过：恢复严格
+        check("刚读过界面时，2 小时前的仍算旧", br._stale_age(two_hours) is not None)
+        br._catchup_max_age = 0
+        check("catchup_max_age=0 时仍然不限年龄", br._stale_limit() == 0)
+    finally:
+        cleanup(root)
+
+
 def test_sticker_reveal_fallback_keeps_image() -> None:
     """气泡被列表裁到时先滚进可视区；**滚动后定位失败**也要用滚动前抠下的那张。
 
@@ -5709,6 +5739,7 @@ def main() -> int:
                test_media_hash_prevents_reforward,
                test_history_shows_media_markers,
                test_sticker_reveal_fallback_keeps_image,
+               test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
                test_backlog_media_uses_fresh_dump,
