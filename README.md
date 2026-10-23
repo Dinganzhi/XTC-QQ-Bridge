@@ -153,7 +153,7 @@
 | 4. 一次性补发积压消息 | `python main.py --catchup [屏数]`（不启动轮询：把"库里没有"的消息按原顺序补发后退出，默认向上多翻 5 屏） |
 | 5. 打印当前界面控件 | `python main.py --debug dump-ui` |
 | 6. 打开 config.yaml | — |
-| 7. 查看日志 | 本次启动的日志文件：`logs/bridge-YYYYmmdd-HHMMSS.log`（启动日志里会打印完整路径） |
+| 7. 查看日志 | 本次启动的日志文件：`logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log`（启动日志里会打印完整路径） |
 
 也支持参数透传（不进菜单，直接跑完退出）：
 
@@ -407,8 +407,8 @@ xiaotiancai:
 # ---------- 日志 ----------
 logging:
   level: "INFO"                # INFO 即可看到"收到 QQ 命令 / 收到小天才消息 / 发送结果"
-  file: "logs/bridge.log"      # 文件名主干；实际文件名会追加启动时间
-  per_run: true                # 每次启动新建日志文件（logs/bridge-YYYYmmdd-HHMMSS.log）
+  file: "logs/xtc-qq-bridge.log"      # 文件名主干；实际文件名会追加启动时间
+  per_run: true                # 每次启动新建日志文件（logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log）
   keep_runs: 0                 # 0 = 从不清理（默认：每次启动都新建并一直保留）
                                # 设成 N 才只保留最近 N 次启动的日志
 
@@ -522,13 +522,13 @@ WSA（含 WSABuilds / MagiskOnWSA）跑久了会"隔三差五断网"：宿主侧
 日志默认**每次启动新建一个文件**，文件名包含启动时刻：
 
 ```
-logs/bridge-20261018-194217.log
+logs/xtc-qq-bridge-20261018-194217.log
 ```
 
 - 启动日志第二行会打印本次日志的完整路径；排查问题时请先确认所查看的是哪一次启动的文件。
 - **旧日志不会被自动删除**（`logging.keep_runs: 0`）：每次启动都新建一份并一直保留。
   只有把 `logging.keep_runs` 设成正数 N 时，才会只保留最近 N 次启动的日志。
-  旧的固定文件名 `logs/bridge.log` 同样不会被删除。如需恢复"始终追加到同一文件"的行为，
+  旧的固定文件名 `logs/xtc-qq-bridge.log` 同样不会被删除。如需恢复"始终追加到同一文件"的行为，
   将 `logging.per_run` 设为 `false`。
 - 单个文件超过 5 MB 时按 `.log.1`、`.log.2`、`.log.3` 滚动（源码运行与编译版行为一致）。
 - 同一秒内重复启动会自动加序号（如 `-2`），不会覆盖已有日志。
@@ -613,7 +613,7 @@ logs/bridge-20261018-194217.log
 | 昵称映射 | App 联系人名 -> 转发到 QQ 时显示的自定义昵称（不用 App 原始姓名） |
 | 消息过滤 | 只转发手表侧消息（按 App 的发送方标注识别），自己发的/UI 文案/网络提示一律不转发 |
 | 送达确认 | 转发结果如实回报：成功「发送成功：…」，失败「发送失败：…」；确认消息以「发送成功/发送失败」开头，不会被再次转发 |
-| 可观测 | 收到的 QQ 命令、收到的小天才命令/消息、每次发送结果均以 INFO 记录（控制台 + 本次启动的日志文件 `logs/bridge-YYYYmmdd-HHMMSS.log`） |
+| 可观测 | 收到的 QQ 命令、收到的小天才命令/消息、每次发送结果均以 INFO 记录（控制台 + 本次启动的日志文件 `logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log`） |
 
 ## 4. 常见故障速查
 
@@ -1090,7 +1090,7 @@ python packaging/nuitka/build.py --out dist --jobs 8 --lto yes
 D:\xtc\
 |-- xtc-qq-bridge-1.0.0-windows-x86_64.exe   # 你的程序
 |-- config.yaml        # 首次运行自动从模板生成（编辑它：QQ 号/联系人/账密/token）
-|-- logs\bridge.log    # 日志（写在 exe 旁边，不会随临时目录被删）
+|-- logs\xtc-qq-bridge.log    # 日志（写在 exe 旁边，不会随临时目录被删）
 `-- data\             # 消息库/去重状态（重启不丢）
 ```
 

@@ -491,7 +491,6 @@ class ADBController:
         # 避免轮询线程与发送线程同时 dump 导致 "already registered"。
         self._dump_lock = threading.Lock()
         # 心跳类日志的节流时间戳（key -> monotonic），避免"设备 offline"每 10 秒刷一次
-        self._log_once_ts: dict[str, float] = {}
         # "屏幕刚确认过亮着"的有效期：poke_awake 每 10 秒一次，这 12 秒内不再重复查电源状态
         self._awake_until = float("-inf")
         self._awake_ttl = 12.0
@@ -734,14 +733,6 @@ class ADBController:
             return False
         except AdbError:
             return False
-
-    def _log_throttled(self, key: str, msg: str, interval: float = 60.0) -> None:
-        """同一类提示最多每 interval 秒打一次（心跳类调用会非常频繁）。"""
-        last = self._log_once_ts.get(key, float("-inf"))
-        if time.monotonic() - last < interval:
-            return
-        self._log_once_ts[key] = time.monotonic()
-        self.logger.warning(msg)
 
     def ensure_connected(self, retries: int = 3, delay: float = 2.0,
                          auto_launch_wsa: bool = False,

@@ -34,7 +34,7 @@ def _resolve(name: str) -> Path:
         return p if p.is_absolute() else Path.cwd() / p
 
 
-def run_log_path(base: str = "logs/bridge.log", keep: int = 0) -> Path:
+def run_log_path(base: str = "logs/xtc-qq-bridge.log", keep: int = 0) -> Path:
     """为**本次启动**生成一个新的日志文件路径。
 
     为什么每次启动一个新文件（用户要求）：桥接通常长时间挂在后台，单个日志会越来越长，
@@ -139,7 +139,7 @@ def _tolerant_stream(stream):
 
 
 def setup_logger(level: str = "INFO", file: str | None = None,
-                 name: str = "xtc-bridge", console: bool = True) -> logging.Logger:
+                 name: str = "xtc-qq-bridge", console: bool = True) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:  # 已初始化过
         return logger

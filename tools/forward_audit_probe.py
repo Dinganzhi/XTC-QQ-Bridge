@@ -8,7 +8,14 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-lines = Path("logs/bridge.log").read_text(encoding="utf-8", errors="replace").splitlines()
+# 每次启动一个日志文件（logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log），默认读最新的那份
+cands = sorted(Path("logs").glob("xtc-qq-bridge-*.log"), key=lambda x: x.stat().st_mtime)
+if not cands:
+    cands = sorted(Path("logs").glob("*.log"), key=lambda x: x.stat().st_mtime)
+if not cands:
+    raise SystemExit("logs/ 下没有日志文件")
+lines = cands[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+print(f"读取日志: {cands[-1]}")
 rows = []
 for l in lines:
     m = re.match(r"^(2026-\d\d-\d\d \d\d:\d\d:\d\d).*\[转发成功\] (group:\d+|private:\d+) <- "

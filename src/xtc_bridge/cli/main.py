@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 import threading
@@ -185,7 +184,7 @@ def main() -> None:
     # 配置文件：命令行 > exe 旁边 > 当前目录 > 打包资源目录；缺失时从模板生成一份
     cfg_path = runtime_paths.resolve_config(args.config)
     if runtime_paths.ensure_config(cfg_path):
-        setup_logger(level="INFO", file="logs/bridge.log")
+        setup_logger(level="INFO", file="logs/xtc-qq-bridge.log")
         print(f"[初始化] 已从模板生成配置文件: {cfg_path}")
         print("         请先编辑它（QQ 号、联系人、账密、token），然后重新运行。")
         sys.exit(2)
@@ -197,11 +196,11 @@ def main() -> None:
     # 速度/稳定档位：把 performance.profile 的默认值**填空**进 cfg（用户写死的键不动）
     from .. import speed_profile
     _profile, _filled, _pinned = speed_profile.apply_profile(cfg)
-    # 日志文件：**每次启动新建一个**，按启动时间命名（logs/bridge-YYYYmmdd-HHMMSS.log）。
+    # 日志文件：**每次启动新建一个**，按启动时间命名（logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log）。
     # 默认**不清理任何旧日志**；需要留最近 N 份时把 logging.keep_runs 设成 N。
     # 想在单文件里连续追加，把 logging.per_run 设成 false。
     _log_cfg = cfg.get("logging") or {}
-    _log_file = _log_cfg.get("file") or "logs/bridge.log"
+    _log_file = _log_cfg.get("file") or "logs/xtc-qq-bridge.log"
     if _log_cfg.get("per_run", True):
         from ..utils.logger import run_log_path
         try:
@@ -211,7 +210,7 @@ def main() -> None:
             print(f"[警告] 生成本次日志文件失败（改用固定日志文件）: {e}")
     log = setup_logger(level=_log_cfg.get("level", "INFO"), file=_log_file)
     if not args.no_banner:
-        log.info(f"小天才 <-> QQ 桥接 v{__version__} | 配置: {cfg_path}")
+        log.info(f"xtc-qq-bridge v{__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
         log.info(f"日志文件: {log.handlers[-1].baseFilename if log.handlers else '-'}")

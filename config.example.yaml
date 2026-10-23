@@ -160,8 +160,8 @@ xiaotiancai:
 # ---------- 日志 ----------
 logging:
   level: "INFO"
-  file: "logs/bridge.log"                        # 文件名主干；实际文件名会追加启动时间
-  per_run: true                                  # 每次启动新建日志文件（logs/bridge-YYYYmmdd-HHMMSS.log）
+  file: "logs/xtc-qq-bridge.log"                        # 文件名主干；实际文件名会追加启动时间
+  per_run: true                                  # 每次启动新建日志文件（logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log）
                                                  # false = 始终追加到同一个文件
   keep_runs: 0                                   # 0 = **从不清理**（默认，旧日志一直保留）
                                                  # 设成 N 则只保留最近 N 次启动的日志

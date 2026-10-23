@@ -240,7 +240,7 @@ def describe() -> str:
         f"  可写        : {_writable(APP_DIR)}",
         f"配置          : {resolve_config()}",
         f"  已存在      : {resolve_config().exists()}",
-        f"日志          : {LOG_DIR / 'bridge.log'}",
+        f"日志          : {LOG_DIR / 'xtc-qq-bridge.log'}（每次启动另建带时间的文件）",
         f"消息库        : {DATA_DIR / 'msg_log.json'}",
         f"捆绑 APK      : {bundled_apk() or '(未找到)'}",
         f"插件目录      : {plugin_dir()}",
