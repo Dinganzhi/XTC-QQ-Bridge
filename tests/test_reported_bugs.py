@@ -12,7 +12,7 @@
   8. 自动登录失败/超时会安排后续重试（不会"一次失败就永久不再尝试"）
   9. 收到的 QQ 命令/回调一定在控制台留痕；日志不会因为个别字符编码失败而整条丢失
 
-用法：python tools/test_reported_bugs.py
+用法：python tests/test_reported_bugs.py
 """
 from __future__ import annotations
 

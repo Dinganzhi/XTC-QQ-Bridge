@@ -9,7 +9,7 @@
   - 文本注入：以输入框真实内容校验；明文被吞 -> base64 救回；全失败 -> 老实返回 False
   - 剪贴板：回读不一致（WSA 把宿主剪贴板内容读回来）时绝不按 KEYCODE_PASTE
 
-用法：python tools/test_integration.py
+用法：python tests/test_integration.py
 """
 from __future__ import annotations
 

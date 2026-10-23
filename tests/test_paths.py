@@ -5,7 +5,7 @@
 出现"日志和消息库写进临时目录、退出就丢"这类难查的问题。这些用例不需要设备，
 也不需要真的编译：直接构造目录验证解析顺序与兜底逻辑。
 
-用法：python tools/test_paths.py
+用法：python tests/test_paths.py
 """
 from __future__ import annotations
 

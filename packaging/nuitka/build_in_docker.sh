@@ -44,7 +44,7 @@ docker run --rm "${PLATFORM_ARG[@]}" -v "$SRC":/app -w /app -e NUITKA_CACHE_DIR=
               >/dev/null 2>&1 || echo "[容器] 警告：apt 安装失败，若镜像自带编译器可忽略"
         fi
         python -m pip install -q -U -r requirements-build.txt
-        python tools/build_nuitka.py '"$ARGS"'
+        python packaging/nuitka/build.py '"$ARGS"'
     '
 
 echo
