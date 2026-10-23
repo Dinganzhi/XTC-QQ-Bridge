@@ -33,7 +33,7 @@ import json
 import struct
 import time
 
-from utils import imgtool
+from .utils import imgtool
 
 # 表情包解包目录（相对 App 的外部数据根目录）
 EMOJI_SUBDIR = "files/xtcdata/telwatch/weichat/emoji"

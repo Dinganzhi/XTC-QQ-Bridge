@@ -29,20 +29,20 @@ import zlib
 from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
     pass
 
-import bridge as bridge_mod  # noqa: E402
-import qq_webhook  # noqa: E402
-import adb_controller as ac  # noqa: E402
-import utils.logger as logger_mod  # noqa: E402
-from adb_controller import ADBController, AdbError  # noqa: E402
-from msg_log import MessageLog  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge import bridge as bridge_mod  # noqa: E402
+from xtc_bridge import qq_webhook  # noqa: E402
+from xtc_bridge import adb_controller as ac  # noqa: E402
+from xtc_bridge.utils import logger as logger_mod  # noqa: E402
+from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_bridge.msg_log import MessageLog  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 RC = {"pass": 0, "fail": 0}
 
@@ -685,7 +685,7 @@ def test_recent_snapshot_window() -> None:
 
 def test_plain_injection_skips_dump() -> None:
     """纯注入（input_text_plain）只发广播、不 dump：省下的就是发送链路里的 3 秒。"""
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     cmds: list = []
     dumps = {"n": 0}
@@ -716,7 +716,7 @@ def test_ime_check_is_cached() -> None:
     实测：这条链路上真正的 adb 开销只有 ~0.4s（settings 查询 0.18 + 广播 0.23），
     所以能省就省；IME 不会自己变，缓存 60 秒，切输入法/注入失败时作废。
     """
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     cmds: list = []
     ctl.shell = lambda cmd, timeout=None: (cmds.append(cmd), "com.android.adbkeyboard/.AdbIME")[1]
@@ -740,7 +740,7 @@ def test_launch_app_skips_hard_failures_fast() -> None:
     而旧实现给每个策略 25 秒前台等待 —— 撞上它就白等 25 秒，这正是
     "发一条要十几秒"里的一段。现在单策略最多等 6 秒，且命令自己报错就立刻换。
     """
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     ctl.package_installed = lambda pkg: True
     ctl.is_in_foreground = lambda pkg, use_cache=True: False
@@ -1185,7 +1185,7 @@ def test_speed_profiles() -> None:
 
     规则：档位**只填空**（用户写死的键一律不动），非法档位名回落到 balanced。
     """
-    import speed_profile as sp
+    from xtc_bridge import speed_profile as sp
 
     cfg = {"performance": {"profile": "fast"}}
     name, filled, _pinned = sp.apply_profile(cfg)
@@ -1457,7 +1457,7 @@ def test_run_log_path_per_startup() -> None:
     """
     import tempfile
 
-    from utils.logger import run_log_path
+    from xtc_bridge.utils.logger import run_log_path
 
     with tempfile.TemporaryDirectory(prefix="xtc-logtest-") as tmp:
         try:
@@ -1852,7 +1852,7 @@ def test_png_encoder_and_crop() -> None:
     校验方式：自己把 PNG 解回来（解析 chunk + zlib 解压 + 反 filter=0），
     比只看"字节非空"可靠得多。
     """
-    from utils import pngtool
+    from xtc_bridge.utils import pngtool
 
     def decode_png(png: bytes) -> tuple:
         check("PNG 签名正确", png.startswith(pngtool.PNG_SIGNATURE))
@@ -1902,7 +1902,7 @@ def test_png_encoder_and_crop() -> None:
 
 def test_screencap_header_parsing() -> None:
     """screencap 原始像素的头部解析：12 字节（Android 9+）与 16 字节（多 colorspace）都要认。"""
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     w, h = 3, 2
     pixels = bytes(range(1, w * h * 4 + 1))
@@ -1967,7 +1967,7 @@ def test_sticker_detection_and_capture() -> None:
 
 def test_emoji_store_reads_original_file() -> None:
     """表情**原文件**读取：优先缓存里刚写进来的那张（动图保动画），其次表情包目录按名字匹配。"""
-    from emoji_store import EmojiStore
+    from xtc_bridge.emoji_store import EmojiStore
 
     def gif(w=90, h=90, frames=11, loop=True, pad=b"") -> bytes:
         head = b"GIF89a" + struct.pack("<HH", w, h) + b"\x00" * 10
@@ -2343,7 +2343,7 @@ def test_wake_before_relaunch() -> None:
     check("没息屏时不乱唤醒", "wake_up" not in adb2.calls, str(adb2.calls))
 
     # ③ wake_if_asleep 的语义：睡着才唤醒，并记住"这块屏会睡"（之后 dump 前主动先唤醒）
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     ctl.screen_on = lambda: False
     ctl.wake_up = lambda: (setattr(ctl, "_woke", getattr(ctl, "_woke", 0) + 1), True)[1]
@@ -2614,7 +2614,7 @@ def _fake_shot(w: int = 120, h: int = 120) -> bytes:
 
 def _png_pattern(w: int, h: int, rgb: tuple, box: tuple, color: tuple) -> bytes:
     """在纯色底上加一个方块 —— 有结构才能验证"结构相关性"这一路。"""
-    from utils.pngtool import encode_png_rgb
+    from xtc_bridge.utils.pngtool import encode_png_rgb
     x1, y1, x2, y2 = box
     rows = []
     for y in range(h):
@@ -2811,7 +2811,7 @@ def test_photo_original_pick_is_conservative() -> None:
     照片 2000x3000，纯 Python 解不动（实测只解 DC 要 37 秒），所以这条路不比像素，
     靠"比气泡大 + 形状一致 + 时间对得上"筛，并且有第二张同样符合的就放弃。
     """
-    from emoji_store import EmojiStore
+    from xtc_bridge.emoji_store import EmojiStore
 
     root = "/sdcard/Android/data/com.xtc.watch/cache"
     now = 1790599568
@@ -3030,8 +3030,8 @@ def test_check_uses_configured_adb() -> None:
     """
     import yaml
 
-    import adb_controller as ac
-    import main as main_mod
+    from xtc_bridge import adb_controller as ac
+    from xtc_bridge.cli import main as main_mod
 
     tmp = tmp_root()
     cfg_file = tmp / ".bugtest_checkcfg.yaml"
@@ -3553,7 +3553,7 @@ def test_blank_bubble_shot_is_not_sent() -> None:
     （主色占比 0.84、亮度标准差 **9.0**，而真贴纸是 0.19 / **81.5**）。
     这种情况一律按文字转发（"表情X"），宁可没有图，也不要发一张灰底问号。
     """
-    from utils import imgtool
+    from xtc_bridge.utils import imgtool
 
     blank = _png_pattern(120, 120, (240, 240, 240), (10, 10, 70, 70), (252, 252, 252))
     real = _png_pattern(120, 120, (235, 235, 235), (20, 20, 100, 100), (40, 30, 200))
@@ -3573,7 +3573,7 @@ def test_blank_bubble_shot_is_not_sent() -> None:
         return (242, 242, 242) if y < 100 else (246, 246, 246)
 
     flat_rows = [bytes(b"".join(bytes(_px_flat(x, y)) for x in range(120))) for y in range(120)]
-    from utils.pngtool import encode_png_rgb
+    from xtc_bridge.utils.pngtool import encode_png_rgb
     flat = encode_png_rgb(120, 120, flat_rows)
     dom_m, std_m = imgtool.content_stats(flat)
     check("纯聊天背景（极平/纯色）判为空白",
@@ -3627,11 +3627,11 @@ def test_blank_bubble_shot_is_not_sent() -> None:
 def test_image_decoders_match_fixtures() -> None:
     """PNG / GIF / JPEG 解码必须与"真编码器"的结果对得上。
 
-    夹具（tools/fixtures/pattern.*）由 `tools/make_image_fixtures.ps1` 用 .NET
+    夹具（tests/fixtures/pattern.*）由 `packaging/nuitka/make_image_fixtures.ps1` 用 .NET
     System.Drawing 画好、存盘、**再从存出来的文件里读回像素**当标准答案；
     JPEG 因为只解 DC 系数，标准答案取 8x8 块均值（容差放到量化误差级别）。
     """
-    from utils import imgtool
+    from xtc_bridge.utils import imgtool
 
     fx = Path(__file__).resolve().parent / "fixtures"
     exp = json.loads((fx / "pattern_expected.json").read_text(encoding="utf-8"))
@@ -3682,8 +3682,8 @@ def test_cache_pick_verifies_pixels_against_screen() -> None:
     "弹吉他的乌龟"动图 —— 尺寸方正、还是动图，老启发式完全分不出来。
     现在改成：**像不像由像素说话**，都不像就不发缓存里的图（退回截图，静止但一定对）。
     """
-    from emoji_store import EmojiStore, MATCH_OK
-    from utils import imgtool
+    from xtc_bridge.emoji_store import EmojiStore, MATCH_OK
+    from xtc_bridge.utils import imgtool
 
     root = "/sdcard/Android/data/com.xtc.watch"
     now = 1790322520
@@ -4620,7 +4620,7 @@ def test_webhook_action_requests_reach_bridge() -> None:
     action 分派**之前**就 return 了 —— 于是历史消息/登录/初始化/自动登录在插件路径下
     全部被吞掉，日志还把原因写成"未转发（空消息或来源不在白名单）"，误导成白名单问题。
     """
-    import qq_webhook as wh_mod
+    from xtc_bridge import qq_webhook as wh_mod
 
     logs: list = []
 
@@ -4752,7 +4752,7 @@ def test_history_action_end_to_end() -> None:
     用**真的** MessageBridge（不只假桥）跑一遍，确保用户那条
     "/小天才 历史消息" 真能拿到内容并回到 QQ。
     """
-    import qq_webhook as wh_mod
+    from xtc_bridge import qq_webhook as wh_mod
 
     class _Silent:
         def info(self, m):
@@ -5032,7 +5032,7 @@ def test_dump_prefers_full_hierarchy() -> None:
 
     某些镜像上完整 dump 会被 Killed，所以仍保留压缩版兜底 + "记住成功策略"。
     """
-    from adb_controller import ADBController as _C
+    from xtc_bridge.adb_controller import ADBController as _C
     ctl = _C(adb_path="adb")
     names = [n for n, _ in ctl._dump_strategies()]
     check("默认先试完整 dump", names[0] == "file-full", str(names))
@@ -5106,7 +5106,7 @@ def test_plugin_send_reports_real_reason() -> None:
     """
     import socket
     import urllib.error
-    import plugin_client as pcmod
+    from xtc_bridge import plugin_client as pcmod
 
     class _Resp:
         def __init__(self, body: str, status: int = 200):
@@ -5360,7 +5360,7 @@ def test_monotonic_sentinels_survive_fresh_boot() -> None:
     "上次时刻"初值写 0.0 时 `now - 0.0 >= 间隔` 不成立 -> 该告警的被降级成 debug、
     该进聊天的被跳过。修法：一律用 -inf 作初值。
     """
-    import xiaotiancai as xmod
+    from xtc_bridge import xiaotiancai as xmod
     real_monotonic = xmod.time.monotonic
     rec = Recorder()
     try:
@@ -5395,8 +5395,8 @@ def test_nuitka_version_args_are_numeric() -> None:
     Nuitka 的 --file-version/--product-version 只接受数字，产物文件名才用完整版本号。
     """
     import sys as _sys
-    _sys.path.insert(0, str(Path.cwd() / "tools"))
-    import build_nuitka as b
+    _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
+    import build as b
 
     check("1.0.0-alpha.1 -> 1.0.0.1", b.numeric_version("1.0.0-alpha.1") == "1.0.0.1",
           b.numeric_version("1.0.0-alpha.1"))
@@ -5419,8 +5419,8 @@ def test_nuitka_version_args_are_numeric() -> None:
 def test_build_driver_has_single_target() -> None:
     """编译驱动现在只有主程序一个目标（WSA 网络守护已移除）。"""
     import sys as _sys
-    _sys.path.insert(0, str(Path.cwd() / "tools"))
-    import build_nuitka as b
+    _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
+    import build as b
 
     check("只剩主程序一个编译目标", list(b.TARGETS) == ["bridge"], str(list(b.TARGETS)))
     t_all, note_all = b.select_targets("all", True)

@@ -14,14 +14,14 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
     pass
 
-import runtime_paths as rp  # noqa: E402
+from xtc_bridge import runtime_paths as rp  # noqa: E402
 
 RC = {"pass": 0, "fail": 0}
 # 临时目录放工作目录下：受限沙箱里系统 %TEMP% 子目录可能不可写（项目已有测试同样处理）

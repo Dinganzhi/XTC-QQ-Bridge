@@ -49,8 +49,14 @@ def _detect_frozen() -> tuple[bool, str]:
 
 IS_FROZEN, FROZEN_MODE = _detect_frozen()
 
-# 只读资源目录（打包进来的 config.example.yaml / *.apk / 插件源码都在这里）
-BUNDLE_DIR: Path = Path(__file__).resolve().parent
+# 项目根目录（源码运行时：<repo>/src/xtc_bridge/runtime_paths.py -> 上两级）
+SOURCE_ROOT: Path = Path(__file__).resolve().parents[2]
+
+# 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：
+# 源码运行 = 仓库根目录；Nuitka = 可执行文件所在目录
+BUNDLE_DIR: Path = (
+    ((_launcher_exe().parent if _launcher_exe() else Path(sys.executable).resolve().parent))
+    if IS_FROZEN else SOURCE_ROOT)
 
 
 def _launcher_exe() -> Path | None:
@@ -107,7 +113,7 @@ def _resolve_app_dir() -> tuple[Path, str]:
             return base, f"exe 所在目录（{FROZEN_MODE}）"
         fallback = _user_data_dir()
         return fallback, "exe 所在目录不可写，改用用户数据目录"
-    base = BUNDLE_DIR
+    base = SOURCE_ROOT
     if _writable(base):
         return base, "项目目录（源码运行）"
     return _user_data_dir(), "项目目录不可写，改用用户数据目录"
@@ -134,6 +140,12 @@ def resource(*parts: str) -> Path:
         if p.exists():
             return p
     return BUNDLE_DIR.joinpath(*parts)
+
+
+def assets_dir() -> Path | None:
+    """资源目录（图标、捆绑 APK 等）：`<根>/assets`。"""
+    p = resource("assets")
+    return p if p.is_dir() else None
 
 
 def resource_dir(name: str) -> Path | None:
@@ -198,12 +210,16 @@ def looks_like_apk(p: Path) -> bool:
 
 
 def bundled_apk() -> Path | None:
-    """打包/项目目录里捆绑的 ADBKeyBoard APK（没有则 None，绝不联网下载）。"""
+    """打包/项目目录里捆绑的 ADBKeyBoard APK（没有则 None，绝不联网下载）。
+
+    新布局把 APK 放在仓库根目录的 `assets/`（打包时同目录一起带上），
+    所以先找 `assets/<名字>`，再退回根目录（兼容旧布局与手动放置）。
+    """
     for name in APK_NAMES:
         for base in (BUNDLE_DIR, APP_DIR, Path.cwd()):
-            p = base / name
-            if looks_like_apk(p):
-                return p
+            for cand in (base / "assets" / name, base / name):
+                if looks_like_apk(cand):
+                    return cand
     return None
 
 

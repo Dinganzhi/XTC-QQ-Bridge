@@ -136,7 +136,7 @@ else
 fi
 
 # ---------- 7. ADBKeyBoard 本地 APK（仅提示，不联网下载） ----------
-if [ -f "$SRC/keyboardservice-debug.apk" ] || [ -f "$SRC/ADBKeyBoard.apk" ]; then
+if [ -f "$SRC/assets/keyboardservice-debug.apk" ] || [ -f "$SRC/keyboardservice-debug.apk" ] || [ -f "$SRC/ADBKeyBoard.apk" ]; then
     ok "ADBKeyBoard APK 已就位（设备上没有时会自动安装这个本地文件）"
 else
     warn "项目目录里没有 ADBKeyBoard 的 APK（keyboardservice-debug.apk / ADBKeyBoard.apk）。"

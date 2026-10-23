@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-import runtime_paths
+from . import runtime_paths
 
 _SHARD_DIGITS = 4
 

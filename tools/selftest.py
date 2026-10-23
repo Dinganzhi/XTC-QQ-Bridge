@@ -7,13 +7,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
-from adb_controller import ADBController, AdbError  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
-from utils.logger import setup_logger  # noqa: E402
+from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge.utils.logger import setup_logger  # noqa: E402
 
 
 def main() -> int:

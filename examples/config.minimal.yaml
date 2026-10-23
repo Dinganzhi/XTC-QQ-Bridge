@@ -1,0 +1,30 @@
+# 最小可用配置示例（复制为仓库根目录的 config.yaml 后填写）
+# 只包含"跑起来必需"的项；其余全部用默认值，需要时再看 ../config.example.yaml
+
+adb:
+  path: ""                       # 留空自动探测；也可写 "C:\platform-tools\adb.exe"
+  port: 5555                     # WSA 用 wsa_port: 0（自动读注册表 / 58526）
+
+xiaotiancai:
+  package: "com.xtc.watch"
+  login:
+    phone: ""                    # 手表 App 的手机号
+    password: ""                 # 密码（不是验证码）
+
+target:
+  xtc_contact: ""                # 小天才 App 里的联系人昵称（如 "张三"）
+  qq_private: []                 # 私聊 QQ 号，可留空
+  qq_group: []                   # 群号，可留空
+
+forward:
+  mode: "plugin"                 # plugin = 走 AstrBot 插件
+  plugin:
+    base_url: "http://127.0.0.1:11452"
+    token: "change-me-bridge-token"   # 与插件配置 token 一致
+
+webhook:
+  enabled: true
+  port: 5000
+  token: "change-me-webhook-token"    # 与插件 python_callback_token 一致
+  allow_from: []                 # 私聊白名单（空 = 全部拒绝）
+  allow_groups: []               # 群白名单（空 = 全部拒绝）

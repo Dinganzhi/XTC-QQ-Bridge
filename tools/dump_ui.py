@@ -15,11 +15,10 @@ import argparse
 import re
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
-from adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
 
 
 def run(adb: ADBController, filter_re: str = "", tap_index: int = -1,

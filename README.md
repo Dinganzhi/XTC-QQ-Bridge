@@ -15,7 +15,7 @@
 > **WSA/WSABuilds 断网（仅 Windows）**：该问题源于 WSA 自身，桥接会自动重连 ADB；
 > 若确实断网，可在 WSA 设置中点击「修复」或重启子系统（详见「WSA 断网怎么办」）。
 > **无需安装 Python**：可使用 Nuitka 编译为机器码单文件（Windows / Linux，x86_64 / arm64）。
-> 执行 `build.bat` 或 `bash build.sh` 即可生成产物（详见「五、编译成单文件可执行程序」）。
+> 执行 `packaging/nuitka/build_windows.bat` 或 `bash packaging/nuitka/build_linux.sh` 即可生成产物（详见「五、编译成单文件可执行程序」）。
 
 ```
 小天才 App (Android 环境)  --ADB-->  Python 桥脚本  --HTTP-->  AstrBot 插件  -->  QQ
@@ -93,7 +93,7 @@
   ```
   桥接侧无需特殊配置（`adb.port: 5555` 默认即可）；也可以设 `adb.auto_launch_emulator: true`
   让桥接在找不到设备时自动 `waydroid session start`。
-  装 APK：`waydroid app install keyboardservice-debug.apk` 或 `adb install -r 小天才.apk`。
+  装 APK：`waydroid app install assets/keyboardservice-debug.apk` 或 `adb install -r 小天才.apk`。
   注意：Waydroid 里 Android 与宿主**不共享剪贴板**，所以"剪贴板兜底"通道通常是不可用的，
   中文输入依赖 ADBKeyBoard（`main.py --check` 会打印 `clipboard_ok`）。
 - **Genymotion**：启动实例后 `adb connect 127.0.0.1:5555`（多实例端口递增）。
@@ -186,69 +186,72 @@ python main.py                           # (4) 启动桥接
 ## 5. 目录结构
 
 ```
-project/
-|-- main.py                  # 入口（--check / --debug dump-ui|adb-info / --once / --paths / --verify / --install-plugin）
-|-- version.py               # 版本号唯一来源（编译脚本/CI 也读它）
-|-- runtime_paths.py         # 运行路径解析：源码运行与 Nuitka 单文件都要用（配置/日志/数据放哪）
-|-- config.yaml              # 配置（含中文注释）；模板见 config.example.yaml
-|-- adb_controller.py        # ADB 封装：连接（WSA/Waydroid/模拟器/真机）/点击/滑动/截图/UI 解析/启动/文本注入
-|-- xiaotiancai.py           # 小天才 App 操作：启动/登录检测/账密登录/弹窗清理/打开聊天/发送/读取
-|-- bridge.py                # 轮询调度：去重 + 回声过滤 + 断线重连 + 转发 + 自动登录 + 界面自愈
-|-- plugin_client.py         # AstrBot 插件客户端（转发/通知）
-|-- qq_webhook.py            # 反向回调服务（纯 stdlib）：接插件命令/消息 -> 桥（每次回调都有日志）
-|-- msg_log.py               # 本地消息库（/小天才 历史消息 的数据源）
-|-- utils/
-|   |-- logger.py            # 日志（控制台 + 滚动文件；控制台编码兜底，日志不会整条丢失）
-|   |-- pngtool.py           # 纯标准库 PNG 编码（截图裁块发图片用）
-|   |-- imgtool.py           # 纯标准库图片解码（PNG/GIF/JPEG）+ 相似度（核对表情原图用）
-|   `-- deduplicate.py       # LRU 去重 + 文件化回声过滤
-|-- emoji_store.py           # 表情原图：表情包按名字 + 缓存按**像素核对**（防"货不对板"）
-|-- tools/
-|   |-- dump_ui.py           # 实机 UI 探测（填映射表用）
-|   |-- ui_report.py         # 把当前界面控件导出成文本文件（排查控件 id / 中文不乱码）
-|   |-- live_probe.py         # 实机一键体检：连接/界面/登录态/联系人/读取/注入（不发真实消息）
-|   |-- emoji_live_probe.py   # 实机验证表情取图：抠气泡截图 -> 逐候选比像素 -> 导出挑中的图
-|   |-- image_live_probe.py   # 实机验证图片（照片）转发：定位图片气泡 -> 取原图/截图并导出
-|   |-- photo_diag.py         # 照片转发失败的现场诊断：逐张打印缓存/照片目录候选被哪道门拦下
-|   |-- bubble_dump_probe.py  # 打印聊天窗口里每个气泡的原始字段 + 列表可视区/是否被裁
-|   |-- emoji_clip_probe.py   # 复现"气泡被列表裁掉"并验证自动滚进可视区后能取到原图
-|   |-- dump_compare_probe.py # 对比"完整 dump / 压缩 dump"的耗时与节点（确认压缩版能不能用）
-|   |-- profile_probe.py      # 打印各速度档位下实际生效的参数值（核对档位有没有生效）
-|   |-- forward_audit_probe.py # 从日志审"转发顺序 / 重复 / 发晚了"：列出错位与重复的条目
-|   |-- find_unused.py        # 静态扫描：未使用的 import / 只赋值不读的属性
-|   |-- migrate_history_labels.py # 一次性迁移：把历史记录里的相对时间标签换成绝对标签
-|   |-- selftest.py          # 环境自检（不依赖配置）
-|   |-- build_nuitka.py      # 编译驱动：一键编出单文件机器码（Windows/Linux/macOS 通用）
-|   |-- build_in_docker.sh   # 在 Docker 里编译 Linux 版（免装本机工具链）
-|   |-- make_image_fixtures.ps1  # 用 .NET 生成图片解码夹具（开发机专用，产物在 tools/fixtures/）
-|   |-- test_integration.py  # 离线集成：假 ADB 执行器跑连接/启动/注入链（无需设备）
-|   |-- test_paths.py        # 离线测试：运行路径解析（源码/冻结、配置与日志落点）
-|   `-- test_reported_bugs.py# 回归：来源/命令去重/登录判定/发送确认/弹窗/自动登录/日志（无需设备）
-|-- .github/workflows/build-release.yml  # CI：矩阵编译 Windows/Linux/macOS x86_64+arm64
-|-- astrbot_plugin_xtc_bridge/   # AstrBot 插件源码（安装见下文）
-|-- keyboardservice-debug.apk    # 捆绑的 ADBKeyBoard APK（新机器免下载）
-|-- install.bat / install.sh     # 一键安装（Windows / Linux·macOS）
-|-- start.bat   / start.sh       # 启动器：环境自检 + 菜单（启动/自检/干跑/看界面/看日志）
-|-- build.bat   / build.sh       # 一键编译单文件可执行程序（Nuitka）
-|-- pyproject.toml               # pip 安装元数据与命令入口（pip install . 后可直接用命令）
+repo/
+|-- main.py                      # 薄入口：把 src 加进 sys.path 后转交 xtc_bridge.cli.main
+|-- pyproject.toml               # 项目元数据 / 依赖 / pip 安装入口（xtc-qq-bridge 命令）
+|-- config.yaml                  # 本机配置（不进 git；模板见 config.example.yaml）
+|-- config.example.yaml          # 配置模板（逐项注释）
+|-- README.md / LICENSE / .gitignore
+|-- install.bat / install.sh     # 一键安装（装依赖、复制插件、生成配置）
+|-- start.bat   / start.sh       # 启动器（自检 + 菜单：启动/自检/干跑/看界面/看日志）
+|
+|-- src/xtc_bridge/              # 主程序代码包
+|   |-- __init__.py
+|   |-- __main__.py              # 支持 python -m xtc_bridge（pip 安装后 / PYTHONPATH=src）
+|   |-- config.py                # 读取 config.yaml（UTF-8 / GBK 自适应）
+|   |-- version.py               # 版本号唯一来源（打包脚本/CI 也读它）
+|   |-- runtime_paths.py         # 运行路径（源码/Nuitka onefile/standalone 都靠它）
+|   |-- speed_profile.py         # 速度/稳定档位（stable/balanced/fast/turbo）
+|   |-- adb_controller.py        # ADB 安装/连接/权限/按键/滑动/截图/UI dump/输入/文本注入
+|   |-- xiaotiancai.py           # 小天才 App 操作：界面/登录/自动登录/弹窗/发消息/读消息
+|   |-- bridge.py                # 轮询主循环：去重 + 补发 + 补投 + 转发 + 自动登录 + 历史
+|   |-- plugin_client.py         # AstrBot 插件客户端（转发/通知）
+|   |-- qq_webhook.py            # 反向回调服务（QQ -> 小天才；白名单/动作/消息）
+|   |-- msg_log.py               # 本地消息库（/小天才 历史消息 的数据源）
+|   |-- emoji_store.py           # 表情原图/照片原图（缓存 + 表情包，按像素核对）
+|   |-- cli/
+|   |   `-- main.py              # 命令行入口：--check / --debug / --once / --catchup / --paths ...
+|   `-- utils/
+|       |-- logger.py            # 日志（控制台 + 按启动分文件、限频、编码兜底）
+|       |-- pngtool.py           # 纯标准库 PNG 编码（抠图后发图片用）
+|       |-- imgtool.py           # 纯标准库图片解码（PNG/GIF/JPEG）+ 相似度
+|       `-- deduplicate.py       # LRU 去重 + 文件持久化（历史/回声）
+|
+|-- tests/                       # 测试（无需设备）
+|   |-- test_reported_bugs.py    # 回归：来源/去重/登录/发送确认/弹窗/图片/时间/历史
+|   |-- test_integration.py      # 离线集成：假 ADB 执行器跑连接/启动/注入链
+|   `-- test_paths.py            # 运行路径解析（源码/冻结、配置与日志落点）
+|
+|-- tools/                       # 独立小工具（探针/诊断，详见 tools/README.md）
+|-- packaging/nuitka/            # 打包（Nuitka）
+|   |-- build.py                 # 统一构建入口
+|   |-- build_windows.bat        # Windows 一键编译
+|   |-- build_linux.sh           # Linux / macOS 一键编译
+|   |-- build_in_docker.sh       # 在 Docker 里编 Linux 版（免装工具链）
+|   |-- make_image_fixtures.ps1  # 用 .NET 生成图片解码夹具（产物在 tests/fixtures/）
+|   `-- nuitka-options.yaml      # 打包参数说明（与 build.py 对应）
+|-- scripts/                     # 开发/运维脚本
+|   |-- dev.sh                   # 跑测试
+|   |-- release.sh               # 跑测试 + 可选打包
+|   `-- clean.py                 # 清理缓存与编译产物（不动 config/data/logs）
+|
+|-- docs/                        # 专题文档入口（docs/index.md）
+|-- examples/                    # 示例配置（最小可用 / 一对多）
+|-- assets/                      # 二进制资源（捆绑的 ADBKeyBoard APK 等）
+|-- astrbot_plugin_xtc_bridge/   # AstrBot 插件源码（安装用）
+|-- .github/workflows/build-release.yml   # CI：测试 + 矩阵编译
 `-- requirements.txt / requirements-build.txt
 ```
 
-> 路径写法：下面命令里的 `\` 是 Windows 写法，Linux / macOS 换成 `/`（如 `python3 tools/selftest.py`）。
-> 改完输入/启动/连接/命令去重相关代码后建议跑一遍离线测试（都不需要设备）：
-> - `python tools/test_integration.py` —— 假 ADB 执行器跑通连接/启动/注入策略链
-> - `python tools/test_reported_bugs.py` —— 回归测试（历史来源 / 命令去重 / 登录判定 / 发送确认 / 弹窗 / 自动登录 / 日志）
-> - `python tools/test_paths.py` —— 运行路径解析（源码/冻结、配置与日志落点、捆绑 APK 识别）
+> 命令里用 `python3` 的地方在 Windows 上换成 `python`；路径分隔符同理。
+> 测试**不需要设备**：
+> - `python tests/test_integration.py` —— 假 ADB 执行器跑通连接/启动/注入链
+> - `python tests/test_reported_bugs.py` —— 回归用例（历史来源 / 去重 / 登录判定 / 发送确认 / 弹窗 / 图片 / 时间 / 历史命令）
+> - `python tests/test_paths.py` —— 运行路径解析（源码/冻结、配置与日志落点、捆绑 APK 识别）
 >
-> 想在**真机/模拟器**上快速体检一遍（不发真实消息）：`python tools/live_probe.py`
-> —— 依次检查 adb 连接、界面读取、登录态、弹窗清理、聊天页判定、联系人匹配、读取消息、
-> 文本注入（输入后自动清空、**不点发送**）。排查控件 id 可用 `python tools/ui_report.py`，
-> 它会把当前界面的控件清单写到 `logs/ui_dump_report.txt`（避免控制台中文乱码）。
->
-> **`.bat` 文件必须保持纯 ASCII 英文**：中文（尤其配合 `chcp 65001`）会让 cmd 解析
-> 出错并报「命令未找到」之类的错误。Shell 脚本保持 LF 行尾，`.bat` 保持 CRLF 行尾。
-
----
+> 想在**真机/模拟器**上快速体检一遍（不会发真实消息）：`python tools/live_probe.py`
+> 想改文本注入（比如自动登录时**逐字发送**）或排查控件 id：`python tools/ui_report.py`
+> （会把当前界面控件清单写到 `logs/ui_dump_report.txt`，避免控制台中文乱码）
 
 # 二、配置
 
@@ -504,7 +507,7 @@ WSA（含 WSABuilds / MagiskOnWSA）跑久了会"隔三差五断网"：宿主侧
 | 9 | 启动 | Windows 双击 `start.bat`；Linux/macOS `bash start.sh`（或 `python main.py`）。ADBKeyBoard 会先查设备上有没有，没有才用项目里的本地 APK 安装（不联网） |
 
 **打包/不打包清单**：
-- 随包：全部 `.py`、`astrbot_plugin_xtc_bridge/`（插件源码）、`keyboardservice-debug.apk`、
+- 随包：全部 `.py`、`astrbot_plugin_xtc_bridge/`（插件源码）、`assets/keyboardservice-debug.apk`、
   `install.bat` / `install.sh`、`start.bat` / `start.sh`、
   `config.example.yaml`、`requirements.txt`
 - 不随包（每台机器独立）：Android 环境本身（模拟器/WSA/Waydroid）、小天才账号登录态、
@@ -727,7 +730,7 @@ logs/bridge-20261018-194217.log
 
 安全护栏：只有在"像弹窗"时才动手（独立 Dialog/PopupWindow 窗口、弹窗 Activity 名、
 双按钮结构、对话框标题控件），正常聊天/列表页**不会**被误点或误按返回键——
-`tools/test_reported_bugs.py::test_popup_handling` / `test_custom_popup_auto_close` 覆盖了这些场景。
+`tests/test_reported_bugs.py::test_popup_handling` / `test_custom_popup_auto_close` 覆盖了这些场景。
 其他弹窗（系统权限、无响应等）同样通用；若是没见过的自研弹窗，加
 `xiaotiancai.ui.popup_skip_texts` 一个文案即可，不需要改代码。
 
@@ -863,11 +866,11 @@ logs/bridge-20261018-194217.log
 - 仅当 1~3 都失败（输入法没附加到输入框）才降级到 4；每轮 `adb.input_retries`（默认 2）次重试。
 - 发送前会校验聊天输入框内容，发现残留内容（上次失败的半截文本）会先清空再输入。
 - **ADBKeyBoard 安装策略**：先检查设备上有没有，**没有才用项目目录里的本地 APK** 安装
-  （`keyboardservice-debug.apk`，其次找 `ADBKeyBoard.apk`），**不做任何在线下载**。
+  （`assets/keyboardservice-debug.apk`，其次找 `ADBKeyBoard.apk`），**不做任何在线下载**。
   项目目录里没有该 APK 时会在日志里提示，把 APK 放回项目根目录重跑即可。
-  Linux 上若懒得用 ADB，也可以直接给 Waydroid 装：`waydroid app install keyboardservice-debug.apk`。
+  Linux 上若懒得用 ADB，也可以直接给 Waydroid 装：`waydroid app install assets/keyboardservice-debug.apk`。
 - 恢复原输入法：`adb shell ime set com.android.inputmethod.pinyin/.InputService`
-- 手动安装：`adb install -r keyboardservice-debug.apk && adb shell ime enable com.android.adbkeyboard/.AdbIME && adb shell ime set com.android.adbkeyboard/.AdbIME`
+- 手动安装：`adb install -r assets/keyboardservice-debug.apk && adb shell ime enable com.android.adbkeyboard/.AdbIME && adb shell ime set com.android.adbkeyboard/.AdbIME`
 - 排查：`python main.py --debug adb-info` 会打印当前输入法、软键盘是否显示、剪贴板通道是否可用。
 
 ## 5. 发送结果确认（为什么不再"假成功"）+ 发送速度
@@ -1044,20 +1047,20 @@ logs/bridge-20261018-194217.log
 ## 1. 本地一键编译
 
 ```bash
-# Windows：双击 build.bat，或
-build.bat --mode onefile                 # 单文件（默认，两个目标都编）
-build.bat --mode standalone              # 目录模式（启动更快，便于调试）
-build.bat --target bridge                # 只编主程序
-build.bat --check-env                    # 只检查编译环境
-build.bat --dry-run                      # 只打印将要执行的 nuitka 命令行
+# Windows：双击 packaging/nuitka/build_windows.bat，或
+packaging/nuitka/build_windows.bat --mode onefile                 # 单文件（默认，两个目标都编）
+packaging/nuitka/build_windows.bat --mode standalone              # 目录模式（启动更快，便于调试）
+packaging/nuitka/build_windows.bat --target bridge                # 只编主程序
+packaging/nuitka/build_windows.bat --check-env                    # 只检查编译环境
+packaging/nuitka/build_windows.bat --dry-run                      # 只打印将要执行的 nuitka 命令行
 
 # Linux / macOS
-bash build.sh                            # 同上，参数一致
-bash build.sh --mode standalone
+bash packaging/nuitka/build_linux.sh     # 同上，参数一致
+bash packaging/nuitka/build_linux.sh --mode standalone
 
 # 任何平台都可以直接调驱动脚本
-python tools/build_nuitka.py             # onefile + bridge + guard -> dist/
-python tools/build_nuitka.py --out dist --jobs 8 --lto yes
+python packaging/nuitka/build.py             # onefile + bridge + guard -> dist/
+python packaging/nuitka/build.py --out dist --jobs 8 --lto yes
 ```
 
 编译产物在 `dist/`，同时生成 `.sha256` 校验文件。**先用 `--standalone` 验证、再切 `--onefile`**
@@ -1073,7 +1076,7 @@ python tools/build_nuitka.py --out dist --jobs 8 --lto yes
 | macOS | `xcode-select --install`（clang） |
 
 `pyyaml` 必须装：配置是 YAML，编译时用 `--include-package=yaml` 打进产物，否则运行时会退化成只认 JSON。
-`tools/build_nuitka.py --check-env` 会把 Python 版本、pyyaml、Nuitka 版本、C 编译器一次性列出来，
+`packaging/nuitka/build.py --check-env` 会把 Python 版本、pyyaml、Nuitka 版本、C 编译器一次性列出来，
 缺什么直接给解决办法；编译器缺失时不会白等几十分钟。
 
 ## 3. 编译产物怎么用（和源码版完全不同，先看这段）
@@ -1143,12 +1146,12 @@ git tag v1.1.0 && git push origin v1.1.0      # 触发 .github/workflows/build-r
 **(b) Docker（本地编 Linux 版，宿主机不用装工具链）**：
 
 ```bash
-bash tools/build_in_docker.sh                  # python:3.12-slim + 临时装 gcc
-IMAGE=androsh7/nuitka-compiler:latest bash tools/build_in_docker.sh   # glibc 2.17 基线，兼容老系统
-PLATFORM=linux/arm64 bash tools/build_in_docker.sh                    # arm64（需 QEMU/binfmt）
+bash packaging/nuitka/build_in_docker.sh                  # python:3.12-slim + 临时装 gcc
+IMAGE=androsh7/nuitka-compiler:latest bash packaging/nuitka/build_in_docker.sh   # glibc 2.17 基线，兼容老系统
+PLATFORM=linux/arm64 bash packaging/nuitka/build_in_docker.sh                    # arm64（需 QEMU/binfmt）
 ```
 
-**(c) 各自平台上直接编**：在 Windows 机器上跑 `build.bat`，在 Linux 机器上跑 `bash build.sh`。
+**(c) 各自平台上直接编**：在 Windows 机器上跑 `packaging/nuitka/build_windows.bat`，在 Linux 机器上跑 `bash packaging/nuitka/build_linux.sh`。
 
 ## 5. 编译常见问题
 

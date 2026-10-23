@@ -8,12 +8,12 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 import yaml  # noqa: E402
-import bridge as bridge_mod  # noqa: E402
-from adb_controller import ADBController  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge import bridge as bridge_mod  # noqa: E402
+from xtc_bridge.adb_controller import ADBController  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 out: list[str] = []
 cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}

@@ -18,14 +18,14 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
     pass
 
-import adb_controller as ac  # noqa: E402
+from xtc_bridge import adb_controller as ac  # noqa: E402
 
 RC = {"pass": 0, "fail": 0}
 

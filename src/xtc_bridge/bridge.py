@@ -19,11 +19,11 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from utils.deduplicate import Deduplicator, EchoFilter, HistoryFilter
-from utils import imgtool
-from msg_log import MessageLog
-from xiaotiancai import LOGIN_LOGGED_IN, LOGIN_NOT_LOGGED_IN, LOGIN_UNKNOWN
-import runtime_paths
+from .utils.deduplicate import Deduplicator, EchoFilter, HistoryFilter
+from .utils import imgtool
+from .msg_log import MessageLog
+from .xiaotiancai import LOGIN_LOGGED_IN, LOGIN_NOT_LOGGED_IN, LOGIN_UNKNOWN
+from . import runtime_paths
 
 
 def make_forwarder(cfg: dict, logger=None):
@@ -32,7 +32,7 @@ def make_forwarder(cfg: dict, logger=None):
     mode = fwd.get("mode", "log")
     if mode == "plugin":
         pc = fwd.get("plugin", {})
-        from plugin_client import PluginClient
+        from .plugin_client import PluginClient
         client = PluginClient(base_url=pc.get("base_url", "http://127.0.0.1:11452"),
                               token=pc.get("token", ""))
         return PluginForwarder(client, logger)
@@ -185,7 +185,7 @@ class MessageBridge:
         self._emoji_store = None
         if self._emoji_image and self._emoji_from_data and adb is not None:
             try:
-                from emoji_store import EmojiStore
+                from .emoji_store import EmojiStore
                 self._emoji_store = EmojiStore(
                     adb, package=(cfg.get("xiaotiancai") or {}).get("package", "com.xtc.watch"),
                     logger=logger, match_ok=float(_emoji.get("match_ok", 0.80) or 0.80))

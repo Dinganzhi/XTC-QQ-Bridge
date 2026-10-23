@@ -4,14 +4,14 @@ REM  Build machine-code single-file executables with Nuitka (Windows).
 REM  Pure ASCII on purpose (Chinese text breaks cmd parsing).
 REM
 REM  Usage:
-REM    build.bat                     onefile, output dist\
-REM    build.bat --mode standalone   folder mode (faster startup)
-REM    build.bat --target bridge     only the bridge
-REM    build.bat --check-env         check Python/pyyaml/Nuitka/MSVC
-REM    build.bat --dry-run           print the nuitka command lines only
+REM    packaging\nuitka\build_windows.bat                     onefile, output dist\
+REM    packaging\nuitka\build_windows.bat --mode standalone   folder mode (faster startup)
+REM    packaging\nuitka\build_windows.bat --target bridge     only the bridge
+REM    packaging\nuitka\build_windows.bat --check-env         check Python/pyyaml/Nuitka/MSVC
+REM    packaging\nuitka\build_windows.bat --dry-run           print the nuitka command lines only
 REM =====================================================================
 setlocal EnableExtensions
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
 title Build XTC QQ Bridge
 
 set "PYTHONUTF8=1"
@@ -30,7 +30,7 @@ echo ============================================
 echo   Build with Nuitka  (Windows)
 echo ============================================
 echo [1/2] Checking build environment ...
-"%PY%" tools\build_nuitka.py --check-env
+"%PY%" packaging\nuitka\build.py --check-env
 if errorlevel 1 (
   echo.
   echo [hint] Need: pip install -U nuitka pyyaml  +  Visual Studio 2022 with
@@ -42,7 +42,7 @@ if errorlevel 1 (
 
 echo.
 echo [2/2] Building ...
-"%PY%" tools\build_nuitka.py %*
+"%PY%" packaging\nuitka\build.py %*
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" (

@@ -3,11 +3,11 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
-import speed_profile as sp  # noqa: E402
-from main import load_config  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge import speed_profile as sp  # noqa: E402
+from xtc_bridge.config import load_config  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 
 class FakeAdb:

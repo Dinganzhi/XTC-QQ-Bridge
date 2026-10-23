@@ -100,7 +100,7 @@ else
 fi
 
 # ---------- 4. ADBKeyBoard 本地 APK（仅提示） ----------
-if [ -f "keyboardservice-debug.apk" ] || [ -f "ADBKeyBoard.apk" ]; then
+if [ -f "assets/keyboardservice-debug.apk" ] || [ -f "keyboardservice-debug.apk" ] || [ -f "ADBKeyBoard.apk" ]; then
     say_ok "ADBKeyBoard APK 已就位"
 else
     say_warn "项目目录里没有 ADBKeyBoard 的 APK；设备上已安装可忽略，否则中文无法输入"

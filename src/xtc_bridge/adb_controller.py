@@ -39,7 +39,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from utils import pngtool
+from .utils import pngtool
 
 try:  # 仅 Windows 有；用于读取 WSA 的 ADB 端口
     import winreg  # type: ignore
@@ -1966,7 +1966,7 @@ class ADBController:
         （旧实现用"体积 > 50KB"判断，而捆绑的 APK 只有约 18KB，会误报"找不到 APK"。）
         """
         try:
-            import runtime_paths
+            from . import runtime_paths
             p = runtime_paths.bundled_apk()
             if p is not None:
                 return str(p)

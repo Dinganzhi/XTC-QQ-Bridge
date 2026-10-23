@@ -12,16 +12,16 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
     pass
 
-from adb_controller import ADBController, AdbError  # noqa: E402
-from utils.logger import setup_logger  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_bridge.utils.logger import setup_logger  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 RC = {"pass": 0, "fail": 0, "skip": 0}
 
@@ -175,8 +175,8 @@ def main() -> int:
 
     # 10) 消息库（本地归档，只读）
     try:
-        from msg_log import MessageLog
-        import runtime_paths
+        from xtc_bridge.msg_log import MessageLog
+        from xtc_bridge import runtime_paths
         ml = MessageLog(path=str(runtime_paths.data_path("msg_log.json")))
         check("本地消息库", True, f"{ml.count()} 条，来源={ml.sources()[:4]}")
     except Exception as e:  # noqa: BLE001

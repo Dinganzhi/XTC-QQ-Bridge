@@ -13,13 +13,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, "src")
 
 import yaml  # noqa: E402
-from adb_controller import ADBController  # noqa: E402
-from bridge import MessageBridge  # noqa: E402
-from utils.deduplicate import _hash  # noqa: E402
-from xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_bridge.adb_controller import ADBController  # noqa: E402
+from xtc_bridge.bridge import MessageBridge  # noqa: E402
+from xtc_bridge.utils.deduplicate import _hash  # noqa: E402
+from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
 adb_cfg = cfg.get("adb") or {}

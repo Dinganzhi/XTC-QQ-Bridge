@@ -1,0 +1,60 @@
+# 一对多示例：一条手表消息同时转发到私聊 + 两个群，并配好白名单
+# 复制为仓库根目录的 config.yaml 后按实际填写
+
+adb:
+  path: ""
+  port: 5555
+
+xiaotiancai:
+  package: "com.xtc.watch"
+  # 速度/稳定档位：stable | balanced | fast | turbo（详见 config.example.yaml）
+  # 单项也可以覆盖，例如 ui.confirm_delay: 1.2
+  login:
+    phone: ""
+    password: ""
+  order_hold_secs: 45            # 有图片在等原图时，后续消息最多压 45 秒（保持顺序）
+
+target:
+  xtc_contact: "张三"
+  qq_private:
+    - 10001                 # 私聊
+  qq_group:
+    - 123456789                  # 群 1
+    - 123456789                  # 群 2
+  nicknames:
+    "张三": "宝贝"               # 显示昵称映射（可选）
+  default_nickname: ""
+
+forward:
+  mode: "plugin"
+  # 补投纪律：只有没成功的目标会被重试，避免"一个群失败把私聊也重发一遍"
+  retry_max_tries: 3
+  retry_backoff: 60
+  content_dedup_secs: 300
+  plugin:
+    base_url: "http://127.0.0.1:11452"
+    token: "change-me-bridge-token"
+
+webhook:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5000
+  path: "/qq_callback"
+  token: "change-me-webhook-token"
+  # 白名单：留空 = 该类消息全部拒绝。这里只允许指定私聊和这两个群触发命令
+  allow_from: [10001]
+  allow_groups: [123456789, 123456789]
+
+msg_log:
+  cap: 5000
+  shard_size: 2000
+  read_shards: 1
+
+emoji:
+  forward_image: true            # 表情/照片发原图（单向：手表 -> QQ）
+  caption: true                  # 图片是否带一句 [时间] [昵称] 说明
+  from_app_data: true
+
+logging:
+  level: "INFO"
+  per_run: true                  # 每次启动新建日志文件

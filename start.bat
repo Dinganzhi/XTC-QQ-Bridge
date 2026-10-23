@@ -76,6 +76,7 @@ goto :end
 :cfg_done
 
 REM ---------- 3. ADBKeyBoard APK (local file only, never downloaded) ----------
+if exist "assets\keyboardservice-debug.apk" goto :apk_ok
 if exist "keyboardservice-debug.apk" goto :apk_ok
 if exist "ADBKeyBoard.apk" goto :apk_ok
 echo [warn] No ADBKeyBoard APK in this folder

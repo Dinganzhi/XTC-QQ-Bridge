@@ -73,6 +73,7 @@ echo [OK] config.yaml exists - keep as-is
 :apk
 
 REM ---------- 6. ADBKeyBoard APK (local file only, no download) ----------
+if exist "%SRC%assets\keyboardservice-debug.apk" goto :apk_ok
 if exist "%SRC%keyboardservice-debug.apk" goto :apk_ok
 if exist "%SRC%ADBKeyBoard.apk" goto :apk_ok
 echo [WARN] No ADBKeyBoard APK in the project folder.

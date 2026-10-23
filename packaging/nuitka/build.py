@@ -11,13 +11,13 @@
 
 用法
 ----
-  python tools/build_nuitka.py --check-env            # 只检查编译环境
-  python tools/build_nuitka.py --dry-run              # 只打印将要执行的命令（不构建）
-  python tools/build_nuitka.py                        # 默认 onefile 单文件
-  python tools/build_nuitka.py --mode standalone      # 目录模式（启动更快，便于调试）
-  python tools/build_nuitka.py --target bridge        # 显式指定目标（目前只有主程序）
-  python tools/build_nuitka.py --out dist --jobs 8    # 指定输出目录与并行度
-  python tools/build_nuitka.py --lto yes              # 开启 LTO（更慢的构建、更快的程序）
+  python packaging/nuitka/build.py --check-env            # 只检查编译环境
+  python packaging/nuitka/build.py --dry-run              # 只打印将要执行的命令（不构建）
+  python packaging/nuitka/build.py                        # 默认 onefile 单文件
+  python packaging/nuitka/build.py --mode standalone      # 目录模式（启动更快，便于调试）
+  python packaging/nuitka/build.py --target bridge        # 显式指定目标（目前只有主程序）
+  python packaging/nuitka/build.py --out dist --jobs 8    # 指定输出目录与并行度
+  python packaging/nuitka/build.py --lto yes              # 开启 LTO（更慢的构建、更快的程序）
 
 Windows 需要 Visual Studio 2022+（勾选"使用 C++ 的桌面开发"）；Python 3.13+ **不支持**
 MinGW64，所以本驱动在 Windows 上默认走 MSVC。Linux 需要 gcc 与 python3-dev。
@@ -36,13 +36,14 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 脚本位置：<repo>/packaging/nuitka/build.py -> 仓库根目录是上两级
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 # 非 UTF-8 控制台兜底：Windows CI 的 cp1252 下 print 中文会抛 UnicodeEncodeError，
 # 直接把整个编译判失败（Windows 两个平台的 CI 就是这么挂的）。
 try:
-    from utils.logger import make_console_tolerant
+    from xtc_bridge.utils.logger import make_console_tolerant
     make_console_tolerant()
 except Exception:  # noqa: BLE001
     pass
@@ -69,7 +70,7 @@ ANTI_BLOAT_OPTIONS = (
 DATA_FILES = {
     "bridge": [
         ("config.example.yaml", "config.example.yaml"),
-        ("keyboardservice-debug.apk", "keyboardservice-debug.apk"),
+        ("assets/keyboardservice-debug.apk", "assets/keyboardservice-debug.apk"),
         ("README.md", "README.md"),
         ("LICENSE", "LICENSE"),
         ("requirements.txt", "requirements.txt"),
@@ -82,16 +83,20 @@ DATA_DIRS = {
 # 函数内 import / 可选 import 的模块，显式声明，避免被静态分析漏掉（按目标裁剪，控制体积）
 INCLUDE_MODULES = {
     "bridge": [
-        "adb_controller", "bridge", "xiaotiancai", "plugin_client", "qq_webhook", "msg_log",
-        "runtime_paths", "version", "utils.logger", "utils.deduplicate", "utils.imgtool",
-        "utils.pngtool", "emoji_store", "tools.dump_ui",
+        "xtc_bridge.adb_controller", "xtc_bridge.bridge", "xtc_bridge.xiaotiancai",
+        "xtc_bridge.plugin_client", "xtc_bridge.qq_webhook", "xtc_bridge.msg_log",
+        "xtc_bridge.runtime_paths", "xtc_bridge.version", "xtc_bridge.config",
+        "xtc_bridge.speed_profile", "xtc_bridge.cli.main",
+        "xtc_bridge.utils.logger", "xtc_bridge.utils.deduplicate",
+        "xtc_bridge.utils.imgtool", "xtc_bridge.utils.pngtool", "xtc_bridge.emoji_store",
+        "tools.dump_ui",
     ],
 }
 # 不需要进产物（开发/测试用），显式排除以缩小体积、避免拉进 pytest 之类
 EXCLUDE_MODULES = {
     "bridge": [
-        "tools.test_integration", "tools.test_reported_bugs",
-        "tools.test_paths", "tools.build_nuitka", "tools.selftest",
+        "tests.test_integration", "tests.test_reported_bugs",
+        "tests.test_paths", "packaging.nuitka.build", "tools.selftest",
     ],
 }
 PRODUCT = "XTC QQ Bridge"
@@ -100,7 +105,7 @@ COMPANY = "xtc-bridge"
 
 def read_version() -> str:
     ns: dict = {}
-    exec((ROOT / "version.py").read_text(encoding="utf-8"), ns)  # noqa: S102 本仓库自有文件
+    exec((ROOT / "src" / "xtc_bridge" / "version.py").read_text(encoding="utf-8"), ns)  # noqa: S102 本仓库自有文件
     return str(ns.get("__version__", "0.0.0"))
 
 

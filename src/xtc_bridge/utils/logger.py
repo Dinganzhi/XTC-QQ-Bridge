@@ -28,7 +28,7 @@ def _resolve(name: str) -> Path:
     """相对路径按"可写数据目录"解析（Nuitka onefile 下日志写在 exe 旁边）。"""
     p = Path(name)
     try:
-        import runtime_paths
+        from . import runtime_paths
         return runtime_paths.log_path(name)
     except Exception:  # noqa: BLE001 单独使用本模块时不强依赖
         return p if p.is_absolute() else Path.cwd() / p
@@ -161,7 +161,7 @@ def setup_logger(level: str = "INFO", file: str | None = None,
             # 相对路径按"可写数据目录"解析：Nuitka onefile 下日志写在 exe 旁边，
             # 而不是退出即被删除的临时解包目录（见 runtime_paths.py）
             try:
-                import runtime_paths
+                from . import runtime_paths
                 file = str(runtime_paths.log_path(file))
             except Exception:  # noqa: BLE001 单独使用本模块时不强依赖
                 pass

@@ -18,7 +18,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 
-from adb_controller import ADBController, AdbError
+from .adb_controller import ADBController, AdbError
 
 # 聊天窗口输入栏的特征 resource-id 末段（出现其一即认为在聊天页）
 _CHAT_IDS = ("et_chat_text_content", "chat_record_button", "chat_input")

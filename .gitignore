@@ -34,3 +34,8 @@ build/
 # 缂栬緫/璋冭瘯杩囩▼涓彲鑳藉嚭鐜扮殑涓存椂鏂囦欢
 .tmp*
 .*msg*.txt
+# Python 打包/测试缓存
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
