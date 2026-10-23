@@ -104,7 +104,7 @@ echo   2. Environment check       (--check)
 echo   3. Single poll then exit   (--once)
 echo   4. Dump current UI         (--debug dump-ui)
 echo   5. Edit config.yaml
-echo   6. Show log tail           (logs\bridge.log)
+echo   6. Show log tail           (newest logs\xtc-qq-bridge-*.log)
 echo   0. Quit
 echo --------------------------------------------
 set "CH="
@@ -158,15 +158,20 @@ start "" notepad "config.yaml"
 goto :menu
 
 :viewlog
-if exist "logs\bridge.log" goto :log_tail
-echo [warn] logs\bridge.log not found yet (start the bridge once).
+for /f "delims=" %%f in ('dir /b /o-d "logs\xtc-qq-bridge-*.log" 2^>nul') do (
+  set "LATEST_LOG=logs\%%f"
+  goto :log_tail
+)
+if exist "logs\bridge.log" set "LATEST_LOG=logs\bridge.log"
+if defined LATEST_LOG goto :log_tail
+echo [warn] no log file yet (start the bridge once; logs\xtc-qq-bridge-*.log).
 echo.
 pause
 goto :menu
 
 :log_tail
 echo.
-powershell -NoProfile -Command "Get-Content -Path 'logs\bridge.log' -Tail 40"
+powershell -NoProfile -Command "Get-Content -Path '%LATEST_LOG%' -Tail 40"
 echo.
 pause
 goto :menu

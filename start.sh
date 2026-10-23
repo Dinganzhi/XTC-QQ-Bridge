@@ -125,7 +125,7 @@ menu() {
     echo "  3) 干跑一轮           (--once)"
     echo "  4) 打印当前界面控件   (--debug dump-ui)"
     echo "  5) 编辑 config.yaml"
-    echo "  6) 查看日志           (logs/bridge.log 末尾 40 行)"
+    echo "  6) 查看日志           (最新一份 logs/xtc-qq-bridge-*.log 末尾 40 行)"
     echo "  0) 退出"
     echo "--------------------------------------------"
 }
@@ -166,12 +166,13 @@ while true; do
             "${EDITOR:-nano}" config.yaml
             ;;
         6)
-            if [ -f "logs/bridge.log" ]; then
+            LATEST_LOG=$(ls -1t logs/xtc-qq-bridge-*.log logs/*.log 2>/dev/null | head -n 1)
+if [ -n "$LATEST_LOG" ]; then
                 echo
-                tail -n 40 logs/bridge.log
+                echo "[日志] $LATEST_LOG"; tail -n 40 "$LATEST_LOG"
                 echo
             else
-                say_warn "还没有日志文件 logs/bridge.log（先启动一次桥接）"
+                say_warn "还没有日志文件 logs/xtc-qq-bridge-*.log（先启动一次桥接）"
             fi
             ;;
         0|q|Q)

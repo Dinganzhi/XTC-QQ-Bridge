@@ -61,7 +61,7 @@ def test_paths_shape() -> None:
 
 
 def test_log_path_resolution() -> None:
-    rel = rp.log_path("logs/bridge.log")
+    rel = rp.log_path("logs/xtc-qq-bridge.log")
     check("相对日志路径按 APP_DIR 解析",
           rel.is_absolute() and rel.parent.parent == rp.APP_DIR and rel.name == "bridge.log",
           str(rel))

@@ -1449,7 +1449,7 @@ def test_typed_text_starting_with_sticker_word_is_text() -> None:
 def test_run_log_path_per_startup() -> None:
     """日志文件按启动时间命名、每次启动新建，**默认永不清理旧日志**。
 
-    用户要求：以后每次启动都新建一个 `logs/bridge-YYYYmmdd-HHMMSS.log`，
+    用户要求：以后每次启动都新建一个 `logs/xtc-qq-bridge-YYYYmmdd-HHMMSS.log`，
     并且**不要自动清理** —— 旧日志一直保留，需要清理时才显式设 `logging.keep_runs`。
 
     注意：**必须用独立的临时目录**（绝对路径）。曾经直接在仓库的 `logs/` 下跑这个用例，
