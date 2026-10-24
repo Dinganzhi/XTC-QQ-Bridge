@@ -86,7 +86,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._chat_ok_ts = float("-inf")
         self._chat_ok_title = ""
         # "别睡"心跳：每 keep_awake_interval 秒发一次 WAKEUP（0 = 关闭）。
-        # 实测：WSA 大约每 50 秒把虚拟屏睡一次（stayOn/screen_off_timeout 都挡不住），
+        # 实测：容器 大约每 50 秒把虚拟屏睡一次（stayOn/screen_off_timeout 都挡不住），
         # 而每 10 秒发一次 WAKEUP 能让它连续 2 分钟保持 Awake、App 一直留在前台
         # （单次开销仅 0.08 秒）。这是"先手打字"能稳定命中、发送不再莫名 10~30 秒的关键。
         try:
@@ -94,7 +94,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         except (TypeError, ValueError):
             self._keep_awake_interval = 10.0
         self._last_awake_poke = float("-inf")
-        # 断连重连的退避状态：设备真的连不上（如 WSA transport 卡成 offline）时，
+        # 断连重连的退避状态：设备真的连不上（如 容器连接 卡成 offline）时，
         # 不要每 10 秒就"重连一次"刷屏 + 白跑 12 个候选端口；失败后指数退避到最多 60 秒。
         self._reconnect_fails = 0
         self._next_reconnect_ts = float("-inf")
@@ -134,7 +134,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             self._catchup_max_age = max(0.0, float(_xc.get("catchup_max_age", 0) or 0))
         except (TypeError, ValueError):
             self._catchup_max_age = 0.0
-        self._wsa_reconnect_hinted = False  # WSA 断网提示只打一次
+        self._reconnect_hinted = False  # 容器 断网提示只打一次
         # FIFO 任务队列：QQ->小天才 发送 / 登录 由单工作线程串行执行，
         # 保证多消息到达时按顺序处理，避免并发抢锁导致前后关系紊乱
         self._job_queue: queue.Queue = queue.Queue()
@@ -248,7 +248,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
     def catchup_now(self, screens: int = 0) -> int:
         """命令行一次性补发：确保在小天才聊天页，然后走与轮询相同的补发逻辑。
 
-        用途：桥接停过一段时间（ADB 掉线、子系统休眠、窗口失去焦点）后，把积压的图片与
+        用途：桥接停过一段时间（ADB 掉线、容器休眠、窗口失去焦点）后，把积压的图片与
         文字按原顺序补齐。不启动轮询与 webhook，转发改为**同步执行**（没有工作线程）。
         screens > 0 时覆盖 `xiaotiancai.catchup_screens`（向上多翻几屏）。
         返回本次转发的条数。
@@ -418,7 +418,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             if self._send_pending and (loop_started - self._send_pending_ts) < 30:
                 time.sleep(0.05)
                 continue
-            # 轻量"别睡"心跳：WSA 会随宿主窗口状态息屏（screen_off_timeout 拉满也挡不住），
+            # 轻量"别睡"心跳：容器会随宿主窗口状态息屏（screen_off_timeout 拉满也挡不住），
             # 隔一会儿发一次 WAKEUP，把屏叫醒并重置用户活动计时 —— 屏不睡，App 就一直在前台，
             # "App 不在前台 -> 重新拉起"（实测每次 ~20 秒）和"先手打字"被门闩挡住都会少很多。
             if self._keep_awake_interval > 0 and \
@@ -466,13 +466,13 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                            "当前在小天才登录/安全验证页，等待登录完成"
                                            "（此时不会去找联系人）", interval=600)
                         elif state == self.xtc.STATE_BACKGROUND:
-                            # WSA 窗口失去焦点/息屏时 App 会"看起来不在前台"，但窗口往往还在。
+                            # 容器窗口失去焦点/息屏时 App 会"看起来不在前台"，但窗口往往还在。
                             # 先花 ~0.3 秒问一次电源状态：睡着就叫醒 —— 唤醒后 App 通常立刻
                             # 回到前台（它本来就是 resumed 的 Activity），下一轮就能正常读消息，
                             # 省掉"重新拉起 App"那 20 秒。
                             if self.adb is not None and self.adb.wake_if_asleep():
                                 self._log_once("wake_asleep",
-                                               "子系统息屏导致 App 不在前台，已唤醒屏幕"
+                                               "容器息屏导致 App 不在前台，已唤醒屏幕"
                                                "（唤醒后通常直接回到聊天页）", interval=120)
                         elif state == self.xtc.STATE_POPUP:
                             # 弹窗遮挡（如"升级提醒"）：弹窗不关就完全读不到消息，

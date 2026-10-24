@@ -45,17 +45,17 @@ def main() -> int:
         ver, sdk, size = adb.android_version(), adb.android_sdk(), adb.get_screen_size()
         check("系统信息", bool(ver and size),
               f"Android {ver} (SDK {sdk}) 屏幕 {size} "
-              f"{'[WSA]' if adb.is_wsa() else ''} 序列号 {adb.serial}")
+              f"序列号 {adb.serial}")
     except AdbError as e:
         check("系统信息", False, str(e))
 
-    # 3.5 输入通道探测（WSA 上最容易出问题的一环）
+    # 3.5 输入通道探测（设备上最容易出问题的一环）
     try:
         check("ADBKeyBoard 已安装", adb.adbkeyboard_ready(),
               "未安装：main.py 启动时会自动安装（或 python main.py --no-adbkeyboard 跳过）")
         check("当前输入法", True, f"{adb.current_ime() or '(未知)'} | 键盘显示={adb.ime_shown()}")
         check("剪贴板通道", adb.probe_clipboard(),
-              "写入+回读一致才可用；WSA 上不可用时注入只走 ADBKeyBoard 广播")
+              "写入+回读一致才可用；设备上不可用时注入只走 ADBKeyBoard 广播")
     except AdbError as e:
         check("输入通道", False, str(e))
 

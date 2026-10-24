@@ -232,8 +232,7 @@ def main() -> None:
                         port=int(adb_cfg.get("port", 5555)),
                         serial=adb_cfg.get("serial", ""), logger=log,
                         extra_ports=adb_cfg.get("extra_ports") or [],
-                        wsa_port=int(adb_cfg.get("wsa_port", 0) or 0),
-                        input_retries=int(adb_cfg.get("input_retries", 2) or 2),
+                            input_retries=int(adb_cfg.get("input_retries", 2) or 2),
                         dump_retries=int(adb_cfg.get("dump_retries", 2) or 2),
                         dump_delay=float(adb_cfg.get("dump_delay", 0.8) or 0.8),
                         focus_ttl=float(adb_cfg.get("focus_cache_ttl", 1.5) or 0.0),
@@ -247,10 +246,10 @@ def main() -> None:
         print(adb.dump_diagnostics())
         sys.exit(0)
 
-    adb.ensure_connected(auto_launch_wsa=bool(adb_cfg.get("auto_launch_wsa", False)),
-                         auto_launch_emulator=bool(adb_cfg.get("auto_launch_emulator", False)))
+    adb.ensure_connected(
+        auto_launch_emulator=bool(adb_cfg.get("auto_launch_emulator", False)))
     log.info(f"ADB 就绪: {adb.device_summary()} | 屏幕 {adb.get_screen_size()}")
-    if adb.is_wsa() or adb.runtime_tag() in ("Waydroid", "Genymotion"):
+    if adb.runtime_tag() in ("Waydroid", "Genymotion"):
         log.info(f"检测到 {adb.runtime_tag()} 环境（输入法={adb.current_ime() or '未知'}，"
                  f"软键盘显示={adb.ime_shown()}）")
 
@@ -265,11 +264,11 @@ def main() -> None:
                 pass
         log.info("已关闭系统动画（uiautomator dump 稳定性）")
 
-    # 保持子系统屏幕常亮：WSA 的虚拟屏闲置后会 Asleep，之后 uiautomator 一直报
+    # 保持容器屏幕常亮：设备的虚拟屏闲置后会 Asleep，之后 uiautomator 一直报
     # "null root node"，每次读界面都要先唤醒（实机单次 dump 从 1s 变 20~45s）。
     if adb_cfg.get("keep_awake", True):
         if adb.keep_awake():
-            log.info("已请求子系统保持常亮（避免息屏后 uiautomator 读不到界面）")
+            log.info("已请求容器保持常亮（避免息屏后 uiautomator 读不到界面）")
         else:
             log.warning("保持常亮设置未生效（镜像可能不允许写设置）；息屏时桥接会自动唤醒屏幕")
 
@@ -323,7 +322,7 @@ def main() -> None:
 
     if args.catchup is not None:
         # 一次性补发：不启动轮询/webhook，只把"库里没有"的消息按原顺序补发出去。
-        # 用途：桥接停过一段时间（ADB 掉线、子系统休眠）后，把积压的图片/文字补齐。
+        # 用途：桥接停过一段时间（ADB 掉线、容器休眠）后，把积压的图片/文字补齐。
         n = bridge.catchup_now(screens=int(args.catchup or 0))
         log.info(f"一次性补发结束：本次共转发 {n} 条")
         return
@@ -350,7 +349,7 @@ def main() -> None:
 
 def run_check(config_path=None) -> int:
     from ..adb_controller import (ADBController, AdbError, IS_WINDOWS, available_launchers,
-                                platform_tag, waydroid_present, wsa_adb_port, wsa_installed)
+                                platform_tag, waydroid_present)
     # **必须和正常运行用同一套 adb 配置**：以前这里直接 ADBController() 自动探测，于是
     # "检测用的 adb"和"桥接真正用的 adb"可能是两个不同的可执行文件（实机踩过：config 里
     # 写的是 platform-tools，--check 却报 LDPlayer 自带的那个），排障时会被彻底带偏。
@@ -372,15 +371,14 @@ def run_check(config_path=None) -> int:
                             port=int(adb_cfg.get("port", 5555)),
                             serial=adb_cfg.get("serial", ""),
                             extra_ports=adb_cfg.get("extra_ports") or [],
-                            wsa_port=int(adb_cfg.get("wsa_port", 0) or 0))
+                            )
     except AdbError as e:
         print(f"FAIL 查找 adb: {e}")
         return 1
     print(f"平台: {platform_tag()}")
     print(f"adb: {adb.adb_path}")
     if IS_WINDOWS:
-        print(f"内置探测：WSA 已安装={wsa_installed()} "
-              f"注册表端口={wsa_adb_port()} 候选端口={adb._port_candidates()}")
+        print(f"内置探测：候选端口={adb._port_candidates()}")
     else:
         print(f"内置探测：Waydroid={waydroid_present()} "
               f"可用启动器={available_launchers() or '(无)'} 候选端口={adb._port_candidates()}")

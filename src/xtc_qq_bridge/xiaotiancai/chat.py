@@ -33,14 +33,14 @@ class ChatMixin:
             return False
         if self.is_in_chat():
             return True
-        # 0) App 不在前台（例如 WSA 停在主屏/别的窗口）-> 先把它拉到前台，
-        #    否则会在 WSA 主屏上找联系人，然后报"找不到联系人"（实机测试发现的坑）。
+        # 0) App 不在前台（例如 容器 停在主屏/别的窗口）-> 先把它拉到前台，
+        #    否则会在 容器 主屏上找联系人，然后报"找不到联系人"（实机测试发现的坑）。
         if not self.adb.is_in_foreground(self.package):
-            # 0.1) 先排除"只是息屏/窗口没焦点"：WSA 睡过去时 App 同样看起来不在前台，
+            # 0.1) 先排除"只是息屏/窗口没焦点"：容器 睡过去时 App 同样看起来不在前台，
             #      但窗口还在、Activity 还是 resumed 的 —— 叫醒即可，不必重新拉起 App
             #      （实测"重新拉起"要 20 秒，唤醒只要 ~1.5 秒）。
             if self.adb.wake_if_asleep() and self.adb.is_in_foreground(self.package):
-                self.log("info", "子系统息屏导致 App 不在前台，唤醒后已回到前台（无需重启 App）")
+                self.log("info", "容器息屏导致 App 不在前台，唤醒后已回到前台（无需重启 App）")
                 self._dismiss_blockers()
                 if self.is_in_chat():
                     return True
@@ -345,7 +345,7 @@ class ChatMixin:
         (None, None, "", "", [])。
 
         root: 可传入调用方已经读好的界面快照（轮询层会先 app_state 判状态再复用），
-              省掉一次 uiautomator dump——WSA 上单次 dump 要 3 秒左右。
+              省掉一次 uiautomator dump——设备上单次 dump 要 3 秒左右。
 
         own_text = 最新一条"自己发的"消息文本；
         own_recent = 最近若干条自己发的消息 [(text, time_label)]（新->旧，供 xtc 侧
@@ -568,7 +568,7 @@ class ChatMixin:
     def _label_from_desc(cls, desc: str) -> str:
         """把时间标签的 content-desc 还原成 "HH:MM"（认不出来返回 ""）。
 
-        为什么需要：WSA 上默认的 `--compressed` dump **不含** tv_chat_msg_item_date
+        为什么需要：设备上默认的 `--compressed` dump **不含** tv_chat_msg_item_date
         节点（实测同一屏：压缩版 0 个时间标签，完整版 3 个），只剩父容器
         ll_chat_top_layout 的 content-desc；不还原的话每条消息的时间都会退化成
         "当前时间"（用户报的"消息时间不对"）。

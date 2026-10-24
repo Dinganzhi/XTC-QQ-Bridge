@@ -5,7 +5,7 @@
 - 截图只有一帧 —— **动图表情**（实测缓存里就是多帧循环 GIF）发到 QQ 会变成静止图；
 - 还依赖气泡正好在屏幕上、位置准确。
 
-实测（Android 13 / WSA，**不需要 root**：App 的*外部*数据目录 adb shell 可读；
+实测（Android 13 / 容器，**不需要 root**：App 的*外部*数据目录 adb shell 可读；
 内部 `/data/data/...` 不可读，`run-as` 也因 App 非 debuggable 不可用）：
 
 1. **表情包解包目录**

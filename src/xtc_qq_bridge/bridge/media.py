@@ -124,7 +124,7 @@ class MediaMixin:
     def _heartbeat_reconnect(self, now: float) -> bool:
         """心跳发现 ADB 断连时的重连 + 退避。返回 True=本轮继续轮询，False=跳过本轮。
 
-        退避的意义（实机踩过）：WSA 的 transport 卡成 offline 时，`adb connect` 只会回
+        退避的意义（实机踩过）：设备的 transport 卡成 offline 时，`adb connect` 只会回
         "already connected to ..."，重连其实**救不回来**；旧实现每 10 秒就重跑一遍
         "12 个候选端口 × 2 个 host"的连接尝试，日志刷屏且白等。现在失败一次就退避
         （10/20/30…最多 60 秒），并且只在第一次与每次失败时各喊一声。
@@ -142,7 +142,7 @@ class MediaMixin:
             self._next_reconnect_ts = now + backoff
             self._log("error", f"重连失败（连续 {self._reconnect_fails} 次）: "
                                f"{str(e).splitlines()[0][:160]}；{backoff:.0f} 秒后再试")
-            self._hint_wsa_reconnect()
+            self._hint_reconnect()
             return False
         self._log("info", "ADB 已重连" if self._reconnect_fails == 0
                           else f"ADB 已重连（第 {self._reconnect_fails + 1} 次尝试）")
@@ -150,16 +150,16 @@ class MediaMixin:
         self._next_reconnect_ts = float("-inf")
         return True
 
-    def _hint_wsa_reconnect(self) -> None:
-        """WSA/WSABuilds 反复断网时的提示（只提示一次）。"""
-        if self._wsa_reconnect_hinted:
+    def _hint_reconnect(self) -> None:
+        """Android 容器 反复断网时的提示（只提示一次）。"""
+        if self._reconnect_hinted:
             return
-        self._wsa_reconnect_hinted = True
+        self._reconnect_hinted = True
         if os.name != "nt":
             return
         self._log("warning",
-                  "若使用 WSA / WSABuilds 且经常断网，可先在 WSA 设置里重启子系统"
-                  "（或执行 wsa:// 设置里的 Repair），桥接会自动重连 ADB 继续工作")
+                  "若使用 Android 容器 且经常断网，可先在 容器 设置里重启容器"
+                  "请在容器的系统设置里执行修复后重连，桥接会自动重新连接 ADB 并继续")
 
     def _typed_body(self, text: str, kind: str = "") -> str:
         """给转发内容加上**类型标记**，让表情和照片一眼分得开（用户要求）。

@@ -6,14 +6,14 @@
 > - 本项目在开发过程中使用 Vibe Coding。
 > - 分发、修改与再发布请遵守 Apache-2.0 许可证。
 
-本工具通过 **模拟器 / Android 容器（WSA、Waydroid、雷电、MuMu 等）配合 Python 调用 ADB**
+本工具通过 **模拟器 / Android 容器（容器、Waydroid、雷电、MuMu 等）配合 Python 调用 ADB**
 操作小天才 App，实现与 QQ 之间的双向消息桥接。QQ 侧由 **AstrBot 插件**（常驻 AstrBot 进程）
 负责收发，目前支持：双向消息桥接、账号密码自动登录、登录态检测、安全验证提醒与自动恢复、
 弹窗自动清理与界面自愈。
 
 > **安装**：Windows 双击 `install.bat`；Linux / macOS 执行 `bash install.sh`（详见「一键安装」）。
-> **WSA/WSABuilds 断网（仅 Windows）**：该问题源于 WSA 自身，桥接会自动重连 ADB；
-> 若确实断网，可在 WSA 设置中点击「修复」或重启子系统（详见「WSA 断网怎么办」）。
+> **Android 容器 断网**：该问题源于 容器 自身，桥接会自动重连 ADB；
+> 若确实断网，可在 容器 设置中点击「修复」或重启容器。
 > **无需安装 Python**：可使用 Nuitka 编译为机器码单文件（Windows / Linux，x86_64 / arm64）。
 > 执行 `packaging/nuitka/build_windows.bat` 或 `bash packaging/nuitka/build_linux.sh` 即可生成产物（详见「五、编译成单文件可执行程序」）。
 
@@ -41,44 +41,44 @@
 | 事项 | 说明 |
 |---|---|
 | **支持的平台** | **Windows / Linux / macOS** 都能跑。桥接本身只依赖 Python + `adb`；只要目标 Android 环境能被 `adb` 连上即可 |
-| **支持的 Android 环境** | Windows：雷电、MuMu、**WSA / WSABuilds**；Linux：**Waydroid**、Genymotion、Android-x86（含夜神/逍遥等提供 adb 端口的模拟器）；macOS：Genymotion、Android Studio 模拟器。**真机（USB 或网络调试）同样可用** |
-| **必须开启「ADB 调试」** | 模拟器：在它的设置里打开 ADB 调试；WSA：设置 -> Advanced settings -> Developer mode；真机：开发者选项 -> USB 调试。不开的话 `adb devices` 为空，桥接无法连接 |
-| **adb 端口** | 通用 **5555**（Waydroid、雷电、MuMu、Genymotion、真机网络调试）；MuMu 另有 **16384**、夜神 **62001**、逍遥 **21503**、Waydroid 多实例 **5556**；**WSA 端口随机分配**（通常 58526）。用 `adb.port` / `adb.extra_ports` 指定 |
-| **设备查找顺序** | **已有在线设备 -> 环境变量 ADB_SERIAL -> WSA 端口（仅 Windows）-> 常见端口（5555/16384/62001/21503/5556）**。已有设备永远优先，不会被新连接顶掉；多设备时优先 WSA，其次 `emulator-XXXX` |
+| **支持的 Android 环境** | Windows：雷电、MuMu、**Android 容器**；Linux：**Waydroid**、Genymotion、Android-x86（含夜神/逍遥等提供 adb 端口的模拟器）；macOS：Genymotion、Android Studio 模拟器。**真机（USB 或网络调试）同样可用** |
+| **必须开启「ADB 调试」** | 模拟器：在它的设置里打开 ADB 调试；容器：设置 -> Advanced settings -> Developer mode；真机：开发者选项 -> USB 调试。不开的话 `adb devices` 为空，桥接无法连接 |
+| **adb 端口** | 通用 **5555**（Waydroid、雷电、MuMu、Genymotion、真机网络调试）；MuMu 另有 **16384**、夜神 **62001**、逍遥 **21503**、Waydroid 多实例 **5556**；**配置端口随机分配**（通常 58526）。用 `adb.port` / `adb.extra_ports` 指定 |
+| **设备查找顺序** | **已有在线设备 -> 环境变量 ADB_SERIAL -> 配置端口-> 常见端口（5555/16384/62001/21503/5556）**。已有设备永远优先，不会被新连接顶掉；多设备时优先 容器，其次 `emulator-XXXX` |
 | **同时连多个设备** | 多设备并存时日志会提示；**请在 `adb.serial` 显式指定**要用的那个（如 `"127.0.0.1:5555"`） |
 | **镜像差异** | 已做防御式处理：无 `cmd clipboard`（自动走 ADBKeyBoard）、`ime set` 不生效（自动双写 settings）、`mCurrentFocus` 为空（自动回退 `topResumedActivity`）等，一般无需干预 |
 | **小天才 App 需自行安装** | 每个环境都要装小天才 App 并登录家长账号；界面控件 id 与运行环境无关（同一 APK） |
-| **WSA 断网是环境问题（仅 Windows）** | WSA / WSABuilds 长时间运行后子系统网络栈会失效。桥接自身会重连 ADB；真断网时在 WSA 设置里点「修复」或重启子系统（见「WSA 断网怎么办」）。WSA 为 Windows 独有组件，其他平台不存在此问题 |
+| **容器断网是环境问题** | Android 容器 长时间运行后容器网络栈会失效。桥接自身会重连 ADB；真断网时在 容器 设置里点「修复」或重启容器。容器 为 Windows 独有组件，其他平台不存在此问题 |
 
 ## 2. 各平台接入指引
 
 <details open>
-<summary><b>Windows</b>：雷电 / MuMu / WSA·WSABuilds</summary>
+<summary><b>Windows</b>：雷电 / MuMu / 容器·容器Builds</summary>
 
 - **雷电（LDPlayer）**：设置 -> 其他设置 -> 开启 ADB 调试；adb 端口默认 `5555`。
 - **MuMu**：设置 -> 其他/高级 -> 开启 ADB 调试；端口 `5555`（另有 `16384`）。
-- **WSA / [WSABuilds](https://github.com/MustardChef/WSABuilds)**：设置 -> Advanced settings -> 打开
+- **容器 / [容器Builds](https://github.com/MustardChef/容器Builds)**：设置 -> Advanced settings -> 打开
   **Developer mode**，记下显示的 `IP:端口`（通常 `127.0.0.1:58526`）。桥接会自动读注册表
   `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsSubsystemForAndroid` 取端口，读不到则试
   58526/58527/58525/6520/6521。也可以直接写死：
   ```yaml
   adb:
-    wsa_port: 58526              # 0（默认）= 自动读注册表
+    port: 58526              # 0（默认）= 自动读注册表
     # serial: "127.0.0.1:58526"  # 或者直接指定序列号
-    auto_launch_wsa: true        # WSA 没开机时自动拉起客户端
+    auto_launch_emulator: true        # 容器 没开机时自动拉起客户端
   ```
 - 准备 `adb`：`winget install Google.PlatformTools`，或把 platform-tools 加入 PATH。
 - 首次连接若报 `10061`（Hyper-V 抢占端口）：管理员执行
   `netsh int ipv4 add excludedportrange protocol=tcp startport=58526 numberofports=1` 后重启电脑。
-- WSA 与宿主剪贴板共享：桥接运行期间**不要复制其他内容**再手动粘贴，调试时容易被误导。
-- **WSA / WSABuilds 隔三差五断网（仅 Windows）**：WSA 自身的老毛病，桥接会自动重连；
-  真断网时在 WSA 设置里点「修复」或重启子系统（见「WSA 断网怎么办」）。
+- 容器 与宿主剪贴板共享：桥接运行期间**不要复制其他内容**再手动粘贴，调试时容易被误导。
+- **Android 容器 隔三差五断网**：容器 自身的老毛病，桥接会自动重连；
+  真断网时在 容器 设置里点「修复」或重启容器。
 </details>
 
 <details>
 <summary><b>Linux</b>：Waydroid / Genymotion / Android-x86 / 真机</summary>
 
-- **Waydroid**（推荐，最接近 WSA 的形态，官方文档见 <https://waydro.id>）：
+- **Waydroid**（推荐，最接近 设备的形态，官方文档见 <https://waydro.id>）：
   ```bash
   # 安装（Debian/Ubuntu 示例，其他发行版见官方文档）
   sudo apt install curl ca-certificates -y
@@ -111,7 +111,7 @@
 - **装 adb**：Debian/Ubuntu `sudo apt install adb`；Fedora `sudo dnf install android-tools`；
   Arch `sudo pacman -S android-tools`；或下载 platform-tools 后在 `adb.path` 指定绝对路径。
 - **无桌面/容器环境**：模拟器需要显示输出与 `/dev/kvm`（容器加 `--device /dev/kvm`）；
-  WSA 之类的宿主集成能力在 Linux 上不存在，属预期差异。
+  容器 之类的宿主集成能力在 Linux 上不存在，属预期差异。
 </details>
 
 <details>
@@ -203,7 +203,7 @@ repo/
 |   |-- runtime_paths.py         # 运行路径（源码/Nuitka onefile/standalone 都靠它）
 |   |-- speed_profile.py         # 速度/稳定档位（stable/balanced/fast/turbo）
 |   |-- adb_controller/           # ADB 控制层（安装/连接/权限/按键/滑动/截图/UI dump/输入/文本注入）
-|   |   |-- platform.py           # adb 路径探测、WSA/Waydroid 端口与启动、输入法与剪贴板
+|   |   |-- platform.py           # adb 路径探测、容器/Waydroid 端口与启动、输入法与剪贴板
 |   |   |-- controller.py         # ADBController：设备操作与界面读取
 |   |   `-- errors.py             # AdbError
 |   |-- xiaotiancai/              # 小天才 App 操作（按职责拆成 mixin）
@@ -289,10 +289,10 @@ repo/
 | `performance.profile` | 速度/稳定档位：`stable` / `balanced` / `fast` / `turbo`（默认 `balanced`） |
 | `adb.path` | adb 可执行文件路径；留空自动探测（Windows 的雷电/MuMu/WindowsApps、Unix 的 `~/Android/Sdk`、`/usr/bin/adb` -> PATH）。多环境并存时必须显式指定 |
 | `adb.port` | 目标 adb 端口（默认 5555；MuMu 16384、夜神 62001、逍遥 21503、Waydroid 5555/5556） |
-| `adb.wsa_port` | WSA/WSABuilds 的 ADB 端口（仅 Windows）；`0`=自动读注册表（默认 58526） |
+| `adb.port` | Android 容器 的 ADB 端口；`0`=自动读注册表（默认 58526） |
 | `adb.extra_ports` | 额外尝试的端口列表，例如 `[58526, 5555, 62001]` |
 | `adb.serial` | 指定设备序列号（如 `"127.0.0.1:5555"`、`emulator-5554`）；留空自动选择 |
-| `adb.auto_launch_wsa` | 找不到设备时自动拉起 WSA 客户端（仅 Windows，默认 false） |
+| `adb.auto_launch_emulator` | 找不到设备时自动拉起 容器 客户端（仅 Windows，默认 false） |
 | `adb.auto_launch_emulator` | 找不到设备时自动拉起模拟器/容器（如 Linux 的 Waydroid，默认 false） |
 | `adb.input_retries` | 文本注入重试轮数（默认 2） |
 | `adb.dump_retries` / `adb.dump_delay` | UI dump 默认重试次数/间隔（默认 2 / 0.8s，逐轮递增等待界面空闲；交互路径自动用更快的参数） |
@@ -351,10 +351,10 @@ adb:
   path: ""                     # 留空自动探测；多环境并存时建议写绝对路径
   host: "127.0.0.1"
   port: 5555                   # 通用 adb 端口（MuMu 16384、夜神 62001、逍遥 21503）
-  wsa_port: 0                  # WSA/WSABuilds 端口；0=自动读注册表
+  port: 0                  # Android 容器 端口；0=自动读注册表
   extra_ports: []              # 额外尝试的端口，例如 [58526, 5555, 62001]
   serial: ""                   # 多设备时写死要用的那个
-  auto_launch_wsa: false       # WSA 没开机时自动拉起
+  auto_launch_emulator: false       # 容器 没开机时自动拉起
   auto_launch_emulator: false  # Waydroid 等容器自动拉起
   heartbeat_interval: 10       # ADB 心跳（秒）：掉线自动重连
   disable_animations: true     # 关系统动画（uiautomator dump 需要界面空闲）
@@ -446,42 +446,10 @@ emoji:
   caption: true                # 图片是否带 [时间] [昵称] 内容 说明
   from_app_data: true          # 优先读 App 数据目录/图片缓存里的原图（动图保动画）
 
-# ---------- WSA / WSABuilds 断网怎么办 ----------
-# 本项目不再自带网络守护工具：断网时在 WSA 设置里点「修复」/重启子系统，或手动
-# `adb connect 127.0.0.1:58526` 重连一次即可（桥接会自动重连 ADB 继续工作）。
 ```
 
 > 需要 yaml 格式就装 pyyaml：`pip install pyyaml`。**完全没有 pyyaml 时**桥接主程序无法启动
 > （除非把配置写成 JSON）。
-
-## 3. WSA / WSABuilds 断网怎么办（仅 Windows）
-
-WSA（含 WSABuilds / MagiskOnWSA）跑久了会"隔三差五断网"：宿主侧 adb 还在、`adb devices` 时有时无，
-但 Android 子系统里的网络栈已经不通——表现就是界面读不到、消息发不出去、`uiautomator` 一直失败。
-这**不是桥接程序的 bug**：桥接自己会不断重连 ADB（日志里能看到"重连失败"后自动重试），
-但**网络栈死了要靠 WSA 自己救**。遇到时按下面顺序处理即可：
-
-| 顺序 | 做法 | 说明 |
-|---|---|---|
-| 1 | `adb disconnect 127.0.0.1:58526` 然后 `adb connect 127.0.0.1:58526` | **先看这一步**：`adb devices` 里显示 `offline` 就是 transport 卡死，该操作通常立即恢复（桥接现在也会自己这么做） |
-| 2 | WSA 设置 → 「修复」 | 上一步无效时用，多数情况下一次即可 |
-| 3 | 重启子系统：任务管理器结束 `WsaClient` 再打开，或 `adb reboot` | 约 30~90 秒；桥接会自动重连并重新打开聊天页 |
-
-> **`adb devices` 显示 `offline` 时不要只跑 `adb connect`**：它只会回一句
-> "already connected to ..."，设备实际仍是 offline（旧版桥接因此每 10 秒"重连"一次却始终连不上）。
-> 正确顺序是先 `disconnect` 再 `connect`，不行再重启 adb server。
->
-> **只用同一个 adb**：config.yaml 的 `adb.path`、你手动敲的命令、以及其它工具（模拟器自带 adb）
-> 最好都是同一个 `adb.exe`。不同来源的 adb 会在 5037 端口上抢 server，表现就是设备一会儿在线一会儿掉线。
-> `python main.py --check` 现在会打印**桥接实际使用**的那个 adb 路径，排障时以它为准。
->
-> **为什么不用 ping 判断断网**：WSA 的 NAT **不转发 ICMP** —— 镜像里 `/system/bin/ping` 存在、
-> IP 与默认网络都正常，但 ping 公共地址**永远 100% 丢包**，所以"ping 不通"完全不能说明断网。
->
-> **国内网络下 `PARTIAL_CONNECTIVITY`**：WSA 里 TCP/DNS 都通、但 App 仍报"网络异常"，通常是
-> Android 的联网验证探针（默认 `connectivitycheck.gstatic.com`）在国内连不上，系统把网络标成
-> `PARTIAL_CONNECTIVITY`。可以在 WSA 里把验证探针换成可达地址（如
-> `connectivitycheck.platform.hicloud.com` 的 `generate_204`），重启治不了这个病。
 
 ## 4. AstrBot 插件配置（两端对齐）
 
@@ -514,7 +482,7 @@ WSA（含 WSABuilds / MagiskOnWSA）跑久了会"隔三差五断网"：宿主侧
 | # | 步骤 | 说明 |
 |---|---|---|
 | 1 | 安装 **Python 3.10+** | Windows 安装时勾选 Add to PATH；Linux/macOS 一般自带 `python3` |
-| 2 | 准备 **Android 环境 + 小天才 App** | Windows：雷电 / MuMu / WSA；Linux：Waydroid / Genymotion / Android-x86；macOS：Android Studio 模拟器 / Genymotion。都可换成真机。需开启 ADB 调试 |
+| 2 | 准备 **Android 环境 + 小天才 App** | Windows：雷电 / MuMu / 容器；Linux：Waydroid / Genymotion / Android-x86；macOS：Android Studio 模拟器 / Genymotion。都可换成真机。需开启 ADB 调试 |
 | 3 | 确保 **adb 可用** | Windows `winget install Google.PlatformTools`；Linux `sudo apt install adb`；macOS `brew install --cask android-platform-tools`。也可在 `adb.path` 指定绝对路径 |
 | 4 | 安装 **AstrBot** 并启动一次 | 桌面版或 pip 版均可（v4.26+ 已兼容），启动生成 `~/.astrbot` |
 | 5 | 运行安装脚本 | Windows 双击 `install.bat`；Linux/macOS `bash install.sh`。装 pyyaml、复制插件、生成 config.yaml 和插件配置 |
@@ -527,7 +495,7 @@ WSA（含 WSABuilds / MagiskOnWSA）跑久了会"隔三差五断网"：宿主侧
 - 随包：全部 `.py`、`astrbot_plugin_xtc_bridge/`（插件源码）、`assets/keyboardservice-debug.apk`、
   `install.bat` / `install.sh`、`start.bat` / `start.sh`、
   `config.example.yaml`、`requirements.txt`
-- 不随包（每台机器独立）：Android 环境本身（模拟器/WSA/Waydroid）、小天才账号登录态、
+- 不随包（每台机器独立）：Android 环境本身（模拟器/容器/Waydroid）、小天才账号登录态、
   AstrBot 里的 NapCat/QQ 登录态、`config.yaml` 的值、平台 ID（运行时自动学习）
 
 **插件同步更新**：`astrbot_plugin_xtc_bridge/` 是唯一源码，改完重跑 `install.bat` / `install.sh`
@@ -636,26 +604,26 @@ logs/xtc-qq-bridge-20261018-194217.log
 
 | 现象 | 排查 |
 |---|---|
-| `adb devices` 为空 | 目标没开 ADB 调试（模拟器设置 / WSA 的 Developer mode / 真机的 USB 调试）。先跑 `python main.py --check`，它会按平台给出具体建议（含 Linux 的 udev 规则做法） |
-| `adb devices` 显示 `unauthorized` | 在目标设备/子系统窗口里点「允许 USB 调试」；真机可在手机上撤销授权后重新插拔 |
-| **WSA / WSABuilds 隔三差五断网** | 桥接会自动重连 ADB，但网络栈死了得 WSA 自己救：先 `adb disconnect 127.0.0.1:58526` + `adb connect 127.0.0.1:58526`，不行再在 WSA 设置里点「修复」或重启子系统（见「WSA 断网怎么办」） |
+| `adb devices` 为空 | 目标没开 ADB 调试（模拟器设置 / 设备的 Developer mode / 真机的 USB 调试）。先跑 `python main.py --check`，它会按平台给出具体建议（含 Linux 的 udev 规则做法） |
+| `adb devices` 显示 `unauthorized` | 在目标设备/容器窗口里点「允许 USB 调试」；真机可在手机上撤销授权后重新插拔 |
+| **Android 容器 隔三差五断网** | 桥接会自动重连 ADB，但网络栈死了得 容器 自己救：先 `adb disconnect 127.0.0.1:58526` + `adb connect 127.0.0.1:58526`，不行再在 容器 设置里点「修复」或重启容器 |
 | **日志一直刷"ADB 断连，尝试重连…/ ADB 已重连"** | 已修复：`adb devices` 里设备是 `offline` 时，`adb connect` 只会回 "already connected to ..."，而旧版把这句话当成"重连成功"，于是每 10 秒循环一次却始终读不到界面。现在会**真的确认状态**（`get-state` 必须是 device），并自动 `disconnect` + `connect`（必要时重启 adb server）；真连不上时按 10→20→…→60 秒退避，不再刷屏 |
 | **日志说"设备上没有安装 com.xtc.watch"但实际已正常安装** | 已修复：那是 ADB 读不到包列表（连接异常）被误报成"没安装"。现在读不到会明确说「无法确认…（ADB 连接异常）」，而"没安装"只在真的查不到该包时才说 |
-| WSA 报 `10061` 端口被拒 | Hyper-V 抢占端口：`netsh int ipv4 add excludedportrange protocol=tcp startport=<端口> numberofports=1` + 重启（见「Windows」小节） |
+| 容器报 `10061` 端口被拒 | Hyper-V 抢占端口：`netsh int ipv4 add excludedportrange protocol=tcp startport=<端口> numberofports=1` + 重启（见「Windows」小节） |
 | **自动登录不生效** | (1) 看日志有没有 `检测到小天才未登录，触发自动登录`；(2) 若提示"没有配置账密"，补 `xiaotiancai.login.phone/password`；(3) 若提示超时/安全验证，程序会按 `login_retry_interval` / `login_retry_after_risk` 自动重试，不需要重启；(4) 确认 `xiaotiancai.auto_login: true`（QQ 发 `/小天才 自动登录` 可切换，日志会打印当前状态） |
 | **明明在登录中却提示"登录失败"** | 已修复：出现"登录中/正在验证/请稍候"等进度文案时**一律不判失败**；只有明确的账号/密码错误才算失败，网络类临时问题按"超时->稍后重试"处理。若仍误报，把该文案加进 `xiaotiancai.ui.login_progress_markers` |
 | **提示失败但实际未发出 / 提示成功但实际未发出** | 已修复：只有"输入框已清空且无新的失败提示"或"出现新的己方气泡"才回「发送成功」；读不到界面、出现"发送失败/网络异常"、输入框仍有残留 -> 如实回「发送失败」。若你的机型提示语不同，补充 `xiaotiancai.ui.send_fail_markers` |
-| **输入文字看起来较慢** | 文字输入本身不慢：实机实测 `am broadcast ADB_INPUT_TEXT` **0.23s**、IME 状态查询 0.18s、`input tap` 0.26s，把一段话打进输入框总共 **≈0.75 秒**。感觉慢的是它周边的"读界面"（每次 3~4 秒）与"恢复窗口/唤醒屏幕"：① 发送链路的 dump 次数已从 4~5 次降到 1 次；② 有发送排队时轮询会让路（不再等轮询那次 dump）；③ IME 状态查询改为 60 秒缓存；④ 启动 App 的每个策略不再白等 25 秒；⑤ 保持 WSA 窗口可见，不要最小化（窗口被最小化时前台会变成 `com.microsoft.windows.homeapp`，每次都要把 App 拉回来）。详见「5. 发送结果确认与发送速度」 |
-| **按按钮/发送较慢（单条十余秒）** | 已优化：① 发送链路的 dump 次数从 4~5 次降到 **1 次**（复用轮询的界面快照、布局没变时直接点缓存的发送按钮坐标、确认只 dump 一次）；② QQ->小天才 的发送走**专用优先队列**——实测它会被"小天才->QQ 的转发 / 聊天里写『发送成功：…』回执 / 历史查询"堵住 **15~47 秒**，现在这些任务都要给它让路；③ 聊天里的"发送成功：…"回执改成**低优先级任务**（并且自己也能走先手打字），不再把下一条 QQ 消息堵在后面；④ 发送坐标缓存**落盘**，重启后的第一条也能走 ~1 秒的快路径。见「5. 发送结果确认（为什么不再"假成功"）+ 发送速度」。每次 dump 本身在 WSA 上就要 3~4 秒，所以要更快只能减少 dump 次数；`ui.fast_send: false` 可关掉快路径 |
+| **输入文字看起来较慢** | 文字输入本身不慢：实机实测 `am broadcast ADB_INPUT_TEXT` **0.23s**、IME 状态查询 0.18s、`input tap` 0.26s，把一段话打进输入框总共 **≈0.75 秒**。感觉慢的是它周边的"读界面"（每次 3~4 秒）与"恢复窗口/唤醒屏幕"：① 发送链路的 dump 次数已从 4~5 次降到 1 次；② 有发送排队时轮询会让路（不再等轮询那次 dump）；③ IME 状态查询改为 60 秒缓存；④ 启动 App 的每个策略不再白等 25 秒；⑤ 保持 容器窗口可见，不要最小化（窗口被最小化时前台会变成 `com.microsoft.windows.homeapp`，每次都要把 App 拉回来）。详见「5. 发送结果确认与发送速度」 |
+| **按按钮/发送较慢（单条十余秒）** | 已优化：① 发送链路的 dump 次数从 4~5 次降到 **1 次**（复用轮询的界面快照、布局没变时直接点缓存的发送按钮坐标、确认只 dump 一次）；② QQ->小天才 的发送走**专用优先队列**——实测它会被"小天才->QQ 的转发 / 聊天里写『发送成功：…』回执 / 历史查询"堵住 **15~47 秒**，现在这些任务都要给它让路；③ 聊天里的"发送成功：…"回执改成**低优先级任务**（并且自己也能走先手打字），不再把下一条 QQ 消息堵在后面；④ 发送坐标缓存**落盘**，重启后的第一条也能走 ~1 秒的快路径。见「5. 发送结果确认（为什么不再"假成功"）+ 发送速度」。每次 dump 本身在 设备上就要 3~4 秒，所以要更快只能减少 dump 次数；`ui.fast_send: false` 可关掉快路径 |
 | **控制台看不到收到的命令** | INFO 级别下应当能看到 `[QQ回调] 收到 …`、`[收到QQ命令] …`、`[收到小天才命令] …`、`[收到小天才消息] …`、`[QQ->小天才] 发送成功/失败`。看不到时：(1) 确认 `logging.level: INFO`；(2) 确认命令真的到了（QQ 侧看插件日志，小天才侧看界面）；(3) 中文 Windows 控制台编码问题已兜底（不会再整条丢失） |
 | **已经启动了 App 还重复启动** | 已修复：`launch()` 先判断前台，已在前台直接返回，不执行任何启动命令；`/小天才 初始化` 也改成按需执行 |
 | **明明在聊天页，却提示"在消息列表找不到联系人"** | 已修复：聊天页判定不再只看 Activity 名（`endswith("chatactivity")`），改为"Activity 名含 chat 且不含 list/main/watchmsg"**或**界面出现消息气泡/输入栏；另外 `open_chat` 进来会先确认一次界面特征，已经在聊天页就直接返回，不再去列表里找联系人 |
 | **在主页确实有该联系人，却一直说找不到** | 现在：① 联系人名匹配会忽略空格差异、支持"张三(爸爸)"这类别名（取括号前部分）；② 优先按列表行的联系人名控件（`ui.contact_name_ids`）匹配，并返回**可点击的整行**；③ 找不到时会依次切换 Tab（`ui.message_tab_texts`）、在确认是消息列表时向上滑动查找；④ 失败日志会写明**当前可见的联系人**，例如`找不到联系人 '张三'：消息列表；当前可见联系人: 李四、王五`，一眼看出是名字不一致还是页面不对 |
-| **WSA 上 `ping` 公共地址永远 100% 丢包** | 这是**正常现象**，不是断网：WSA 的 NAT 不转发 ICMP（镜像内实际存在 ping）。判断有没有网请用 TCP 连接（如 `adb shell "nc -w 3 223.5.5.5 53"`）或看有没有 IP |
+| **设备上 `ping` 公共地址永远 100% 丢包** | 这是**正常现象**，不是断网：设备的 NAT 不转发 ICMP（镜像内实际存在 ping）。判断有没有网请用 TCP 连接（如 `adb shell "nc -w 3 223.5.5.5 53"`）或看有没有 IP |
 | **有时"已经登录了却提示未登录"** | 已修复三处：① 登录态**以界面为准**（聊天页/消息列表/微聊·我的 等主界面特征 → 已登录；密码框/验证码/登录页文案 → 未登录），Activity 名只作兜底，不再因为名字里带 `login`（如 `AccountVerifyLoginActivity`）就误判；② "App 是否在前台"改看 **Activity** 而不是窗口焦点 —— 输入法一弹出就抢走 `mCurrentFocus`，旧实现会因此误判"App 不在前台/未登录"；③ 新增**三态**登录判定：读不到界面 / App 不在前台 = `unknown`，此时既不打印"未登录"、也**不会触发自动登录**（旧实现会误触发，甚至去点登录页控件） |
-| **日志反复出现 `null root node returned by UiTestAutomationBridge` 或 `mCurrentFocus=null`** | 说明 **WSA 窗口被最小化/关闭、或虚拟显示未点亮** —— 此时 Android 侧没有任何窗口获得焦点，`uiautomator` 必然失败（**与小天才 App 无关**，手动 `uiautomator dump` 同样会失败）。办法：让 WSA 窗口保持打开（可以挪到屏幕边上，但不要最小化）。桥接检测到"没有焦点窗口"会**自动唤醒屏幕 + 重新拉起 App**，窗口恢复后自动继续；单条 dump 报错已压缩成一行可读信息，完整原因见 `--debug adb-info` 的 `last_dump_error` |
+| **日志反复出现 `null root node returned by UiTestAutomationBridge` 或 `mCurrentFocus=null`** | 说明 **容器窗口被最小化/关闭、或虚拟显示未点亮** —— 此时 Android 侧没有任何窗口获得焦点，`uiautomator` 必然失败（**与小天才 App 无关**，手动 `uiautomator dump` 同样会失败）。办法：让 容器窗口保持打开（可以挪到屏幕边上，但不要最小化）。桥接检测到"没有焦点窗口"会**自动唤醒屏幕 + 重新拉起 App**，窗口恢复后自动继续；单条 dump 报错已压缩成一行可读信息，完整原因见 `--debug adb-info` 的 `last_dump_error` |
 | **弹窗挡住界面导致读不到消息** | 已修复：常见弹窗（权限/无响应/更新/评价/活动/网络/警告）会自动处理；**自研自定义弹窗**（如"升级提醒" `com.xtc.widget.phone.popup.activity.CustomActivity14`）也按结构识别并自动关闭（点负向按钮/返回键，绝不点"立即安装"）；状态机会报 `弹窗遮挡界面`，轮询每轮都会清它。实在认不出的弹窗，把它的跳过按钮文案加进 `xiaotiancai.ui.popup_skip_texts` 即可 |
-| **消息时间不对（时间始终为"当前时间"）** | 已修复两处：① WSA 上旧版默认用的 `--compressed` dump 会把时间标签节点（`tv_chat_msg_item_date`）整片裁掉（实机同一屏：压缩版 0 个标签，完整版 3 个 `11:19`/`19:18`/`20:46`），于是每条消息的时间都退化成"当前时间"；现在默认用**完整 dump**，万一只拿到压缩版也会从 `ll_chat_top_layout` 的 content-desc 还原（`十1点十9分` -> `11:19`）。② **补发**旧消息时，若这条消息没有自己的标签（App 的时间分隔标签早已滚出屏幕），旧版会写成"转发时刻"；现在改用**上一条已入库消息的时间**（实测：22:04 发的"噢"不再被写成 22:20） |
+| **消息时间不对（时间始终为"当前时间"）** | 已修复两处：① 设备上旧版默认用的 `--compressed` dump 会把时间标签节点（`tv_chat_msg_item_date`）整片裁掉（实机同一屏：压缩版 0 个标签，完整版 3 个 `11:19`/`19:18`/`20:46`），于是每条消息的时间都退化成"当前时间"；现在默认用**完整 dump**，万一只拿到压缩版也会从 `ll_chat_top_layout` 的 content-desc 还原（`十1点十9分` -> `11:19`）。② **补发**旧消息时，若这条消息没有自己的标签（App 的时间分隔标签早已滚出屏幕），旧版会写成"转发时刻"；现在改用**上一条已入库消息的时间**（实测：22:04 发的"噢"不再被写成 22:20） |
 | **转发的表情/贴纸"货不对板"（发的不是手表上那张）** | 已修复：缓存目录里同时有聊天照片、头像和**其他贴纸**，99 个表情名里还有 55 个重名，"按时间/形状猜"必然出错（实测把"小猫流汗"发成了"弹吉他的乌龟"）。现在会抠下**界面上这张气泡的截图**当基准，逐个候选比像素，**够像（≥0.80）才发**；都不像就发那张气泡截图（静止但一定对）；补发老消息又拿不到基准图时**不猜**。见「表情包」小节 |
 | **表情包能转发，但手表发的照片转发不出去、控制台一行日志都没有** | 已修复：照片气泡的 `text` 是空的、说明写在 `content-desc`（`…发的消息,图片消息，双击查看`，图片没下完时只有 `…发的消息`），旧代码遇到空文本直接跳过，所以既没转发也没日志。现在这类气泡会被识别成 `图片` 消息：优先发**缓存里的原图**（实测 1944x2592，约 3 秒），拿不到就发气泡截图；`emoji.forward_image: false` 可整体关掉。见「图片（照片）转发」小节 |
 | **日志里出现 `[图片] 按气泡截图 …（缓存里没找到原图）`** | 说明这次没能确定哪张缓存文件是这张照片（时间对不上、或有好几张都"刚写过"分不清），本次发的是屏幕上那张气泡截图（实测 136x180），内容一定是对的，只是清晰度低。这是**故意的**保守策略：宁可低清，也不发一张"像不像都不知道"的图。**为什么不用像素比对来找原图**：一张 2MB / 1944x2592 的照片"只解 DC"要 37 秒，"只解上段"也要 5 秒/张且分辨力不够（实测正确那张 0.70、别的 0.51~0.63，还把一次取图拖到 47 秒） |
@@ -679,7 +647,7 @@ logs/xtc-qq-bridge-20261018-194217.log
 | **转发文字消息时附带了上一条的表情包** | 已修复：`_capture_sticker` 对**任何**消息都会退化成"屏幕上最新那张贴纸"（`sticker_of_latest(root, "")`），于是发一条文本 "2" 时把上一条消息的表情一起发了出去。现在入口处就挡住"非表情 / 非图片"的消息（并且调用方也只对表情/图片消息取图），文字消息永远不带图 |
 | **日志里出现 `[表情包] 缓存里没有像界面这张的原图`** | 说明缓存里确实没有这张的原始文件（或原文件是解不了的 WebP），本次会发**界面气泡截图**（静止一帧）——内容一定是对的。想每次都拿到动图原图，需要该表情来自本地表情包（见上一条） |
 | **QQ 侧 `/小天才 历史消息` 没反应 / 提示"群不在白名单"** | 已修复：动作类回调（历史消息 / 登录 / 初始化 / 自动登录）在 `qq_webhook` 里曾被"空消息"分支**提前 return 掉**（插件转发带 `source=astrbot` 且 `message` 为空），于是这些命令永远不执行，日志还写成"未转发（空消息或来源不在白名单）"，看着像白名单没配好。现在动作先分派、日志分开写；白名单确实不含该群时会明确说"不在白名单（webhook.allow_from / allow_groups）"。插件侧也会在桥接未受理时直接回话（不再干等 150 秒超时） |
-| **隔三差五说"小天才息屏了 / App 不在前台"（实际并未操作它）** | 根因是 **WSA 的虚拟屏会自己睡**：实测大约每 **50 秒**就把屏睡一次（`stayOn=true`、`screen_off_timeout=2147483647` 全都还在、屏照样睡），睡下时 Android 前台变成 `com.microsoft.windows.homeapp/...PlaceholderActivity`、`uiautomator` 报 `null root node`。现在：① 轮询每 `adb.keep_awake_interval`（默认 **10 秒**，实测一次仅 **0.08s**）发一次 WAKEUP —— **实测这样能让屏连续 2 分钟保持 Awake、App 一直留在前台**；② 判定"不在前台"之前先花 ~0.24s 问电源状态，睡着就叫醒，唤醒后 App 通常**直接回到前台**，不再无谓地"重新拉起 App"（实测省 ~20 秒）；③ 一旦见过息屏就把这块屏记为"可疑"，之后每次 dump / 每次发送前都先确认+唤醒；④ 重启后初始化时会用一次"探针注入"**学出发送按钮坐标**（只输入随即清空、不发消息），并**把坐标缓存落盘**（`data/ui_send_cache.json`），所以**重启后的第一条**也能走 ~1 秒的快路径。根治仍是别让 WSA 窗口最小化/长期失去焦点 |
+| **隔三差五说"小天才息屏了 / App 不在前台"（实际并未操作它）** | 根因是 **设备的虚拟屏会自己睡**：实测大约每 **50 秒**就把屏睡一次（`stayOn=true`、`screen_off_timeout=2147483647` 全都还在、屏照样睡），睡下时 Android 前台变成 `com.microsoft.windows.homeapp/...PlaceholderActivity`、`uiautomator` 报 `null root node`。现在：① 轮询每 `adb.keep_awake_interval`（默认 **10 秒**，实测一次仅 **0.08s**）发一次 WAKEUP —— **实测这样能让屏连续 2 分钟保持 Awake、App 一直留在前台**；② 判定"不在前台"之前先花 ~0.24s 问电源状态，睡着就叫醒，唤醒后 App 通常**直接回到前台**，不再无谓地"重新拉起 App"（实测省 ~20 秒）；③ 一旦见过息屏就把这块屏记为"可疑"，之后每次 dump / 每次发送前都先确认+唤醒；④ 重启后初始化时会用一次"探针注入"**学出发送按钮坐标**（只输入随即清空、不发消息），并**把坐标缓存落盘**（`data/ui_send_cache.json`），所以**重启后的第一条**也能走 ~1 秒的快路径。根治仍是别让 容器窗口最小化/长期失去焦点 |
 | Linux 真机看不到设备 | udev 规则/权限问题：配 `/etc/udev/rules.d/51-android.rules` 并把用户加入 `plugdev`（见「Linux」小节），再 `sudo udevadm control --reload-rules && sudo udevadm trigger` |
 | Waydroid 连不上 | `waydroid session start`（X11 加 `-X`）后再 `adb connect 127.0.0.1:5555`；容器/无桌面环境需 `/dev/kvm` 与显示输出 |
 | 连错设备（多个模拟器/真机） | 在 `adb.serial` 里写死要用的序列号（`python main.py --check` 会打印当前选中的是哪个） |
@@ -909,7 +877,7 @@ logs/xtc-qq-bridge-20261018-194217.log
 实测多数情况只是该次点击未命中（输入框变高/按钮位置变了），补点一次就出去了，
 比回退到"清空 + 重新注入 + 重新找按钮"的稳妥流程快 **5~8 秒**；补点也不成才退回稳妥流程。
 
-**发送速度：关键在"数 dump 次数"**（WSA 上一次 uiautomator dump 实测 3~4 秒）。
+**发送速度：关键在"数 dump 次数"**（设备上一次 uiautomator dump 实测 3~4 秒）。
 用户报过"发一条要十几秒"，实测每条的耗时构成就是 dump 次数 × 3~4 秒 + 固定等待：
 
 | 环节 | 旧实现 | 现在 |
@@ -944,12 +912,12 @@ logs/xtc-qq-bridge-20261018-194217.log
 也就是说：**输入文字本身不到 1 秒**；感觉慢的部分是"读界面"（每次 3~4 秒）和
 "恢复窗口/唤醒屏幕"。实测日志里最慢的两种情形与输入无关：
 
-- WSA 窗口被最小化（前台变成 `com.microsoft.windows.homeapp`）→ 每次发送都要先把 App
+- 容器窗口被最小化（前台变成 `com.microsoft.windows.homeapp`）→ 每次发送都要先把 App
   拉回前台（`am start -n` 实测 0.46s、`monkey` 0.97s，但窗口恢复本身要几秒）；
 - 屏幕闲置息屏 → `uiautomator` 报 `null root node` → 先唤醒再重试（每次 ~10 秒）。
-  对策：把 WSA 窗口保持可见（可挪到屏幕边上，别最小化），`adb.keep_awake: true` 已默认开启。
+  对策：把 容器窗口保持可见（可挪到屏幕边上，别最小化），`adb.keep_awake: true` 已默认开启。
 
-**底层原子操作实测**（决定"还能不能更快"，WSA / 1366x768，取中位数）：
+**底层原子操作实测**（决定"还能不能更快"，容器 / 1366x768，取中位数）：
 
 | 操作 | 耗时 | 说明 |
 |---|---|---|
@@ -967,7 +935,7 @@ logs/xtc-qq-bridge-20261018-194217.log
 既省掉 N-1 次 dump，又避免"发送成功提示把气泡顶走、截到空白"。
 
 安全边界（快路径不是"盲发"）：
-- 只有**输入框位置与缓存时一致**（±12px）才用缓存坐标；WSA 窗口被缩放/最大化后位置对不上，
+- 只有**输入框位置与缓存时一致**（±12px）才用缓存坐标；容器窗口被缩放/最大化后位置对不上，
   自动退回"注入并校验"的稳妥流程（绝不按旧坐标盲目点击）；
 - 布局在"最近快照"之后才变的那一瞬仍可能点偏一次：点完的确认 dump 会发现没发出去，
   于是清掉缓存、先清弹窗再退回稳妥流程重发，最多多花一次 dump，**不会重复发送**
@@ -987,7 +955,7 @@ logs/xtc-qq-bridge-20261018-194217.log
 | `file-compressed` / `tty-compressed` | 加 `--compressed` 的兜底 | 某些镜像上完整 dump 会被系统 Killed；失败后自动落到这里并**记住**能用的那个 |
 | `file` | 落盘 `/sdcard` -> `/data/local/tmp` -> `/storage/emulated/0` | `/sdcard` 未挂载/无权限时自动换目录；读文件用 `exec-out cat` |
 
-**为什么默认不再用 `--compressed`**（WSA 实测发现的问题）：`--compressed` 会把时间标签节点
+**为什么默认不再用 `--compressed`**（容器 实测发现的问题）：`--compressed` 会把时间标签节点
 整片裁掉——同一屏压缩版 **19 个节点 / 0 个时间标签**，完整版 **46 个节点 / 3 个时间标签**
 （`11:19` / `19:18` / `20:46`）。时间标签一丢，转发出去的消息时间就退化成"当前时间"
 （用户报的"消息时间还是不对"）。完整版实测成功率 5/5、平均只慢约 0.4s（3.5s vs 3.1s）。
@@ -1025,21 +993,21 @@ logs/xtc-qq-bridge-20261018-194217.log
 ## 8. 已知限制
 
 - 桥接本体跨平台（Windows / Linux / macOS），但**宿主集成类能力有平台差异**：
-  WSA/WSABuilds 与宿主剪贴板共享、可被自动拉起，这些只存在于 Windows；
+  Android 容器 与宿主剪贴板共享、可被自动拉起，这些只存在于 Windows；
   Linux/macOS 没有等价物（Waydroid 与宿主不共享剪贴板，因此中文输入依赖 ADBKeyBoard）。
 - 需要小天才家长账号；小天才 App 必须由使用者自行安装（仓库不含该 APK）。
 - 手表发**语音消息**无法转文字，转发为"语音"占位通知。
 - Python 3.14 下 pyyaml 若无轮子，配置可写为 JSON 格式（loader 自动降级）。
 - 轮询间隔默认 2s，去重 LRU 200 条/120s，回声过滤 60s（文件持久化，多实例/重启共享），
   防止重复转发与自我回传。
-- 剪贴板与宿主共享的环境（如 WSA）里，桥接运行期间手动复制内容会干扰"剪贴板兜底"通道
+- 剪贴板与宿主共享的环境（如 容器）里，桥接运行期间手动复制内容会干扰"剪贴板兜底"通道
   （ADBKeyBoard 通道不受影响）。
 - 无桌面环境（纯 SSH/容器）运行图形模拟器需要额外处理显示与 `/dev/kvm`；
   Android Studio 的 headless 模拟器（`emulator -no-window`）可用，但需自行确认 adb 能连上。
-- WSA 断网时的第 2 级处理（重启子系统 / WSA）会让桥接短暂断连（约 30~90 秒）属预期。
-- **WSA 窗口被最小化/关闭时 Android 侧没有窗口焦点**（`mCurrentFocus=null`），此时任何
+- 容器断网时的第 2 级处理（重启容器 / 容器）会让桥接短暂断连（约 30~90 秒）属预期。
+- **容器窗口被最小化/关闭时 Android 侧没有窗口焦点**（`mCurrentFocus=null`），此时任何
   界面读取都会失败（`uiautomator` 报 `null root node`，手动 dump 同样失败）——这不是桥接的问题。
-  请让 WSA 窗口保持打开；桥接检测到"没有焦点窗口"会自动唤醒屏幕并重新拉起 App，日志也会给出同样的提示。
+  请让 容器窗口保持打开；桥接检测到"没有焦点窗口"会自动唤醒屏幕并重新拉起 App，日志也会给出同样的提示。
 - 单条 UI dump 报错已压缩成一行（原因归类 + 处置建议 + 当前前台），完整原因在
   `python main.py --debug adb-info` 的 `last_dump_error` 字段里，排障时优先看它。
 

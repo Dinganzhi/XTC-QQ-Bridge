@@ -322,7 +322,7 @@ class LoginMixin:
     def _find_login_button(self, root: ET.Element):
         """登录按钮：精确文本"登录" -> id 末段是 login/btn_login 的控件 -> content-desc。
 
-        实机（WSA + 小天才）实测：登录按钮是**无文本的可点击 RelativeLayout**
+        实机（容器 + 小天才）实测：登录按钮是**无文本的可点击 RelativeLayout**
         （`rl_login_login`，clickable=true）。旧实现要求 class 含 "Text"/"Button"，
         于是"表单填好了却说未找到登录按钮"。现在只要 id 命中且**可点击**就认。
         （仍不能用"id 含 login"——tv_login_area_title / tv_login_bottom 等标签也含 login。）

@@ -23,7 +23,7 @@ performance:
 # ---------------------------------------------------------------------
 #  ADB 与设备连接（Windows / Linux / macOS 通用）
 #
-#  设备查找顺序：当前已在线设备 → 环境变量 ADB_SERIAL → WSA 端口（仅 Windows）
+#  设备查找顺序：当前已在线设备 → 环境变量 ADB_SERIAL → 配置端口
 #                → 常用 ADB 端口。
 #  已在线设备始终优先，不会被后续步骤抢占。
 #  实际使用的端口取决于所运行的 Android 运行环境，请以其文档为准。
@@ -32,14 +32,12 @@ adb:
   path: ""                                       # adb 可执行文件路径；留空则自动探测
   host: "127.0.0.1"
   port: 5555                                     # ADB 连接端口（取决于运行环境）
-  wsa_port: 0                                    # Windows Subsystem for Android 的端口；0 表示自动读取
   extra_ports: []                                # 额外尝试的端口，例如 [58526]
   serial: ""                                     # 设备序列号；留空则自动选择唯一在线设备
-  auto_launch_wsa: false                         # 无法连接时是否自动启动 WSA（仅 Windows）
   auto_launch_emulator: false                    # 无法连接时是否自动启动 Android 容器
   heartbeat_interval: 10                         # 连接状态检查间隔（秒）
   disable_animations: true                       # 关闭系统动画；界面动画会导致 uiautomator dump 失败
-  keep_awake: true                               # 保持子系统常亮；息屏后界面读取会返回空根节点
+  keep_awake: true                               # 保持设备常亮；息屏后界面读取会返回空根节点
   keep_awake_interval: 10                        # 保活指令发送间隔（秒），0 表示关闭
                                                  # 虚拟屏通常约每 50 秒进入休眠，10 秒一次可维持常亮
                                                  # 说明：保活间隔、注入重试次数、界面读取重试次数与间隔
@@ -226,15 +224,3 @@ emoji:
   # wait_retries: 8                              # 原图尚未就绪时的最大重试次数（间隔逐次翻倍）
   # wait_base: 5                                 # 首次等待时间（秒），此后为 10、20、40……
   # wait_max_secs: 1800                          # 最长等待时间（秒），超时后改为发送文本
-
-# ---------------------------------------------------------------------
-#  WSA 连接异常的处置
-#
-#  本项目不包含网络守护工具；WSA 断网时按下列步骤手工处理，桥接会自动重连 ADB。
-#    1) adb devices 显示 offline 时，先执行 adb disconnect，再执行 adb connect；
-#       仅执行 connect 无效，通常会返回 already connected。
-#    2) 若仍无法恢复，在 WSA 设置中执行「修复」，或重启子系统。
-#  另请注意：此处 adb.path 与手工命令应使用同一个 adb 可执行文件，
-#  不同来源的 adb 会争用 5037 端口的服务进程，表现为设备反复上下线。
-#  adb 实际路径可通过 python main.py --check 查看。
-# ---------------------------------------------------------------------

@@ -100,7 +100,7 @@ class StateMixin:
 
         为什么要收键盘：软键盘/光标闪烁是 uiautomator "could not get idle state"
         的常见原因之一，收起后再 dump 往往就成功了。
-        为什么要"找回窗口"：WSA 窗口被最小化/关闭或息屏后，Android 侧
+        为什么要"找回窗口"：容器窗口被最小化/关闭或息屏后，Android 侧
         `mCurrentFocus=null`，uiautomator 会一直报 "null root node"——这时先唤醒屏幕、
         再重新拉起 App，通常就能恢复读取。
         日志节流：同一类失败 30 秒内只打一次 warning，其余降级为 debug（避免刷屏）。
@@ -122,7 +122,7 @@ class StateMixin:
     def _recover_window(self) -> bool:
         """把"窗口"找回来：先收键盘，再（必要时）唤醒屏幕 + 重新拉起 App。
 
-        返回是否执行了恢复动作。没有焦点窗口时（WSA 窗口被最小化/关闭、息屏），
+        返回是否执行了恢复动作。没有焦点窗口时（容器窗口被最小化/关闭、息屏），
         `launch()` 因为 Activity 仍是 resumed 会直接跳过，所以这里直接调 adb 拉起。
         """
         acted = False
@@ -133,7 +133,7 @@ class StateMixin:
         try:
             # 两种情况都要把窗口找回来：
             #   ① 没有任何窗口有焦点（mCurrentFocus=null，见实时日志）
-            #   ② 前台是**别的 App**（例如 WSA 主屏 com.microsoft.windows.homeapp，
+            #   ② 前台是**别的 App**（例如 容器 主屏 com.microsoft.windows.homeapp，
             #      用户日志里就是这个场景）——此时 dump 同样会失败
             foreign = False
             if self.adb.has_focus_window():
@@ -141,7 +141,7 @@ class StateMixin:
             needs = (not self.adb.has_focus_window()) or foreign
             if needs:
                 why = "前台是其它窗口" if foreign else "没有任何窗口获得焦点"
-                self.log("info", f"{why}（可能是 WSA 窗口被最小化/关闭、屏幕未点亮，"
+                self.log("info", f"{why}（可能是 容器窗口被最小化/关闭、屏幕未点亮，"
                                  f"或 App 没在前台），正在唤醒屏幕并重新拉起小天才 App ...")
                 if self.adb.screen_on() is not True:
                     self.adb.wake_up()
@@ -156,7 +156,7 @@ class StateMixin:
     def launch(self) -> bool:
         """确保小天才 App 在前台；**已在前台时不做任何启动动作**（避免"定死操作"）。
 
-        WSA 上 `am start -n` 偶发失败，adb_controller.launch_app() 内部已做多策略
+        设备上 `am start -n` 偶发失败，adb_controller.launch_app() 内部已做多策略
         启动 + 前台轮询；这里只负责前置判断、重试与日志。
         """
         if self.adb.is_in_foreground(self.package):
@@ -170,7 +170,7 @@ class StateMixin:
             self.log("warning", f"无法确认小天才 App 是否已安装（ADB 连接异常）: {e}")
             return False
         if not installed:
-            self.log("error", f"设备上没有安装 {self.package}（请先在模拟器/WSA 里安装并登录小天才 App）")
+            self.log("error", f"设备上没有安装 {self.package}（请先在模拟器/容器里安装并登录小天才 App）")
             return False
         last = ""
         for attempt in range(1, 4):
@@ -305,7 +305,7 @@ class StateMixin:
         if state == self.NOT_LOGGED_IN:
             if not self._warned_not_login:
                 self.log("warning", "小天才 App 未登录家长账号：请在目标 Android 环境"
-                                    "（模拟器/WSA/Waydroid/真机）里完成登录（登录前无法读取/发送消息）")
+                                    "（模拟器/容器/Waydroid/真机）里完成登录（登录前无法读取/发送消息）")
                 self._warned_not_login = True
             return False
         if state == self.LOGIN_UNKNOWN:
@@ -322,7 +322,7 @@ class StateMixin:
         后来改成"含 chat 且不含列表/首页类字样"，但那段判断用的是**整个组件名**——
         实机上报的是 `com.xtc.wechat.view.chatlist.ChatActivity`：**包名里的
         `chatlist` 含 "list"**，于是聊天页永远被排除，`is_in_chat()` 每次都要再
-        dump 一次界面（WSA 上一次 ~3 秒，发送链路白等 3 秒）。现在只拿**类名**
+        dump 一次界面（设备上一次 ~3 秒，发送链路白等 3 秒）。现在只拿**类名**
         （最后一段）做判断，`ui.activity_chat_exclude` 也是按类名匹配。
         """
         a = (act or "").lower()

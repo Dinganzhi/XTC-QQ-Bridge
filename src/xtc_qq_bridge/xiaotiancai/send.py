@@ -150,7 +150,7 @@ class SendMixin:
     def _send_once(self, text: str) -> tuple[bool, str]:
         """执行一轮"读界面 -> 清残留 -> 注入 -> 点发送 -> 确认"。返回 (是否确认成功, 说明)。
 
-        速度（WSA 上一次 uiautomator dump 约 3 秒，所以**数 dump 次数**才是关键）：
+        速度（设备上一次 uiautomator dump 约 3 秒，所以**数 dump 次数**才是关键）：
         - 发送前的基线优先复用轮询刚 dump 的那份快照（少 1 次）；
         - 布局没变时走**快路径**：直接广播注入 + 点缓存的发送按钮坐标，
           再用一次 dump 同时确认"注入成功 + 发送成功"（少 1 次）；
@@ -158,7 +158,7 @@ class SendMixin:
           或注入没生效时走这条），结果照样如实判定。
         """
         try:
-            # 0) 先确保屏幕是亮的：WSA 大约每分钟就会把虚拟屏睡一次（stayOn 也挡不住），
+            # 0) 先确保屏幕是亮的：容器 大约每分钟就会把虚拟屏睡一次（stayOn 也挡不住），
             #    息屏时 dump 必失败（null root node），整条发送就要多花 10 秒以上。
             #    这一步只花 ~0.2 秒，能把"发送撞上息屏"的概率压到很低。
             try:
@@ -241,7 +241,7 @@ class SendMixin:
                 if not self.adb.input_text(text, verify=self.input_verifier(text)):
                     return False, "文本注入失败（输入框未收到内容）"
             time.sleep(0.3)
-            # 复用注入校验时那次界面快照来找发送按钮，省掉一次 dump（WSA 上约 3 秒）
+            # 复用注入校验时那次界面快照来找发送按钮，省掉一次 dump（设备上约 3 秒）
             send_root = self._last_verify_root
             self._last_verify_root = None
             if send_root is None:
@@ -284,7 +284,7 @@ class SendMixin:
     def _cached_send_point(self, input_bounds):
         """缓存的发送按钮可点坐标；**仅当输入框位置与缓存时一致**才返回
 
-        为什么要这个判断：WSA 窗口能被缩放/最大化，布局一变，缓存下来的绝对坐标
+        为什么要这个判断：容器窗口能被缩放/最大化，布局一变，缓存下来的绝对坐标
         可能落到别的控件上（例如"更多"）。所以：
           * 输入框位置一致 -> 直接用缓存坐标（最稳）；
           * 只有**输入框高度**变了（多行文字 / 键盘收起）-> 按"相对输入框右下角的偏移"
@@ -403,8 +403,8 @@ class SendMixin:
             "retryable": False,
         }
         try:
-            # 屏可能刚睡过去（WSA 随宿主窗口状态休眠虚拟屏）：先确认点亮，
-            # 否则点下去是打在 WSA 主屏的空壳上、文字进不了输入框（白费一轮复核）。
+            # 屏可能刚睡过去（容器 随宿主窗口状态休眠虚拟屏）：先确认点亮，
+            # 否则点下去是打在 容器 主屏的空壳上、文字进不了输入框（白费一轮复核）。
             try:
                 self.adb.wake_if_asleep()
             except Exception:  # noqa: BLE001 唤醒失败也照常试
@@ -574,7 +574,7 @@ class SendMixin:
         """发送后确认（通常只 dump 一次，约 3 秒）。返回 (是否确认发出, 说明)。
 
         第一次 dump 前先等 `_confirm_delay`：点发送后 App 要一点时间才把气泡画出来，
-        等太短会白 dump 一次（WSA 上一次 ~3 秒，白等就变成"发一条要十几秒"）。
+        等太短会白 dump 一次（设备上一次 ~3 秒，白等就变成"发一条要十几秒"）。
         后面几次只在前一次证据不足时才继续。
 
         每次 dump 的**结果与耗时**都记下来：多花了一次 dump 就在 INFO 里写一行说明，
@@ -656,7 +656,7 @@ class SendMixin:
     def _input_text_of(self, edit) -> str:
         """输入框的**真实**文本：把空输入框显示的占位提示（hint）当成空串。
 
-        实机（WSA + 小天才）测到：输入框为空时 dump 出的 text 是 "发送文字"，
+        实机（容器 + 小天才）测到：输入框为空时 dump 出的 text 是 "发送文字"，
         旧逻辑会把它当作用户残留内容，于是反复清空/影响发送确认判定。
         """
         t = (edit.get("text", "") or "") if edit is not None else ""
@@ -683,7 +683,7 @@ class SendMixin:
     def _find_send(self, root: ET.Element):
         """找"发送"控件。必须**只**认真正的发送控件，不能误认消息状态图标。
 
-        实机（WSA + 小天才，1366x768）实测：
+        实机（容器 + 小天才，1366x768）实测：
         - 输入框有内容时：`tv_send_view`（TextView text=发送，本身 clickable=false，
           真正可点的是它的父 `fl_chat_text_send`）；
         - 输入框为空时：**没有** tv_send_view；此时旧的 content-desc 子串匹配会命中

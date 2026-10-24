@@ -6,20 +6,20 @@ from __future__ import annotations
 UI 树解析等能力。
 
 支持环境（Windows / Linux / macOS 均可）：
-- Windows：雷电（LDPlayer）、MuMu 模拟器、WSA / WSABuilds（MagiskOnWSA）
+- Windows：雷电（LDPlayer）、MuMu 模拟器、或其它 Android 容器
 - Linux：Waydroid、Genymotion、Android-x86 / 夜神 / 逍遥等提供 adb 端口的模拟器
 - macOS：Genymotion、Android Studio 模拟器、真机
 - 任何能通过 `adb connect` 接入的 Android 实例（含真机 USB / 网络调试）
 
 设计要点：
 - adb 查找顺序：config 指定路径 -> 环境变量 ADB_PATH -> 平台常见安装路径 -> PATH。
-- 设备查找顺序：**已有的在线设备** -> 环境变量 ADB_SERIAL -> WSA 端口（Windows）
+- 设备查找顺序：**已有的在线设备** -> 环境变量 ADB_SERIAL -> 配置端口（Windows）
   -> 常见端口（5555 / 16384 / 62001 …）-> 多次重试。任何情况下都不会顶掉已连接的
   设备去抢端口。
 - 启动 App：解析 launcher activity（cmd/pm resolve-activity）-> `am start -n`
-  -> `monkey -p <pkg>`（WSA 上最稳）-> `cmd package` 兜底，并轮询前台确认。
+  -> `monkey -p <pkg>`（更稳定）-> `cmd package` 兜底，并轮询前台确认。
 - 前台判定：兼容 Android 13+ 的 `topResumedActivity`/`mFocusedApp`，不再只认
-  `mCurrentFocus`（WSA/新镜像上 mCurrentFocus 经常为空，会把"启动成功"误判成失败）。
+  `mCurrentFocus`（新系统镜像上 mCurrentFocus 经常为空，会把"启动成功"误判成失败）。
 - 中文输入策略链（每一步都做**结果校验**，失败才降级）：
     1) ADBKeyBoard IME 广播 ADB_INPUT_TEXT（明文，兼容 v2.5-dev 与旧版）
     2) ADB_INPUT_B64（base64，Oreo/P 之后 am 不接受 UTF-8 明文时用）
@@ -32,10 +32,8 @@ UI 树解析等能力。
 import base64
 import os
 import re
-import shutil
 import struct
 import subprocess
-import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -49,7 +47,7 @@ from .platform import *  # noqa: F401,F403
 class ADBController:
     def __init__(self, adb_path: str = "", host: str = "127.0.0.1", port: int = 5555,
                  serial: str = "", timeout: float = 30.0, logger=None,
-                 extra_ports: list[int] | None = None, wsa_port: int = 0,
+                 extra_ports: list[int] | None = None,
                  input_retries: int = 2, dump_retries: int = 2, dump_delay: float = 0.8,
                  focus_ttl: float = 1.5, dump_timeout: float = 60.0):
         self.adb_path = find_adb(adb_path)
@@ -59,7 +57,6 @@ class ADBController:
         self.timeout = timeout
         self.logger = logger or _silent_logger()
         self.extra_ports = [int(p) for p in (extra_ports or []) if int(p) > 0]
-        self.wsa_port = int(wsa_port or 0)
         self.input_retries = max(1, int(input_retries or 1))
         # UI dump 默认重试参数：默认值偏保守（2 次 / 0.8s），交互路径会显式用更快的
         # 参数（retries=2, delay=0.3），避免"按个按钮要好几秒"。
@@ -75,7 +72,7 @@ class ADBController:
         self._focus_cache: tuple[float, str] = (0.0, "")
         self._activity_cache: tuple[float, str] = (0.0, "")
         # 曾经出现过"屏幕未点亮 -> null root"时置位：此后每次 dump 前先确认/唤醒屏幕，
-        # 避免每次都先用 3~8 秒去撞 uiautomator 失败（实机 WSA 上单次 dump 从 45s 降到 2s）。
+        # 避免每次都先用 3~8 秒去撞 uiautomator 失败（实机 设备上单次 dump 从 45s 降到 2s）。
         self._screen_suspect = False
         # 限频用：同类提示（息屏/唤醒/读取失败）在短时间内只打一次，避免每轮轮询刷屏
         self._throttle: dict[str, float] = {}
@@ -89,7 +86,6 @@ class ADBController:
         self._ime_active_ok: bool | None = None
         self._ime_active_ts = float("-inf")
         self._input_verify_supported: bool | None = None
-        self._is_wsa: bool | None = None
         # 显示旋转缓存（模拟器可能被旋转成竖屏，UI 逻辑坐标 != input 物理坐标）
         self._rotation: int = 0
         self._rotation_ts: float = 0.0
@@ -155,10 +151,9 @@ class ADBController:
         return states
 
     def _port_candidates(self) -> list[int]:
-        """连接候选端口：WSA 端口 -> 配置端口 -> WSA 常见端口 -> 模拟器常见端口。"""
+        """连接候选端口：配置端口 -> 配置端口 -> 容器 常见端口 -> 模拟器常见端口。"""
         cands: list[int] = []
-        for p in ([self.wsa_port] if self.wsa_port else []) + [wsa_adb_port()] + \
-                 [self.port] + self.extra_ports + _WSA_COMMON_PORTS + _EMULATOR_COMMON_PORTS:
+        for p in [self.port] + self.extra_ports + _EMULATOR_COMMON_PORTS:
             p = int(p or 0)
             if p > 0 and p not in cands:
                 cands.append(p)
@@ -167,7 +162,7 @@ class ADBController:
     def connect(self, ports: list[int] | None = None, timeout: float = 8.0) -> bool:
         """依次尝试候选端口连接；**已有的在线设备永远优先**（不会被顶掉）。
 
-        WSA 的 ADB 无线调试端口默认 58526（WSABuilds 同），雷电/MuMu 为 5555/16384。
+        设备的 ADB 无线调试端口默认 58526（容器Builds 同），雷电/MuMu 为 5555/16384。
         """
         if self.is_connected():
             return True
@@ -221,7 +216,7 @@ class ADBController:
         return False
 
     def _adopt_serial(self, prefer: str = "") -> bool:
-        """从**在线**设备里挑一个（WSA/已有设备优先），成功后写入 self.serial。
+        """从**在线**设备里挑一个（容器/已有设备优先），成功后写入 self.serial。
 
         注意：不能只凭 `adb connect` 回的那句 "connected" 就认账 —— 设备 offline 时它
         也会回 "already connected to ..."，照单全收就会一直"重连成功"却什么都读不到。
@@ -274,7 +269,7 @@ class ADBController:
     def _recover_offline(self, target: str, timeout: float = 8.0) -> bool:
         """设备处于 offline（transport 卡死）时的分级恢复：disconnect+connect -> 重启 adb server。
 
-        实机（WSA `127.0.0.1:58526`）踩过：`adb devices` 一直显示 offline，`adb connect`
+        实机（容器 `127.0.0.1:58526`）踩过：`adb devices` 一直显示 offline，`adb connect`
         只回 "already connected to ..."，桥接于是每 10 秒"重连"一次却始终连不上，
         日志刷"ADB 断连，尝试重连... / ADB 已重连"；手动 `adb disconnect` + `connect`
         立刻恢复。这里把这一步自动化，避免"重连了个寂寞"。
@@ -301,20 +296,17 @@ class ADBController:
             self.serial = target
             self.logger.info(f"设备 {target} 已恢复在线（重启 adb server 后）")
             return True
-        self.logger.warning(f"设备 {target} 仍是 offline：多半是 WSA 侧网络/子系统卡住，"
-                            "可在 WSA 设置里点「修复」或重启子系统")
+        self.logger.warning(f"设备 {target} 仍是 offline：多半是 容器 侧网络/容器卡住，"
+                            "可在 容器 设置里点「修复」或重启容器")
         return False
 
     def _pick_serial(self, serials: list[str] | None = None) -> str:
         serials = list(serials if serials is not None else self.devices())
         if not serials:
-            raise AdbError("没有在线设备：请先启动模拟器 / WSA（并确认 ADB 调试已开启）")
+            raise AdbError("没有在线设备：请先启动模拟器 / 容器（并确认 ADB 调试已开启）")
         if len(serials) == 1:
             return serials[0]
-        # 多设备：优先 WSA（127.0.0.1:<非模拟器端口>），其次 adb 原生 emulator-XXXX
-        for s in serials:
-            if _is_wsa_serial(s):
-                return s
+        # 多设备：优先 容器（127.0.0.1:<非模拟器端口>），其次 adb 原生 emulator-XXXX
         for s in serials:
             if s.startswith("emulator-"):
                 return s
@@ -327,7 +319,7 @@ class ADBController:
                 state = out.strip().lower()
                 if state == "device":
                     return True
-                # serial 失效（WSA 重启后端口会变）：清掉重新选。
+                # serial 失效（容器 重启后端口会变）：清掉重新选。
                 # 这条会随 10 秒心跳反复出现，所以节流成 60 秒一次，避免刷屏。
                 self._log_throttled(
                     f"state_{self.serial}",
@@ -342,7 +334,6 @@ class ADBController:
             return False
 
     def ensure_connected(self, retries: int = 3, delay: float = 2.0,
-                         auto_launch_wsa: bool = False,
                          auto_launch_emulator: bool = False) -> bool:
         for i in range(retries):
             if self.is_connected():
@@ -356,11 +347,7 @@ class ADBController:
                 self.logger.warning(f"连接失败: {e}")
             # 最后一轮仍失败：按平台尝试拉起目标环境后再等一会儿
             if i == retries - 2:
-                if auto_launch_wsa and wsa_installed():
-                    self.logger.info("未发现在线设备，尝试启动 WSA ...")
-                    launch_wsa()
-                    time.sleep(15)
-                elif auto_launch_emulator:
+                if auto_launch_emulator:
                     names = available_launchers()
                     if names:
                         self.logger.info(f"未发现在线设备，尝试启动模拟器/容器: {names[0]} ...")
@@ -414,24 +401,15 @@ class ADBController:
             self.serial or "",
         ]).lower()
 
-    def is_wsa(self) -> bool:
-        """是否运行在 WSA / WSABuilds 上（用于日志与策略选择）。"""
-        if self._is_wsa is None:
-            blob = self._device_blob()
-            self._is_wsa = ("windows" in blob or "subsystem" in blob or "wsa" in blob
-                            or _is_wsa_serial(self.serial))
-        return self._is_wsa
 
     def runtime_tag(self) -> str:
-        """运行环境标签：WSA / Waydroid / 模拟器 / 真机（仅用于日志与提示）。"""
+        """运行环境标签：容器 / Waydroid / 模拟器 / 真机（仅用于日志与提示）。"""
         blob = self._device_blob()
-        if self.is_wsa():
-            return "WSA"
         if "waydroid" in blob:
             return "Waydroid"
         if "genymotion" in blob:
             return "Genymotion"
-        if self.serial.startswith("emulator-") or _is_wsa_serial(self.serial):
+        if self.serial.startswith("emulator-"):
             return "模拟器"
         if "sdk_gphone" in blob or "google_sdk" in blob:
             return "Android 模拟器镜像"
@@ -511,7 +489,7 @@ class ADBController:
         App 是否在前台请用 get_current_activity()（只看 Activity 级信息）。
 
         - Android 12-：`mCurrentFocus=Window{... u0 com.pkg/com.pkg.Act}`
-        - Android 13+ / WSA：`topResumedActivity=ActivityRecord{... u0 com.pkg/.Act t123}`
+        - Android 13+ / 容器：`topResumedActivity=ActivityRecord{... u0 com.pkg/.Act t123}`
           （此时 mCurrentFocus 可能为空或是输入法/弹窗窗口）
         """
         if not dump:
@@ -580,9 +558,9 @@ class ADBController:
 
         这里要同时看**两层信息**，缺一不可（两个坑都是实机踩出来的）：
         * 只看窗口焦点（mCurrentFocus）：输入法一弹出就抢走焦点，会误判"App 不在前台/未登录"；
-        * 只看 Activity：WSA 主屏（com.microsoft.windows.homeapp）抢到窗口时，
+        * 只看 Activity：容器 主屏（com.microsoft.windows.homeapp）抢到窗口时，
           Activity 仍是小天才的，于是误判"已在前台"，不去把它拉到前台——
-          结果 uiautomator 只能 dump 到 WSA 主屏（4 个节点），随后报"找不到联系人"。
+          结果 uiautomator 只能 dump 到 容器 主屏（4 个节点），随后报"找不到联系人"。
 
         规则：Activity 必须是目标包；窗口要么也是目标包、要么是**输入法/系统弹窗**这类
         叠加层（此时仍算在前台，弹窗清理也正需要读到它）；窗口是**别的 App** 则不算。
@@ -603,7 +581,7 @@ class ADBController:
                        level: str = "info") -> None:
         """同类提示限频：同一个 key 在 `interval` 秒内只打一次日志。
 
-        为什么要它：WSA 息屏/窗口失焦时每轮读取都会走到"先唤醒屏幕"这条路径，
+        为什么要它：容器 息屏/窗口失焦时每轮读取都会走到"先唤醒屏幕"这条路径，
         旧实现每轮都打一遍（轮询 2~5 秒一次），日志被同一行刷满，真正的异常反而看不见。
         日志文件里出现过一小时两百多行重复的息屏提示。
         """
@@ -620,7 +598,7 @@ class ADBController:
         """屏幕是否亮着：True / False / None（无法判断）。
 
         `uiautomator dump` 在息屏/锁屏时会报
-        "ERROR: null root node returned by UiTestAutomationBridge."（实测 WSA 上就是这样），
+        "ERROR: null root node returned by UiTestAutomationBridge."（实测 设备上就是这样），
         所以 dump 失败时要先确认并唤醒屏幕。
         """
         out = self.try_shell("dumpsys power", timeout=20) or \
@@ -639,7 +617,7 @@ class ADBController:
         self._awake_until = time.monotonic() + self._awake_ttl
 
     def wake_up(self) -> bool:
-        """唤醒屏幕并解除锁屏（WSA/模拟器息屏后 dump 会一直失败）。返回是否已亮屏。"""
+        """唤醒屏幕并解除锁屏（容器/模拟器息屏后 dump 会一直失败）。返回是否已亮屏。"""
         try:
             self.shell("input keyevent 224", timeout=15)      # KEYCODE_WAKEUP
             time.sleep(0.8)
@@ -654,7 +632,7 @@ class ADBController:
     def wake_if_asleep(self) -> bool:
         """**息屏才唤醒**，返回是否真的做了唤醒。
 
-        WSA 会随宿主窗口状态（窗口失去焦点/被别的窗口盖住）让虚拟屏睡过去：
+        容器会随宿主窗口状态（窗口失去焦点/被别的窗口盖住）让虚拟屏睡过去：
         `screen_off_timeout` 拉到极大值、`svc power stayon true` 都挡不住（实测设置都还在，
         屏照样睡）。所以每次判断"App 是不是在前台"之前先花 ~0.3 秒问一次电源状态，
         睡着就叫醒 —— 唤醒后 App 通常立刻回到前台（它本来就是 resumed 的 Activity），
@@ -687,12 +665,12 @@ class ADBController:
             return False
 
     def keep_awake(self) -> bool:
-        """让子系统**保持常亮**（桥接运行期间）。
+        """让容器**保持常亮**（桥接运行期间）。
 
-        实机（WSA）测到：虚拟屏会在闲置后进入 Asleep，随后 `uiautomator` 一直返回
+        实机（容器）测到：虚拟屏会在闲置后进入 Asleep，随后 `uiautomator` 一直返回
         "null root node"，每次读取都要先唤醒（单次 dump 从 1s 变成 20~45s）。
         这里用两条最通用的设置把屏幕钉住：
-          * `svc power stayon true` —— 充电/连接时常亮（WSA 恒为"已连接"）
+          * `svc power stayon true` —— 充电/连接时常亮（容器 恒为"已连接"）
           * `settings put system screen_off_timeout` 设成极大值 —— 永不自动息屏
         并用一次 WAKEUP 立即点亮。
         """
@@ -749,7 +727,7 @@ class ADBController:
         """设备上有没有装这个包。
 
         strict=True（默认）：**命令本身失败时抛 AdbError**（ADB 断连 / 设备 offline），
-        绝不返回 False —— 否则调用方会把"读不到"误报成"没安装"。实机踩过：WSA 的
+        绝不返回 False —— 否则调用方会把"读不到"误报成"没安装"。实机踩过：设备的
         transport 变成 offline 后，日志每 10 秒刷一次"设备上没有安装 com.xtc.watch"，
         其实 App 装得好好的。
         strict=False：纯探测，失败就当作"没有"。
@@ -804,14 +782,14 @@ class ADBController:
                    attempts: int = 2) -> str:
         """启动 App 并确认其到达前台，返回最终使用的 activity（空串表示启动失败）。
 
-        多策略（WSA 上 `am start -n` 偶发失败/被系统吞掉，`monkey` 最稳）：
+        多策略（设备上 `am start -n` 偶发失败/被系统吞掉，`monkey` 最稳）：
           1) am start -n <pkg>/<activity>（resolve-activity 解析得到时）
           2) monkey -p <pkg> -c android.intent.category.LAUNCHER 1
           3) am start -a android.intent.action.MAIN -c ...LAUNCHER <pkg>
         每次启动后轮询前台确认；未到前台则退避重试整轮。
         返回值为 activity 名或命中的策略名（调用方只需判断非空）。
 
-        速度（实机 WSA 实测）：`am start -n` 0.46s 到前台、`monkey` 0.97s 到前台，
+        速度（实机 容器 实测）：`am start -n` 0.46s 到前台、`monkey` 0.97s 到前台，
         而 `am start -a MAIN/LAUNCHER` 在有的镜像上**根本起不来**——旧实现给每个策略
         25 秒的前台等待，撞上这种策略就白等 25 秒（用户报"发一条要十几秒"里就有它）。
         现在：① 单策略等待 6 秒、0.4 秒轮询一次；② 输出里一旦出现
@@ -819,7 +797,7 @@ class ADBController:
         不再傻等。
         """
         if not self.package_installed(package):
-            raise AdbError(f"设备上没有安装 {package}（请先在模拟器/WSA 里安装并登录小天才 App）")
+            raise AdbError(f"设备上没有安装 {package}（请先在模拟器/容器里安装并登录小天才 App）")
         if self.is_in_foreground(package):
             return activity or "already-foreground"
 
@@ -848,7 +826,7 @@ class ADBController:
                 if self.wait_for_activity(package, timeout=wait, interval=0.4):
                     return resolved or name
                 last_err = f"{name}: 命令已执行但未检测到 {package} 前台"
-            # 三套策略都没成功：等一下再来（WSA 冷启动/上一个进程未完全退出时常见）
+            # 三套策略都没成功：等一下再来（容器 冷启动/上一个进程未完全退出时常见）
             time.sleep(2.0 + i * 2.0)
         self.logger.warning(f"启动 {package} 失败：{last_err}")
         return ""
@@ -877,7 +855,7 @@ class ADBController:
         为什么不用 `-p`（PNG）：抠图要按像素裁，而解码 PNG 需要额外依赖（Pillow）。
         `screencap` 不带 `-p` 直接给原始像素，裁剪 + 自己编码 PNG 只用标准库（见 utils/pngtool.py）。
 
-        头部长度：12 字节（w,h,format）或 16 字节（多一个 colorspace，Android 9+ 实测 WSA 就是
+        头部长度：12 字节（w,h,format）或 16 字节（多一个 colorspace，Android 9+ 实测 容器 就是
         16：第 12~15 字节 = 1）。**按"总长度减去头部后正好等于 w*h*4"来判定**——
         实机实测 len=4196368、w*h*4=4196352：12 字节读法会多出 4 字节（会把像素整体错位一个像素），
         16 字节读法刚好吻合。
@@ -992,7 +970,7 @@ class ADBController:
         """一次 shell 调用完成"dump 落盘 -> 读回 -> 删文件"。
 
         比"rm -> dump -> exec-out cat -> rm"少 3 次 adb 进程开销（每次约 0.2~0.3s），
-        在 WSA 上实测量级从 ~3.5s 降到 ~1.8s。文件名仍然唯一，不会读到旧文件。
+        在 设备上实测量级从 ~3.5s 降到 ~1.8s。文件名仍然唯一，不会读到旧文件。
         """
         flag = " --compressed" if compressed else ""
         details = []
@@ -1013,7 +991,7 @@ class ADBController:
     def _dump_strategies(self) -> list:
         """按"上次成功的先试"的顺序返回 dump 策略。
 
-        为什么**优先完整 dump**（实机 WSA 实测）：`--compressed` 会把消息时间标签
+        为什么**优先完整 dump**（实机 容器 实测）：`--compressed` 会把消息时间标签
         节点（tv_chat_msg_item_date）整片裁掉——同一屏压缩版 19 个节点 / 0 个时间标签，
         完整版 46 个节点 / 3 个时间标签；时间标签一丢，每条消息的时间就退化成
         "当前时间"（用户报的"消息时间还是不对"就是这么来的）。
@@ -1060,7 +1038,7 @@ class ADBController:
         """是否像"息屏/锁屏/安全窗口"导致的 dump 失败。
 
         实测报错：`ERROR: null root node returned by UiTestAutomationBridge.`
-        （WSA 息屏后必然出现；也可能出现在 FLAG_SECURE 窗口上）。
+        （容器 息屏后必然出现；也可能出现在 FLAG_SECURE 窗口上）。
         """
         joined = " ".join(details).lower()
         return ("null root node" in joined or "screen is off" in joined
@@ -1076,8 +1054,8 @@ class ADBController:
     def has_focus_window(self) -> bool:
         """当前是否有**任何**获得焦点的窗口。
 
-        `mCurrentFocus=null`（没有任何窗口有焦点）是 WSA 上的典型状态：
-        WSA 窗口被最小化/关闭、或虚拟显示未点亮时，uiautomator 会一直返回
+        `mCurrentFocus=null`（没有任何窗口有焦点）是 设备上的典型状态：
+        容器窗口被最小化/关闭、或虚拟显示未点亮时，uiautomator 会一直返回
         "ERROR: null root node returned by UiTestAutomationBridge."。
         调用方据此决定"唤醒屏幕 / 重新拉起 App"来把窗口找回来。
         """
@@ -1109,11 +1087,11 @@ class ADBController:
         key_detail = next((d for d in details if self._short_reason(d)), "")
         if "null root node" in low or "no root node" in low:
             reason = "uiautomator 拿不到根节点（屏幕未点亮 / 窗口被最小化或关闭）"
-            hint = ("请让 WSA 窗口保持打开（最小化或关闭 WSA 窗口时 Android 侧没有窗口焦点，"
+            hint = ("请让 容器窗口保持打开（最小化或关闭 容器窗口时 Android 侧没有窗口焦点，"
                     "任何界面读取都会失败）；桥接会自动尝试唤醒屏幕并重新拉起 App")
         elif not focus:
             reason = "没有任何窗口获得焦点（前台为空）"
-            hint = "让 WSA 窗口保持打开，或等窗口恢复后桥接会自动继续"
+            hint = "让 容器窗口保持打开，或等窗口恢复后桥接会自动继续"
         elif "idle" in low:
             reason = "界面一直不空闲（转场/加载动画、弹窗或键盘光标）"
             hint = "可调大 adb.dump_retries / adb.dump_delay，或用 /小天才 初始化 清理界面"
@@ -1296,7 +1274,7 @@ class ADBController:
     def input_text_plain(self, text: str, ensure_ime: bool = True) -> bool:
         """只把文本广播给输入框（**不做** UI 校验），返回广播是否发出。
 
-        用途：发送快路径。校验要 dump 一次界面（WSA 上 ~3 秒），而"点发送之后"
+        用途：发送快路径。校验要 dump 一次界面（设备上 ~3 秒），而"点发送之后"
         那次确认 dump 本身是更强的证据（气泡里出现这段文本 = 注入成功 + 发送成功）。
         所以快路径先不校验，直接点发送，再一次 dump 统一确认；没确认成功时调用方
         会退回 `input_text()`（带校验的完整策略链，含重新聚焦）重试。
@@ -1375,7 +1353,7 @@ class ADBController:
         if not self.probe_clipboard():
             return False
         if not set_clipboard(self, text):
-            self.logger.warning("剪贴板写入失败/回读不一致（WSA 常见），跳过剪贴板注入，"
+            self.logger.warning("剪贴板写入失败/回读不一致（容器 常见），跳过剪贴板注入，"
                                 "避免粘出宿主剪贴板里的旧内容")
             return False
         try:
@@ -1430,7 +1408,7 @@ class ADBController:
         return self.try_shell("settings get secure default_input_method").strip()
 
     def ime_shown(self) -> bool:
-        """软键盘当前是否真的显示（WSA 上 ADBKeyBoard 的输入视图高度为 0，需靠这个判断）。"""
+        """软键盘当前是否真的显示（设备上 ADBKeyBoard 的输入视图高度为 0，需靠这个判断）。"""
         out = self.try_shell("dumpsys input_method", timeout=20)
         if not out:
             return False
@@ -1594,19 +1572,14 @@ class ADBController:
             "serial": self.serial,
             "connected": False,
         }
-        if IS_WINDOWS:
-            info["wsa_installed"] = wsa_installed()
-            info["wsa_port_registry"] = wsa_adb_port()
-        else:
-            info["waydroid"] = waydroid_present()
-            info["launchers"] = available_launchers()
+        info["waydroid"] = waydroid_present()
+        info["launchers"] = available_launchers()
         if not self.is_connected():
             info["hint"] = self._connect_hint()
             return info
         info.update({
             "connected": True,
             "runtime": self.runtime_tag(),
-            "is_wsa": self.is_wsa(),
             "android": self.android_version(),
             "sdk": self.android_sdk(),
             "screen": self.get_screen_size(),

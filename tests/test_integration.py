@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """集成测试：用"假 ADB 命令执行器"替换 subprocess，跑通 ADBController 的真实逻辑链，
-不需要设备/模拟器/WSA，也不依赖文件系统。
+不需要设备/模拟器/容器，也不依赖文件系统。
 
 覆盖：
-  - 连接：没有在线设备时自动 connect WSA 端口（58526）；已有设备优先，不去抢端口
+  - 连接：没有在线设备时自动 connect 容器 端口（58526）；已有设备优先，不去抢端口
   - 启动：resolve-activity 输出带警告行时仍能解析；`am start -n` 失败后 monkey 兜底；
           前台判定兼容 Android 13 的 topResumedActivity
   - 文本注入：以输入框真实内容校验；明文被吞 -> base64 救回；全失败 -> 老实返回 False
-  - 剪贴板：回读不一致（WSA 把宿主剪贴板内容读回来）时绝不按 KEYCODE_PASTE
+  - 剪贴板：回读不一致（容器 把宿主剪贴板内容读回来）时绝不按 KEYCODE_PASTE
 
 用法：python tests/test_integration.py
 """
@@ -86,7 +86,7 @@ class FakeAdb:
                 return "", "adb: device offline\n"
             return "device\n", ""
         if cmd == "devices":
-            # listed=False：设备尚未注册到 adb server（WSA 刚开机/重启后的真实情形）
+            # listed=False：设备尚未注册到 adb server（容器刚开机/重启后的真实情形）
             visible = self.connected and self.listed
             return ("List of devices attached\n127.0.0.1:58526\tdevice\n"
                     if visible else "List of devices attached\n"), ""
@@ -200,14 +200,15 @@ def make_controller(**kw) -> tuple[ac.ADBController, FakeAdb]:
 
 # ------------------------------------------------------------------ 用例
 def test_connect_attempted_when_devices_empty() -> None:
-    """adb devices 为空时，连接候选端口必须从 WSA 端口 58526 开始。"""
+    """adb devices 为空时，按"配置端口 -> 额外端口 -> 常见端口"依次尝试连接。"""
     ctl, fake = make_controller(connected=True, listed=False)
     ctl.serial = ""
     ok = ctl.connect()
-    check("connect 成功并采用目标设备", ok and ctl.serial == "127.0.0.1:58526",
+    check("connect 成功并采用目标设备", ok and ctl.serial == "127.0.0.1:5555",
           f"serial={ctl.serial}")
     conns = [c for c in fake.calls if c.startswith("connect")]
-    check("首个 connect 目标是 58526", conns and conns[0].endswith("58526"), str(conns[:3]))
+    check("首个 connect 目标是配置的端口 5555",
+          conns and conns[0].endswith("5555"), str(conns[:3]))
 
 
 def test_adopt_already_listed_device() -> None:
@@ -236,8 +237,8 @@ def test_no_device_error_hint() -> None:
         check("无设备时抛 AdbError", False, "没有抛异常")
     except ac.AdbError as e:
         check("无设备时报错含端口提示", "已尝试端口" in str(e), str(e).splitlines()[0])
-    check("候选端口包含 WSA 与模拟器端口",
-          58526 in ctl._port_candidates() and 5555 in ctl._port_candidates())
+    check("候选端口包含配置端口与常见模拟器端口",
+          5555 in ctl._port_candidates() and 16384 in ctl._port_candidates())
 
 
 def test_focus_android13() -> None:
@@ -259,7 +260,7 @@ def test_launch_activity_parse_and_confirm() -> None:
 
 
 def test_launch_monkey_fallback() -> None:
-    """WSA 上 am start 失败是"启动失败"的主因之一，monkey 必须能救回来。"""
+    """设备上 am start 失败是"启动失败"的主因之一，monkey 必须能救回来。"""
     ctl, fake = make_controller(am_fail=True)
     ctl.serial = "127.0.0.1:58526"
     used = ctl.launch_app("com.xtc.watch", "", wait=3, attempts=1)
@@ -320,9 +321,9 @@ def test_input_all_channels_dead() -> None:
 def test_input_clipboard_confirmed_then_paste() -> None:
     ctl, fake = make_controller(broadcast="dead", clipboard="ok")
     ctl.serial = "127.0.0.1:58526"
-    ok = ctl.input_text("hello-wsa", verify=lambda: fake.device_input == "hello-wsa")
+    ok = ctl.input_text("hello-container", verify=lambda: fake.device_input == "hello-container")
     check("剪贴板确认一致后允许粘贴", ok is True)
-    check("剪贴板写入了目标文本", fake.device_clip == "hello-wsa", repr(fake.device_clip))
+    check("剪贴板写入了目标文本", fake.device_clip == "hello-container", repr(fake.device_clip))
     check("确实执行了粘贴", fake.did("keyevent 279"))
 
 
@@ -405,7 +406,7 @@ class DumpAdb(FakeAdb):
 def test_ui_dump_tty_fast_path() -> None:
     """`/dev/tty` 快路径本身可用，且"上次成功的策略"会被优先尝试（自适应）。
 
-    策略顺序按设备自适应（实机 WSA 上普通 dump 会被 Killed、只有 --compressed 稳定），
+    策略顺序按设备自适应（实机 设备上普通 dump 会被 Killed、只有 --compressed 稳定），
     所以这里分别验证：① tty 解析可用；② 记住的策略排在最前；③ dump_ui 整体能拿到树。
     """
     ctl, _ = make_controller()

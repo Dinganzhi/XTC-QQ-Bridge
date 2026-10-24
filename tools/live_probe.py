@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""在真实 WSA 设备上跑一遍桥接的关键路径（**只读/可回退操作，不发真实消息**）。
+"""在真实 Android 设备上跑一遍桥接的关键路径（**只读/可回退操作，不发真实消息**）。
 
 检查项：连接/诊断、UI dump、登录态三态、弹窗清理、聊天页判定、打开聊天、
 联系人匹配、读取最新消息、文本注入（输入后清空，不点发送）、消息库归档。
@@ -96,10 +96,10 @@ def main() -> int:
     except AdbError as e:
         check("UI dump", False, f"{e}")
     check("ADBKeyBoard", adb.adbkeyboard_ready(), f"ime={adb.current_ime() or '(未知)'}")
-    # WSA 与宿主共享剪贴板，clipboard_ok=False 是**预期**（中文输入靠 ADBKeyBoard 广播），
+    # 容器 与宿主共享剪贴板，clipboard_ok=False 是**预期**（中文输入靠 ADBKeyBoard 广播），
     # 所以这里只作信息展示，不算失败。
     print(f"[INFO] 剪贴板通道 clipboard_ok={adb.probe_clipboard()}"
-          f"（WSA 上通常为 False，属预期；不影响中文输入）")
+          f"（设备上通常为 False，属预期；不影响中文输入）")
 
     # 4) 登录态三态（本次修复重点）
     state = xtc.login_state(force=True)

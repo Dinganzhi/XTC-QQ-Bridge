@@ -3,7 +3,7 @@
 
 adb:
   path: ""                       # 留空自动探测；也可写 "C:\platform-tools\adb.exe"
-  port: 5555                     # WSA 用 wsa_port: 0（自动读注册表 / 58526）
+  port: 5555                     # 容器/模拟器的实际 adb 端口
 
 xiaotiancai:
   package: "com.xtc.watch"
