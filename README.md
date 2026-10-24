@@ -202,13 +202,30 @@ repo/
 |   |-- version.py               # 版本号唯一来源（打包脚本/CI 也读它）
 |   |-- runtime_paths.py         # 运行路径（源码/Nuitka onefile/standalone 都靠它）
 |   |-- speed_profile.py         # 速度/稳定档位（stable/balanced/fast/turbo）
-|   |-- adb_controller.py        # ADB 安装/连接/权限/按键/滑动/截图/UI dump/输入/文本注入
-|   |-- xiaotiancai.py           # 小天才 App 操作：界面/登录/自动登录/弹窗/发消息/读消息
-|   |-- bridge.py                # 轮询主循环：去重 + 补发 + 补投 + 转发 + 自动登录 + 历史
-|   |-- plugin_client.py         # AstrBot 插件客户端（转发/通知）
-|   |-- qq_webhook.py            # 反向回调服务（QQ -> 小天才；白名单/动作/消息）
-|   |-- msg_log.py               # 本地消息库（/小天才 历史消息 的数据源）
-|   |-- emoji_store.py           # 表情原图/照片原图（缓存 + 表情包，按像素核对）
+|   |-- adb_controller/           # ADB 控制层（安装/连接/权限/按键/滑动/截图/UI dump/输入/文本注入）
+|   |   |-- platform.py           # adb 路径探测、WSA/Waydroid 端口与启动、输入法与剪贴板
+|   |   |-- controller.py         # ADBController：设备操作与界面读取
+|   |   `-- errors.py             # AdbError
+|   |-- xiaotiancai/              # 小天才 App 操作（按职责拆成 mixin）
+|   |   |-- constants.py          # 界面 id/文案表、登录态常量、默认值
+|   |   |-- state.py              # App 状态判定、界面 dump、启动与恢复
+|   |   |-- login.py              # 登录页表单输入、账号密码登录
+|   |   |-- popup.py              # 弹窗/权限/更新提示处理
+|   |   |-- chat.py               # 打开会话、联系人查找、读取消息、历史与命令轮询
+|   |   |-- send.py               # 发送消息、发送判定、坐标缓存、预输入
+|   |   `-- core.py               # Xiaotiancai：组合上述 mixin 并提供 __init__
+|   |-- bridge/                   # 桥接主逻辑（按职责拆成 mixin）
+|   |   |-- shared.py             # 转发器（LogForwarder / PluginForwarder / make_forwarder）
+|   |   |-- core.py               # MessageBridge：生命周期、任务队列、轮询主循环
+|   |   |-- forwarding.py         # 目标分发、失败补投、内容级护栏
+|   |   |-- media.py              # 图片/表情等待原图与取图
+|   |   |-- reverse.py            # QQ -> 小天才 命令执行与送达确认
+|   |   |-- login.py              # 登录、自动登录开关、初始化
+|   |   |-- history.py            # 历史消息与 xtc 侧命令
+|   |   `-- commands.py           # 命令去重与 xtc 命令辅助
+|   |-- plugin_client.py          # AstrBot 插件客户端（转发/通知）
+|   |-- qq_webhook.py             # 反向回调服务（QQ -> 小天才；白名单/动作/消息）
+|   |-- msg_log.py                # 本地消息库（/小天才 历史消息 的数据源）
 |   |-- cli/
 |   |   `-- main.py              # 命令行入口：--check / --debug / --once / --catchup / --paths ...
 |   `-- utils/
@@ -691,7 +708,7 @@ logs/xtc-qq-bridge-20261018-194217.log
   |                      -> 桥接恢复 + QQ 通知"已重新登录"
 ```
 
-判定细节（`xiaotiancai.py`）：
+判定细节（`xiaotiancai/`）：
 
 - **进度优先**：界面出现 `login_progress_markers`（登录中/正在登录/正在验证/请稍候…）时，
   `_detect_login_error()` 直接返回空 —— 这就是"登录中不再提示登录失败"的实现。
@@ -961,7 +978,7 @@ logs/xtc-qq-bridge-20261018-194217.log
 或换目录）；交互路径用 `retries=2, delay=0.3` 的快速 dump；前台组件与登录态都带短缓存；等待时间由
 `ui.interaction_delay` 控制。
 
-**UI dump 的三种方案与可读报错**（`adb_controller._dump_strategies` / `_dump_ui_locked`）：
+**UI dump 的三种方案与可读报错**（`adb_controller/controller.py` 里的 `_dump_strategies` / `_dump_ui_locked`）：
 
 | 方案 | 动作 | 作用 |
 |---|---|---|
