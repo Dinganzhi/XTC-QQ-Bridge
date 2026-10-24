@@ -87,21 +87,23 @@ def verify_bundle() -> int:
     except Exception as e:  # noqa: BLE001
         ok = False
         print(f"  pyyaml      : FAIL {e}（配置是 YAML 时必须；编译时需 --include-package=yaml）")
-    for mod in ("adb_controller", "bridge", "xiaotiancai", "plugin_client", "qq_webhook",
-                "msg_log", "tools.dump_ui"):
+    for mod in ("xtc_qq_bridge.adb_controller", "xtc_qq_bridge.bridge",
+                "xtc_qq_bridge.xiaotiancai", "xtc_qq_bridge.plugin_client",
+                "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log"):
         try:
             __import__(mod)
-            print(f"  {mod:<12}: OK")
+            print(f"  {mod:<30}: OK")
         except Exception as e:  # noqa: BLE001
             ok = False
-            print(f"  {mod:<12}: FAIL {e}")
+            print(f"  {mod:<30}: FAIL {e}")
 
     print("---- 捆绑资源 ----")
     checks = [
         (runtime_paths.CONFIG_EXAMPLE_NAME, True),
         (runtime_paths.PLUGIN_SRC_DIR + "/main.py", True),
-        ("keyboardservice-debug.apk", False),
+        ("assets/keyboardservice-debug.apk", True),
         ("README.md", False),
+        (runtime_paths.PLUGIN_SRC_DIR + "/metadata.yaml", True),
     ]
     for name, required in checks:
         p = runtime_paths.resource(*name.split("/"))

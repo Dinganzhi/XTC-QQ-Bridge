@@ -346,6 +346,8 @@ def build_command(info: NuitkaInfo, target: str, mode: str, out_dir: Path,
     # 整包包含：包在 src/ 下，逐条列模块容易漏（CI 曾报 failed to locate module）
     if info.supports("--include-package"):
         cmd += ["--include-package=xtc_qq_bridge"]
+        # --debug dump-ui 走的是 `from tools import dump_ui`，需要显式打进去
+        cmd += ["--include-module=tools.dump_ui"]
     else:
         cmd += ["--include-module=" + m for m in INCLUDE_MODULES.get(target, [])]
     # pyyaml 在 try/except 里 import，显式带上整个包（含 C 扩展）
