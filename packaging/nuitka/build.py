@@ -38,6 +38,10 @@ from pathlib import Path
 
 # 脚本位置：<repo>/packaging/nuitka/build.py -> 仓库根目录是上两级
 ROOT = Path(__file__).resolve().parents[2]
+# 包位于 src 布局下：脚本自身也要能 import 到 xtc_qq_bridge，否则下面的
+# "中文控制台兜底"会被静默跳过，Windows CI（cp1252）上 print 中文直接抛
+# UnicodeEncodeError 导致整个编译判失败。
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 # 非 UTF-8 控制台兜底：Windows CI 的 cp1252 下 print 中文会抛 UnicodeEncodeError，
