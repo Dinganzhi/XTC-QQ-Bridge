@@ -72,10 +72,15 @@ def _launcher_exe() -> Path | None:
 # 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：
 # 源码运行 = 仓库根目录；Nuitka = 可执行文件所在目录（onefile 下是真实 exe，不是临时目录）
 def _bundle_dir() -> Path:
-    if not IS_FROZEN:
-        return SOURCE_ROOT
-    exe = _launcher_exe()
-    return exe.parent if exe else Path(sys.executable).resolve().parent
+    """只读资源目录（config.example.yaml / assets / 插件源码）。
+
+    - 源码运行：仓库根目录（包在 `src/xtc_qq_bridge`，上两级即仓库根）
+    - Nuitka 冻结：`__file__` 所在目录。onefile 下 `--include-data-files` 的内容
+      解包到临时目录，与 `__file__` 同目录；exe 自身所在目录只用来放可写数据。
+    """
+    if IS_FROZEN:
+        return Path(__file__).resolve().parent
+    return SOURCE_ROOT
 
 
 BUNDLE_DIR: Path = _bundle_dir()
