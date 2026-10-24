@@ -22,6 +22,7 @@ run() {
 
 run tests/test_paths.py
 run tests/test_integration.py
+run tests/test_plugin_lifecycle.py
 if [ "${1:-}" != "check" ]; then
   run tests/test_reported_bugs.py
 fi
