@@ -6,8 +6,8 @@ from pathlib import Path
 sys.path.insert(0, "src")
 import yaml  # noqa: E402
 
-from xtc_bridge.adb_controller import ADBController  # noqa: E402
-from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_qq_bridge.adb_controller import ADBController  # noqa: E402
+from xtc_qq_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 adb_cfg = cfg.get("adb") or {}

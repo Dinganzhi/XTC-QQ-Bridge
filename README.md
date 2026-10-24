@@ -187,7 +187,7 @@ python main.py                           # (4) 启动桥接
 
 ```
 repo/
-|-- main.py                      # 薄入口：把 src 加进 sys.path 后转交 xtc_bridge.cli.main
+|-- main.py                      # 薄入口：把 src 加进 sys.path 后转交 xtc_qq_bridge.cli.main
 |-- pyproject.toml               # 项目元数据 / 依赖 / pip 安装入口（xtc-qq-bridge 命令）
 |-- config.yaml                  # 本机配置（不进 git；模板见 config.example.yaml）
 |-- config.example.yaml          # 配置模板（逐项注释）
@@ -195,9 +195,9 @@ repo/
 |-- install.bat / install.sh     # 一键安装（装依赖、复制插件、生成配置）
 |-- start.bat   / start.sh       # 启动器（自检 + 菜单：启动/自检/干跑/看界面/看日志）
 |
-|-- src/xtc_bridge/              # 主程序代码包
+|-- src/xtc_qq_bridge/              # 主程序代码包
 |   |-- __init__.py
-|   |-- __main__.py              # 支持 python -m xtc_bridge（pip 安装后 / PYTHONPATH=src）
+|   |-- __main__.py              # 支持 python -m xtc_qq_bridge（pip 安装后 / PYTHONPATH=src）
 |   |-- config.py                # 读取 config.yaml（UTF-8 / GBK 自适应）
 |   |-- version.py               # 版本号唯一来源（打包脚本/CI 也读它）
 |   |-- runtime_paths.py         # 运行路径（源码/Nuitka onefile/standalone 都靠它）

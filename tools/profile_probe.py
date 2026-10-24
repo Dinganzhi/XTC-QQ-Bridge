@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, "src")
 
-from xtc_bridge import speed_profile as sp  # noqa: E402
-from xtc_bridge.config import load_config  # noqa: E402
-from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_qq_bridge import speed_profile as sp  # noqa: E402
+from xtc_qq_bridge.config import load_config  # noqa: E402
+from xtc_qq_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 
 class FakeAdb:

@@ -16,10 +16,10 @@ from pathlib import Path
 sys.path.insert(0, "src")
 
 import yaml  # noqa: E402
-from xtc_bridge import bridge as bridge_mod  # noqa: E402
-from xtc_bridge.adb_controller import ADBController  # noqa: E402
-from xtc_bridge.utils import imgtool  # noqa: E402
-from xtc_bridge.xiaotiancai import IMAGE_TEXT, Xiaotiancai  # noqa: E402
+from xtc_qq_bridge import bridge as bridge_mod  # noqa: E402
+from xtc_qq_bridge.adb_controller import ADBController  # noqa: E402
+from xtc_qq_bridge.utils import imgtool  # noqa: E402
+from xtc_qq_bridge.xiaotiancai import IMAGE_TEXT, Xiaotiancai  # noqa: E402
 
 out_dir = Path("data/probe_img")
 out_dir.mkdir(parents=True, exist_ok=True)

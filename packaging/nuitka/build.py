@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT))
 # 非 UTF-8 控制台兜底：Windows CI 的 cp1252 下 print 中文会抛 UnicodeEncodeError，
 # 直接把整个编译判失败（Windows 两个平台的 CI 就是这么挂的）。
 try:
-    from xtc_bridge.utils.logger import make_console_tolerant
+    from xtc_qq_bridge.utils.logger import make_console_tolerant
     make_console_tolerant()
 except Exception:  # noqa: BLE001
     pass
@@ -83,12 +83,12 @@ DATA_DIRS = {
 # 函数内 import / 可选 import 的模块，显式声明，避免被静态分析漏掉（按目标裁剪，控制体积）
 INCLUDE_MODULES = {
     "bridge": [
-        "xtc_bridge.adb_controller", "xtc_bridge.bridge", "xtc_bridge.xiaotiancai",
-        "xtc_bridge.plugin_client", "xtc_bridge.qq_webhook", "xtc_bridge.msg_log",
-        "xtc_bridge.runtime_paths", "xtc_bridge.version", "xtc_bridge.config",
-        "xtc_bridge.speed_profile", "xtc_bridge.cli.main",
-        "xtc_bridge.utils.logger", "xtc_bridge.utils.deduplicate",
-        "xtc_bridge.utils.imgtool", "xtc_bridge.utils.pngtool", "xtc_bridge.emoji_store",
+        "xtc_qq_bridge.adb_controller", "xtc_qq_bridge.bridge", "xtc_qq_bridge.xiaotiancai",
+        "xtc_qq_bridge.plugin_client", "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log",
+        "xtc_qq_bridge.runtime_paths", "xtc_qq_bridge.version", "xtc_qq_bridge.config",
+        "xtc_qq_bridge.speed_profile", "xtc_qq_bridge.cli.main",
+        "xtc_qq_bridge.utils.logger", "xtc_qq_bridge.utils.deduplicate",
+        "xtc_qq_bridge.utils.imgtool", "xtc_qq_bridge.utils.pngtool", "xtc_qq_bridge.emoji_store",
         "tools.dump_ui",
     ],
 }
@@ -105,7 +105,7 @@ COMPANY = "xtc-bridge"
 
 def read_version() -> str:
     ns: dict = {}
-    exec((ROOT / "src" / "xtc_bridge" / "version.py").read_text(encoding="utf-8"), ns)  # noqa: S102 本仓库自有文件
+    exec((ROOT / "src" / "xtc_qq_bridge" / "version.py").read_text(encoding="utf-8"), ns)  # noqa: S102 本仓库自有文件
     return str(ns.get("__version__", "0.0.0"))
 
 

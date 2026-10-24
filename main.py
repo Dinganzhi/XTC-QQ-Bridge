@@ -2,8 +2,8 @@
 # nuitka-project: --windows-console-mode=force
 """小天才 <-> QQ 桥接 —— 仓库入口（薄封装）。
 
-真正实现在 `src/xtc_bridge/`：这里只把 `src` 加进 `sys.path`，再转交给命令行入口。
-这样既能 `python main.py` 直接跑；`pip install .` 之后还可以用 `python -m xtc_bridge` 或 `xtc-qq-bridge` 命令。
+真正实现在 `src/xtc_qq_bridge/`：这里只把 `src` 加进 `sys.path`，再转交给命令行入口。
+这样既能 `python main.py` 直接跑；`pip install .` 之后还可以用 `python -m xtc_qq_bridge` 或 `xtc-qq-bridge` 命令。
 
 常用参数：
   python main.py --check                # 环境自检
@@ -44,7 +44,7 @@ def _bootstrap() -> None:
 
 _bootstrap()
 
-from xtc_bridge.cli.main import main  # noqa: E402
+from xtc_qq_bridge.cli.main import main  # noqa: E402
 
 if __name__ == "__main__":
     main()

@@ -5,7 +5,7 @@
 #  这里同步记录关键项，方便查阅"产物到底带了什么"。
 # =====================================================================
 
-# 入口：仓库根目录的薄入口（它把 src 加进 sys.path 后转交 xtc_bridge.cli.main）
+# 入口：仓库根目录的薄入口（它把 src 加进 sys.path 后转交 xtc_qq_bridge.cli.main）
 entry: "main.py"
 
 # 产物：onefile = 单文件；standalone = 目录（启动更快，便于调试）
@@ -26,22 +26,22 @@ exclude_modules:
 
 # 显式包含的包内模块（函数内 import / 可选 import，静态分析容易漏）
 include_modules:
-  - "xtc_bridge.adb_controller"
-  - "xtc_bridge.bridge"
-  - "xtc_bridge.xiaotiancai"
-  - "xtc_bridge.plugin_client"
-  - "xtc_bridge.qq_webhook"
-  - "xtc_bridge.msg_log"
-  - "xtc_bridge.runtime_paths"
-  - "xtc_bridge.version"
-  - "xtc_bridge.config"
-  - "xtc_bridge.speed_profile"
-  - "xtc_bridge.cli.main"
-  - "xtc_bridge.utils.logger"
-  - "xtc_bridge.utils.deduplicate"
-  - "xtc_bridge.utils.imgtool"
-  - "xtc_bridge.utils.pngtool"
-  - "xtc_bridge.emoji_store"
+  - "xtc_qq_bridge.adb_controller"
+  - "xtc_qq_bridge.bridge"
+  - "xtc_qq_bridge.xiaotiancai"
+  - "xtc_qq_bridge.plugin_client"
+  - "xtc_qq_bridge.qq_webhook"
+  - "xtc_qq_bridge.msg_log"
+  - "xtc_qq_bridge.runtime_paths"
+  - "xtc_qq_bridge.version"
+  - "xtc_qq_bridge.config"
+  - "xtc_qq_bridge.speed_profile"
+  - "xtc_qq_bridge.cli.main"
+  - "xtc_qq_bridge.utils.logger"
+  - "xtc_qq_bridge.utils.deduplicate"
+  - "xtc_qq_bridge.utils.imgtool"
+  - "xtc_qq_bridge.utils.pngtool"
+  - "xtc_qq_bridge.emoji_store"
   - "tools.dump_ui"
 
 # 随包带上的数据文件（相对仓库根目录）

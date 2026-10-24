@@ -25,7 +25,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from xtc_bridge import adb_controller as ac  # noqa: E402
+from xtc_qq_bridge import adb_controller as ac  # noqa: E402
 
 RC = {"pass": 0, "fail": 0}
 

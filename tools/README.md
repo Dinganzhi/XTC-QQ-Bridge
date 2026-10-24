@@ -1,7 +1,7 @@
 # tools/ —— 独立小工具
 
 这里的脚本**不参与主程序运行**，只在排查问题、实机验证、一次性迁移时使用。
-共享主项目代码时统一 `sys.path.insert(0, "src")` 后 `from xtc_bridge... import ...`。
+共享主项目代码时统一 `sys.path.insert(0, "src")` 后 `from xtc_qq_bridge... import ...`。
 
 | 工具 | 用途 |
 |---|---|

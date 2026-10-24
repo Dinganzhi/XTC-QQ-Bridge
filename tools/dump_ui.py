@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, "src")
 
-from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_qq_bridge.adb_controller import ADBController, AdbError  # noqa: E402
 
 
 def run(adb: ADBController, filter_re: str = "", tap_index: int = -1,

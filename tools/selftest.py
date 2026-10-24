@@ -10,9 +10,9 @@ import sys
 
 sys.path.insert(0, "src")
 
-from xtc_bridge.adb_controller import ADBController, AdbError  # noqa: E402
-from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
-from xtc_bridge.utils.logger import setup_logger  # noqa: E402
+from xtc_qq_bridge.adb_controller import ADBController, AdbError  # noqa: E402
+from xtc_qq_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_qq_bridge.utils.logger import setup_logger  # noqa: E402
 
 
 def main() -> int:

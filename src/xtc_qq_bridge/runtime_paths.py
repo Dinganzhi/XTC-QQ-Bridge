@@ -49,7 +49,7 @@ def _detect_frozen() -> tuple[bool, str]:
 
 IS_FROZEN, FROZEN_MODE = _detect_frozen()
 
-# 项目根目录（源码运行时：<repo>/src/xtc_bridge/runtime_paths.py -> 上两级）
+# 项目根目录（源码运行时：<repo>/src/xtc_qq_bridge/runtime_paths.py -> 上两级）
 SOURCE_ROOT: Path = Path(__file__).resolve().parents[2]
 
 # 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：

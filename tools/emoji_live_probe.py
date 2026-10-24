@@ -11,11 +11,11 @@ from pathlib import Path
 sys.path.insert(0, "src")
 
 import yaml  # noqa: E402
-from xtc_bridge.adb_controller import ADBController  # noqa: E402
-from xtc_bridge.emoji_store import EmojiStore  # noqa: E402
-from xtc_bridge.utils import imgtool  # noqa: E402
-from xtc_bridge.utils.pngtool import encode_png_rgb  # noqa: E402
-from xtc_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
+from xtc_qq_bridge.adb_controller import ADBController  # noqa: E402
+from xtc_qq_bridge.emoji_store import EmojiStore  # noqa: E402
+from xtc_qq_bridge.utils import imgtool  # noqa: E402
+from xtc_qq_bridge.utils.pngtool import encode_png_rgb  # noqa: E402
+from xtc_qq_bridge.xiaotiancai import Xiaotiancai  # noqa: E402
 
 name_arg = sys.argv[1] if len(sys.argv) > 1 else ""
 out: list[str] = []
