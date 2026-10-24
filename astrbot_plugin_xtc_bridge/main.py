@@ -24,6 +24,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import deque
+from concurrent.futures import Future
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -55,10 +56,14 @@ class Main(star.Star):
                 pass
         self._httpd: ThreadingHTTPServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._pending: list[tuple[str, str, str]] = []  # (target_type, target_id, text)
+        self._pending: list[tuple[str, str, str, str]] = []  # (target_type, target_id, text, image_b64)
         self._platform_ids: set[str] = set()  # 最近收到过消息的平台 ID
         # 待回传结果：request_id -> Future；/api/result 到达后由原事件引用+@ 回复发送人
         self._pending_replies: dict[str, asyncio.Future] = {}
+        self._pending_posts: dict[str, asyncio.Task] = {}
+        self._http_futures: set[Future] = set()
+        self._http_lock = threading.Lock()
+        self._stopping = False
         # QQ 活动记录（在线人数/搜索 的"最后消息时间"数据源）：(ts, kind, session_id, user_id, name)
         # 任何 QQ 消息事件都会记录（含命令模式开启时），查询时按白名单范围过滤。
         self._activity: deque = deque(maxlen=2000)
@@ -70,8 +75,16 @@ class Main(star.Star):
     # ------------------------------------------------------------------ 生命周期
     async def initialize(self) -> None:
         """插件激活时：捕获主事件循环并启动本地 HTTP 端点。"""
-        self._loop = asyncio.get_running_loop()
-        self._start_http()
+        with self._http_lock:
+            self._loop = asyncio.get_running_loop()
+            self._stopping = False
+        try:
+            self._start_http()
+        except Exception:
+            with self._http_lock:
+                self._loop = None
+                self._stopping = True
+            raise
         self._flush_pending()
         self._lg().info(
             "[xtc_qq_bridge] 插件已启动。本地端点: http://%s:%s/api/forward",
@@ -80,10 +93,33 @@ class Main(star.Star):
         )
 
     async def terminate(self) -> None:
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
+        with self._http_lock:
+            self._stopping = True
+            self._loop = None
+            http_futures = list(self._http_futures)
+            self._http_futures.clear()
+            queued = len(self._pending)
+            self._pending.clear()
+        for future in http_futures:
+            future.cancel()
+        posts = list(self._pending_posts.values())
+        self._pending_posts.clear()
+        for post in posts:
+            post.cancel()
+        for future in self._pending_replies.values():
+            future.cancel()
+        self._pending_replies.clear()
+        if posts:
+            await asyncio.gather(*posts, return_exceptions=True)
+        server, self._httpd = self._httpd, None
+        if server is not None:
+            # shutdown 等待 serve_forever 退出；交给线程以保持 AstrBot 主循环响应。
+            try:
+                await asyncio.to_thread(server.shutdown)
+            finally:
+                server.server_close()
+        if queued:
+            self._lg().warning("[xtc_qq_bridge] 插件停止，取消 %s 条尚未调度的转发", queued)
         self._lg().info("[xtc_qq_bridge] 插件已停止")
 
     # ------------------------------------------------------------------ 命令
@@ -319,27 +355,37 @@ class Main(star.Star):
         其它（IGNORED / unauthorized / 连不上）= 明确没受理，直接告诉用户，
         否则用户只会干等超时、还看不出是白名单还是桥接没起来。
         """
+        if self._stopping:
+            return "插件已停止，请等待插件重新加载后再试"
         req_id = self._new_request_id()
         payload = self._base_payload(event, message=message, action=action)
         payload["request_id"] = req_id
         if extra:
             payload.update(extra)
-        resp = await self._forward_to_python(payload)
-        if resp.startswith("ERROR:"):
-            return (f"桥接未连接：{resp[6:].strip()[:100]}"
-                    "（确认 python main.py 正在运行，且插件 python_callback_url 端口一致）")
-        if resp and resp != "OK":
-            return (f"桥接未受理（{resp[:40]}）：多为 config.yaml -> webhook 的"
-                    "allow_from / allow_groups 不含当前会话，或 token 不一致；"
-                    "详见桥接控制台日志")
         fut = asyncio.get_running_loop().create_future()
         self._pending_replies[req_id] = fut
+        # 先登记结果再发 POST；桥接可能在 POST 回包之前就把结果送回来。
+        post = asyncio.create_task(self._forward_to_python(payload))
+        self._pending_posts[req_id] = post
         try:
+            resp = await post
+            if resp.startswith("ERROR:"):
+                return (f"桥接未连接：{resp[6:].strip()[:100]}"
+                        "（确认 python main.py 正在运行，且插件 python_callback_url 端口一致）")
+            if resp != "OK":
+                return (f"桥接未受理（{resp[:40]}）：多为 config.yaml -> webhook 的"
+                        "allow_from / allow_groups 不含当前会话，或 token 不一致；"
+                        "详见桥接控制台日志")
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             return None
         finally:
             self._pending_replies.pop(req_id, None)
+            self._pending_posts.pop(req_id, None)
+            if not fut.done():
+                fut.cancel()
+            if not post.done():
+                post.cancel()
 
     @staticmethod
     def _new_request_id() -> str:
@@ -348,10 +394,18 @@ class Main(star.Star):
 
     def _resolve_request(self, request_id: str, result: str) -> None:
         """HTTP 线程调用：把桥接结果交给挂起的命令处理器。"""
-        if self._loop is not None and self._loop.is_running():
+        def finish():
+            # 查询和完成都在 Future 所属循环执行，重复/超时回传也重新检查状态。
             fut = self._pending_replies.get(request_id)
             if fut is not None and not fut.done():
-                self._loop.call_soon_threadsafe(fut.set_result, result)
+                fut.set_result(result)
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(finish)
+            except RuntimeError:
+                pass  # 宿主可能在状态检查后关闭循环；迟到的回传不再处理。
 
     def _base_payload(self, event: AstrMessageEvent, message: str = "",
                       action: str = "") -> dict:
@@ -422,19 +476,44 @@ class Main(star.Star):
 
         image_b64：可选，小天才 -> QQ 的**表情包**截图（base64 PNG）。
         """
-        if self._loop is not None and self._loop.is_running():
-            return asyncio.run_coroutine_threadsafe(
-                self._do_send(target_type, target_id, text, image_b64), self._loop
-            )
-        self._pending.append((target_type, target_id, text, image_b64))
-        return None
+        with self._http_lock:
+            if not self._stopping and (self._loop is None or not self._loop.is_running()):
+                self._pending.append((target_type, target_id, text, image_b64))
+                return None
+        return self._submit_http_task(self._do_send(target_type, target_id, text, image_b64))
+
+    def _submit_http_task(self, coroutine) -> Future:
+        """统一追踪 HTTP 发起的任务，插件停止时取消；拒绝时关闭未调度协程。"""
+        with self._http_lock:
+            loop = self._loop
+            if self._stopping or loop is None or not loop.is_running():
+                coroutine.close()
+                rejected = Future()
+                rejected.set_exception(RuntimeError("插件尚未初始化或已停止"))
+                return rejected
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+            except RuntimeError as exc:
+                coroutine.close()
+                rejected = Future()
+                rejected.set_exception(exc)
+                return rejected
+            self._http_futures.add(future)
+        # 已完成的 Future 会同步调用 callback，故须在释放锁后注册。
+        future.add_done_callback(self._forget_http_task)
+        return future
+
+    def _forget_http_task(self, future: Future) -> None:
+        with self._http_lock:
+            self._http_futures.discard(future)
 
     def _flush_pending(self) -> None:
-        if self._loop is None:
-            return
-        for item in self._pending:
-            asyncio.run_coroutine_threadsafe(self._do_send(*item), self._loop)
-        self._pending.clear()
+        with self._http_lock:
+            if self._loop is None or self._stopping:
+                return
+            pending, self._pending = self._pending, []
+        for item in pending:
+            self._submit_http_task(self._do_send(*item))
 
     async def _do_send(self, target_type: str, target_id: str, text: str,
                        image_b64: str = ""):
@@ -500,13 +579,12 @@ class Main(star.Star):
 
     def _run_qq_query(self, coro_factory, timeout: float = 30.0) -> dict:
         """HTTP 线程调用：把异步查询投递到主事件循环并等待结果。"""
-        if self._loop is None or not self._loop.is_running():
-            return {"ok": False, "error": "插件尚未初始化（AstrBot 事件循环未就绪）"}
-        fut = asyncio.run_coroutine_threadsafe(coro_factory(), self._loop)
+        fut = self._submit_http_task(coro_factory())
         try:
             result = fut.result(timeout=timeout)
             return result if isinstance(result, dict) else {"ok": False, "error": "返回类型错误"}
         except asyncio.TimeoutError:
+            fut.cancel()
             return {"ok": False, "error": "QQ 查询超时"}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"QQ 查询异常: {e}"}
@@ -753,6 +831,7 @@ class _HttpHandler(BaseHTTPRequestHandler):
                 try:
                     res = future.result(timeout=30)
                 except Exception as e:  # noqa: BLE001 超时/异常视为失败
+                    future.cancel()
                     res = (False, f"等待发送结果超时或异常: {type(e).__name__}")
                 if isinstance(res, tuple):        # 新版：(ok, error)
                     ok, err = bool(res[0]), str(res[1] if len(res) > 1 else "")
