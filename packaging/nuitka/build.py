@@ -224,8 +224,15 @@ class NuitkaInfo:
 
 
 def nuitka_env() -> dict:
-    """Nuitka 缓存目录：默认位置不可写时（沙箱/受限环境）自动改到项目内。"""
+    """Nuitka 子进程环境：补上 src 布局的包路径 + 缓存目录兜底。
+
+    源码采用 src 布局（包在 `src/xtc_qq_bridge`），Nuitka 解析
+    `--include-package=xtc_qq_bridge` 时需要该目录在 PYTHONPATH 上。
+    """
     env = dict(os.environ)
+    src_dir = str(ROOT / "src")
+    old_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = src_dir + (os.pathsep + old_pp if old_pp else "")
     if env.get("NUITKA_CACHE_DIR"):
         return env
     default = (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Nuitka" if os.name == "nt"
@@ -332,7 +339,11 @@ def build_command(info: NuitkaInfo, target: str, mode: str, out_dir: Path,
     cmd += [f"--output-filename={final}.exe" if os.name == "nt" else f"--output-filename={final}"]
     cmd += ["--assume-yes-for-downloads", "--remove-output"]
     cmd += ["--nofollow-import-to=" + m for m in EXCLUDE_MODULES.get(target, [])]
-    cmd += ["--include-module=" + m for m in INCLUDE_MODULES.get(target, [])]
+    # 整包包含：包在 src/ 下，逐条列模块容易漏（CI 曾报 failed to locate module）
+    if info.supports("--include-package"):
+        cmd += ["--include-package=xtc_qq_bridge"]
+    else:
+        cmd += ["--include-module=" + m for m in INCLUDE_MODULES.get(target, [])]
     # pyyaml 在 try/except 里 import，显式带上整个包（含 C 扩展）
     if info.supports("--include-package"):
         cmd += ["--include-package=yaml"]
