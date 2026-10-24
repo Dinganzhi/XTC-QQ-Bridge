@@ -75,12 +75,17 @@ def _bundle_dir() -> Path:
     """只读资源目录（config.example.yaml / assets / 插件源码）。
 
     - 源码运行：仓库根目录（包在 `src/xtc_qq_bridge`，上两级即仓库根）
-    - Nuitka 冻结：`__file__` 所在目录。onefile 下 `--include-data-files` 的内容
-      解包到临时目录，与 `__file__` 同目录；exe 自身所在目录只用来放可写数据。
+    - Nuitka 冻结：包目录的上一级。onefile 下 `--include-data-files` 的内容解包到
+      临时目录根，而 `__file__` 位于临时目录下的 `xtc_qq_bridge/` 包目录里，
+      因此要往上取一级；兼容扁平（无包目录）形态时再退一级。
     """
-    if IS_FROZEN:
-        return Path(__file__).resolve().parent
-    return SOURCE_ROOT
+    if not IS_FROZEN:
+        return SOURCE_ROOT
+    here = Path(__file__).resolve().parent      # 冻结时：<解包目录>/xtc_qq_bridge
+    for cand in (here, here.parent):
+        if (cand / CONFIG_EXAMPLE_NAME).exists():
+            return cand
+    return here.parent
 
 
 BUNDLE_DIR: Path = _bundle_dir()
