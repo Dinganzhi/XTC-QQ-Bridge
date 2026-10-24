@@ -265,6 +265,7 @@ repo/
 > - `python tests/test_integration.py` —— 假 ADB 执行器跑通连接/启动/注入链
 > - `python tests/test_reported_bugs.py` —— 回归用例（历史来源 / 去重 / 登录判定 / 发送确认 / 弹窗 / 图片 / 时间 / 历史命令）
 > - `python tests/test_paths.py` —— 运行路径解析（源码/冻结、配置与日志落点、捆绑 APK 识别）
+> - `python tests/test_plugin_lifecycle.py` —— 插件请求与回传生命周期（快速/重复回传、超时取消、停止清理；使用假 AstrBot 宿主和本机 HTTP）
 >
 > 想在**真机/模拟器**上快速体检一遍（不会发真实消息）：`python tools/live_probe.py`
 > 想改文本注入（比如自动登录时**逐字发送**）或排查控件 id：`python tools/ui_report.py`

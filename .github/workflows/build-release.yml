@@ -57,6 +57,7 @@ jobs:
           python tests/test_integration.py
           python tests/test_reported_bugs.py
           python tests/test_paths.py
+          python tests/test_plugin_lifecycle.py
 
   # ---------------------------------------------------------------- 矩阵编译
   build:
