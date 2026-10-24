@@ -52,12 +52,6 @@ IS_FROZEN, FROZEN_MODE = _detect_frozen()
 # 项目根目录（源码运行时：<repo>/src/xtc_qq_bridge/runtime_paths.py -> 上两级）
 SOURCE_ROOT: Path = Path(__file__).resolve().parents[2]
 
-# 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：
-# 源码运行 = 仓库根目录；Nuitka = 可执行文件所在目录
-BUNDLE_DIR: Path = (
-    ((_launcher_exe().parent if _launcher_exe() else Path(sys.executable).resolve().parent))
-    if IS_FROZEN else SOURCE_ROOT)
-
 
 def _launcher_exe() -> Path | None:
     """用户实际双击/执行的那个可执行文件（onefile 下是真实 exe，不是临时目录里的 python）。"""
@@ -73,6 +67,18 @@ def _launcher_exe() -> Path | None:
         if found:
             return Path(found).resolve()
     return None
+
+
+# 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：
+# 源码运行 = 仓库根目录；Nuitka = 可执行文件所在目录（onefile 下是真实 exe，不是临时目录）
+def _bundle_dir() -> Path:
+    if not IS_FROZEN:
+        return SOURCE_ROOT
+    exe = _launcher_exe()
+    return exe.parent if exe else Path(sys.executable).resolve().parent
+
+
+BUNDLE_DIR: Path = _bundle_dir()
 
 
 def _writable(d: Path) -> bool:
