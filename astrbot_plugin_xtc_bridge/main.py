@@ -45,6 +45,14 @@ _USAGE = ("用法：\n"
           "/小天才 命令模式      切换命令模式（开=仅命令转发；关=所有新消息都转发）")
 
 
+def _consume_future_exception(future: Future) -> None:
+    """把不需要结果的 Future 的异常取走，避免 GC 时打印"exception was never retrieved"。"""
+    try:
+        future.exception()
+    except Exception:  # noqa: BLE001 已取消/已失效的 Future 忽略
+        pass
+
+
 class Main(star.Star):
     def __init__(self, context: star.Context, config=None) -> None:
         super().__init__(context)
@@ -513,7 +521,10 @@ class Main(star.Star):
                 return
             pending, self._pending = self._pending, []
         for item in pending:
-            self._submit_http_task(self._do_send(*item))
+            future = self._submit_http_task(self._do_send(*item))
+            # 这里没人 await 结果：显式取一次异常，避免 GC 时刷
+            # "Future exception was never retrieved" 警告。
+            future.add_done_callback(_consume_future_exception)
 
     async def _do_send(self, target_type: str, target_id: str, text: str,
                        image_b64: str = ""):
@@ -583,7 +594,10 @@ class Main(star.Star):
         try:
             result = fut.result(timeout=timeout)
             return result if isinstance(result, dict) else {"ok": False, "error": "返回类型错误"}
-        except asyncio.TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
+            # fut 是 concurrent.futures.Future：它的超时异常在 3.10 上就是内置
+            # TimeoutError（与 asyncio.TimeoutError 是同一个类只在 3.11+ 成立），
+            # 所以两个都接住，避免 3.10 上被当成"查询异常"。
             fut.cancel()
             return {"ok": False, "error": "QQ 查询超时"}
         except Exception as e:  # noqa: BLE001
