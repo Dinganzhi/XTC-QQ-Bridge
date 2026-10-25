@@ -243,9 +243,18 @@ class PluginLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         result = await asyncio.to_thread(self.plugin._run_qq_query, query, 0.01)
         self.assertFalse(result["ok"])
-        await asyncio.sleep(0)
-        self.assertTrue(started.is_set())
-        self.assertTrue(cancelled.is_set(), "timed-out QQ query kept running")
+        # 超时那一刻协程可能还没被事件循环调度（取决于循环忙闲）：
+        # 既没开始执行、也就谈不上“继续运行”，同样满足要求。
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        if started.is_set():
+            for _ in range(100):
+                if cancelled.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(cancelled.is_set(), "timed-out QQ query kept running")
 
     async def test_termination_cancels_outbound_send(self):
         started, cancelled = asyncio.Event(), asyncio.Event()
@@ -371,6 +380,14 @@ class PluginLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(), self.plugin._http_futures)
 
 
+    async def test_qq_query_timeout_reports_timeout_not_error(self) -> None:
+        """查询超时要回“QQ 查询超时”，而不是被当成异常（3.10 上两类超时不同源）。"""
+        res = await asyncio.to_thread(
+            self.plugin._run_qq_query, lambda: asyncio.sleep(2), 0.05)
+        self.assertFalse(res.get("ok"))
+        self.assertIn("超时", str(res.get("error")), res)
+        self.assertNotIn("异常", str(res.get("error")), res)
+
 class ForwardHandlerTests(unittest.TestCase):
     def test_forward_timeout_cancels_queued_send(self):
         class Future:
@@ -397,3 +414,4 @@ class ForwardHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
