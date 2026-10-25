@@ -14,7 +14,7 @@
 2. **图片缓存**（Glide）
    `<ext>/cache/big_image/<pkg>/<ver>/<bucket>/<hash>.cnt`
    扩展名统一是 `.cnt`，但**内容是原始格式**（GIF / PNG / JPEG / WebP）。
-   缓存里同时躺着聊天照片、头像、**别的贴纸** —— 实测按时间/形状"猜"会把
+   缓存里同时躺着聊天照片、头像、**别的贴纸** —— 实测按时间与形状"推测"会把
    小猫流汗的贴纸猜成弹吉他的乌龟。
 
 所以挑图分三层，**像不像由像素说话**：
@@ -70,7 +70,7 @@ class EmojiStore:
         # 所以"最近写过"的窗口给到 30 分钟；挑哪张靠像素核对，不靠时间
         self.fresh_window = max(10.0, float(fresh_window))
         self.index_ttl = max(0.0, float(index_ttl))       # 名字索引缓存时长
-        self.max_px = max(64, int(max_px))                # 太大的图不当表情（多半是照片）
+        self.max_px = max(64, int(max_px))                # 太大的图不当表情（通常是照片）
         # 太小的也不当贴纸：实测缓存里有 72x72 的小图标（App 自己的小表情/角标），
         # 被"按时间猜"选中时就是一张**错的小图**（用户报的"错发"）。真实贴纸都 ≥100px。
         self.sticker_min_px = 100
@@ -122,10 +122,10 @@ class EmojiStore:
         reference：**界面上那张气泡的截图**（PNG 字节）。给了它就逐个候选比像素，
         只有真的像才敢发 —— 这是"货不对板"（小猫发成乌龟）的根治办法。
         verified_only：**只接受能被证明的候选**（表情包名字唯一命中，或像素比对通过）。
-        调用方"明明看得到气泡、却没抠到可用的截图"时传 True —— 那时按时间猜缓存
+        调用方"明明看得到气泡、却没抠到可用的截图"时传 True —— 那时按时间推测缓存
         很可能猜错（实测错过一次），宁可退化成发文字。
 
-        拿不到可信的原图时返回 None，调用方退回"就发这张气泡截图"。
+        无法取得可信的原图时返回 None，调用方退回"就发这张气泡截图"。
         """
         ref_grid = None
         if reference:
@@ -140,7 +140,7 @@ class EmojiStore:
         if hits and len(hits) == 1:
             hit = self._read_hit(hits[0])
             if hit:
-                # 名字在本地表情包里唯一 -> 确定性最高，直接用（也省一次界面截图）
+                # 名字在本地表情包里唯一 -> 确定性最高，直接用（也减少一次界面截图）
                 hit["score"] = None if ref_grid is None else 1.0
                 return hit
         if hits and ref_grid is None:
@@ -165,9 +165,9 @@ class EmojiStore:
             self._log("info", f"表情 {name!r} 在表情包里找到的原图都不像界面上的那张"
                               f"（最像的 {best['score']:.2f} < {self.match_ok:.2f}），改去缓存里找")
         if verified_only and ref_grid is None:
-            # 调用方看得到气泡、但没拿到可用的基准截图：这时按时间猜缓存**很可能猜错**，
+            # 调用方看得到气泡、但没拿到可用的基准截图：这时按时间推测缓存**很可能猜错**，
             # 宁可不发图（返回 None，上层按"表情X"文字转发）。
-            self._log("info", "[表情包] 没有可用的比对基准，不去缓存里猜（避免发错图）")
+            self._log("info", "[表情包] 无可用比对基准，不在缓存中推测（避免发送错误图片）")
             return None
         got = self._from_cache(near_epoch, aspect, ref_grid)
         if got:
@@ -183,7 +183,7 @@ class EmojiStore:
                        min_bytes: int = 0) -> tuple[list[tuple[float, int, str]], float]:
         """缓存目录里的文件 ([(mtime, size, path)], 设备当前时间)。
 
-        实测整个缓存也就几十个文件，一次 `find` 全列出来比按时间窗反复筛更省事，
+        实测整个缓存也就几十个文件，一次 `find` 全列出来比按时间窗反复筛更简便，
         也不会因为"文件被重新渲染过（mtime 被刷新）"而漏掉目标；挑哪张靠像素核对。
         """
         return self._listing(f"{self.root}/cache", max_bytes=max_bytes, min_bytes=min_bytes)
@@ -201,7 +201,7 @@ class EmojiStore:
             listing = self.adb.shell(
                 f"date +%s; find {where} -type f "
                 f"-exec stat -c '%Y %s %n' {{}} \\; 2>/dev/null", timeout=60)
-        except Exception as e:  # noqa: BLE001 取不到就走别的路
+        except Exception as e:  # noqa: BLE001 无法取得就走别的路
             self._log("debug", f"列目录失败 {where}: {e}")
             return [], time.time()
         now = 0.0
@@ -227,7 +227,7 @@ class EmojiStore:
         n = int(nbytes or self.head_bytes)
         try:
             b64 = self.adb.shell(f"head -c {n} {path} | base64 -w0", timeout=30)
-        except Exception as e:  # noqa: BLE001 读不到就当没有
+        except Exception as e:  # noqa: BLE001 无法读取就当没有
             self._log("debug", f"读文件头失败 {path}: {e}")
             return b""
         try:
@@ -242,7 +242,7 @@ class EmojiStore:
         """找这张**照片**的原图（缓存里的大图）。没有可信候选返回 None。
 
         为什么不逐张比像素：照片动辄 2000x3000，纯 Python "只解 DC" 一张 2MB 的 JPEG
-        实测要 **37 秒**（79k 个块）；试过"只解上段"（前 24 行 MCU，约 5 秒/张）也不划算 ——
+        实测要 **37 秒**（79k 个块）；试过"只解上段"（前 24 行 MCU，约 5 秒/张）收益也有限 ——
         实测正确那张只有 0.70 相似度（界面气泡与照片本体的取景/圆角差异），与其他照片
         0.51~0.63 分不开，还会把一次取图拖到 47 秒。所以这里用**时间信号**，它足够决定性：
 
@@ -288,7 +288,7 @@ class EmojiStore:
         """从候选里挑**唯一**一张符合"更大 + 形状一致 + 时间对得上"的照片原图。
 
         时间信号是决定性的（实测正确那张水位 9 秒，其余 1~6 天）：App 显示图片时会把原图
-        重新写进缓存；"正在看的那张"必定刚写过。窗内不止一张就**不猜**（退回气泡截图）。
+        重新写进缓存；"正在看的那张"必定刚写过。窗内不止一张即**不做推测**（退回气泡截图）。
 
         unique_ok：允许"结构上唯一"的候选（用于 App 自己的照片目录 —— 那里只有聊天照片，
         形状又对得上，比 Glide 缓存可靠得多）。返回 None 表示这里没有可信候选。
@@ -532,7 +532,7 @@ class EmojiStore:
     def _read(self, path: str) -> bytes:
         try:
             return self.adb.read_file(path)
-        except Exception as e:  # noqa: BLE001 读不到就当没有
+        except Exception as e:  # noqa: BLE001 无法读取就当没有
             self._log("debug", f"读文件失败 {path}: {e}")
             return b""
 

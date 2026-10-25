@@ -8,7 +8,7 @@
 - 任何能通过 `adb connect` 接入的 Android 实例（含真机 USB / 网络调试）
 
 设备查找顺序：**已有的在线设备** -> 环境变量 ADB_SERIAL -> config 指定的端口
--> 常见端口（5555 / 16384 / 62001 …）-> 多次重试。任何情况下都不会顶掉已连接的
+-> 常见端口（5555 / 16384 / 62001 …）-> 多次重试。任何情况下都不会覆盖已连接的
 设备去抢端口。
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ _CODEPOINT_CHUNK = 200          # ADB_INPUT_CHARS 每批码点数（命令行长
 
 _TEXT_RETRY_SLEEP = 0.35        # 广播后等待 IME 提交文本
 
-# 启动 App 时的"硬失败"特征：命令自己就报错了，换下一套策略即可，别再等前台
+# 启动 App 时的"硬失败"特征：命令自己就报错了，换下一套策略即可，请勿再等前台
 _LAUNCH_FAIL_RE = re.compile(
     r"(?mi)^\s*(Error|Exception)\b|\bError type \d|does not exist"
     r"|SecurityException|Permission Denial|not exported|Unable to (resolve|find)")
@@ -181,8 +181,8 @@ def _unauthorized_tip(serial: str) -> str:
         return "请在该模拟器/容器窗口里点击『允许 USB 调试』"
     if IS_WINDOWS:
         return "请在手机上允许 USB 调试（或 adb kill-server 后重试）"
-    return ("请在手机上允许 USB 调试；若列表里根本看不到设备，"
-            "多半需要配置 udev 规则（如 sudo usermod -aG plugdev $USER + "
+    return ("请在手机上允许 USB 调试；若列表里根本无法看到设备，"
+            "通常需要配置 udev 规则（如 sudo usermod -aG plugdev $USER + "
             "/etc/udev/rules.d/51-android.rules 后重新插拔）")
 
 
@@ -212,7 +212,7 @@ def _environment_hints() -> list[str]:
                      "`adb connect 127.0.0.1:5555`；也可设 adb.auto_launch_emulator: true "
                      "让桥接自动拉起")
     hints.append("Linux：装 adb 用 `sudo apt install adb`（或 android-tools-adb）；"
-                 "真机若 `adb devices` 为空，多半要配 udev 规则："
+                 "真机若 `adb devices` 为空，通常要配 udev 规则："
                  "`echo 'SUBSYSTEM==\"usb\", ATTR{idVendor}==\"<厂商ID>\", MODE=\"0666\", "
                  "GROUP=\"plugdev\"' | sudo tee /etc/udev/rules.d/51-android.rules`，"
                  "再 `sudo udevadm control --reload-rules && sudo udevadm trigger`；"

@@ -22,9 +22,9 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
     STATE_LIST = "list"              # 消息列表（这里才该找联系人）
     STATE_LOGIN = "login"            # 登录页/安全验证页（等登录，别找联系人）
     STATE_OTHER = "other"            # 其它页面（首页/设置/详情等）
-    STATE_POPUP = "popup"            # 弹窗遮挡界面（升级提醒等，读不到下面的内容）
+    STATE_POPUP = "popup"            # 弹窗遮挡界面（升级提醒等，无法读取下面的内容）
     STATE_BACKGROUND = "background"  # App 不在前台
-    STATE_BLIND = "blind"            # 读不到界面（息屏/界面不空闲/dump 失败）
+    STATE_BLIND = "blind"            # 无法读取界面（息屏/界面不空闲/dump 失败）
     STATE_TEXT = {
         STATE_CHAT: "聊天窗口",
         STATE_LIST: "消息列表",
@@ -32,7 +32,7 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
         STATE_OTHER: "小天才其它页面",
         STATE_POPUP: "弹窗遮挡界面",
         STATE_BACKGROUND: "App 不在前台",
-        STATE_BLIND: "读不到界面",
+        STATE_BLIND: "无法读取界面",
     }
 
     def __init__(self, adb: ADBController, cfg: dict | None = None, logger=None,
@@ -63,23 +63,23 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
         # time.monotonic() 的零点任意（Linux 上是开机时长），刚开机/刚启动的机器上
         # now - 0.0 可能小于节流间隔，导致该做的事被当成"刚做过"而跳过。
         self._net_retry_ts = float("-inf")     # 网络弹窗"重试"按钮的点击冷却
-        self._last_dump_warn = float("-inf")   # "读不到界面"告警的节流时间戳
+        self._last_dump_warn = float("-inf")   # "无法读取界面"告警的节流时间戳
         self._last_label_retry = float("-inf")  # "快照里没有时间标签"的补救重读节流
         self._throttle: dict[str, float] = {}   # 同类失败告警节流：key -> 上次打印时刻
-        self._last_verify_root = None   # 注入校验时的界面快照（复用给"找发送按钮"，省一次 dump）
-        self._last_confirm_root = None  # 发送后确认用的快照（复用给"补点一次发送"，省一次 dump）
+        self._last_verify_root = None   # 注入校验时的界面快照（复用给"找发送按钮"，减少一次界面读取）
+        self._last_confirm_root = None  # 发送后确认用的快照（复用给"补点一次发送"，减少一次界面读取）
         # 弹窗自动关闭的"同一弹窗最多试几轮"状态（空 key 表示当前没有弹窗）
         self._popup_key = ""            # 当前弹窗的指纹（Activity + 标题 + 说明前若干字）
         self._popup_tries = 0           # 这个弹窗已经尝试关闭的轮数
-        # 最近一次界面快照（轮询每 2 秒就会更新）：发送等交互复用它，省一次 ~3 秒的 dump
+        # 最近一次界面快照（轮询每 2 秒就会更新）：发送等交互复用它，减少一次 ~3 秒的 dump
         self._snapshot = None
         self._snapshot_ts = float("-inf")
         # 发送按钮坐标缓存 + 快路径开关（省掉"注入后 dump 一次找发送按钮"的 ~3 秒）
-        # 缓存会落盘（cache_path）：重启后第一条消息也能走"先手打字"，
+        # 缓存会落盘（cache_path）：重启后第一条消息也能走"预输入"，
         # 否则重启后的第一条只能走稳妥流程（多 dump 两三次 = 十几秒）。
         self._send_cache: dict | None = None
         self._load_send_cache()
-        # "先手打字"的中间状态（begin_blind_send -> end_blind_send）
+        # "预输入"的中间状态（begin_blind_send -> end_blind_send）
         self._blind: dict | None = None
         self._blind_enabled = bool(self.ui.get("blind_send", True))
         self._fast_send = bool(self.ui.get("fast_send", True))
@@ -104,8 +104,8 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
     def _warn_throttled(self, key: str, msg: str, interval: float = 300.0) -> None:
         """同一类失败在 interval 秒内只打一次 warning，其余降为 debug。
 
-        轮询每 2 秒跑一轮，失败原因又往往是"状态问题"（未登录、不在前台、
-        联系人不在当前页），不节流就会把日志刷成"老是提示找不到联系人"。
+        轮询每 2 秒执行一轮，失败原因又往往是"状态问题"（未登录、不在前台、
+        联系人不在当前页），不节流就会把日志重复输出为"频繁提示找不到联系人"。
         """
         now = time.monotonic()
         if now - self._throttle.get(key, float("-inf")) >= interval:

@@ -22,7 +22,7 @@ def encode_png_rgb(width: int, height: int, rows: list[bytes]) -> bytes:
     """把 RGB 行数据编码成 PNG（真彩色、无 alpha、不做隔行）。
 
     rows: 长度为 height 的列表，每行 `width * 3` 字节。
-    丢掉 alpha 是故意的：截屏在个别镜像上 alpha 通道是 0，带 alpha 会得到一张全透明图。
+    丢弃 alpha 是故意的：截屏在个别镜像上 alpha 通道是 0，带 alpha 会得到一张全透明图。
     """
     if width <= 0 or height <= 0 or len(rows) != height:
         raise ValueError(f"PNG 尺寸不合法: {width}x{height} rows={len(rows)}")

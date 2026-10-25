@@ -11,7 +11,7 @@ class LoginMixin:
     def _field_verifier(self, field_node=None):
         """生成 input_text 的校验回调工厂：必须**按行精确匹配**目标文本。
 
-        为什么不用"输入框非空即成功"：登录页有多个 EditText，把手机号写进密码框、
+        为什么无需"输入框非空即成功"：登录页有多个 EditText，把手机号写进密码框、
         或残留上一次的内容时，非空判定会误报成功，导致后续逻辑"找不到控件"反复重输
         （用户遇到的密码被输好几遍）。这里要求某一行的文本恰好等于目标值；
         **密码框显示为掩码**（••••/圆点）时按"已清空且长度一致"判断，
@@ -26,7 +26,7 @@ class LoginMixin:
                 try:
                     root = self.adb.dump_ui(retries=1, delay=0.0)
                 except AdbError:
-                    return True  # 读不到界面时不阻塞流程
+                    return True  # 无法读取界面时不阻塞流程
                 rows = self._input_row_texts(root)
                 if not rows:
                     return True

@@ -12,8 +12,8 @@ class ForwardingMixin:
         """同一联系人 + 同一文本，最近是否已经转发过（默认 300 秒内不再重复转发）。
 
         为什么不能只靠"文本 + 时间标签"当身份：App 的分组时间标签**时有时无**
-        （同一屏里同一条消息一会儿读得到 "14:49"、一会儿读不到），标签一变身份就变，
-        于是一条失败消息会被当成"新消息"反复转发 —— 用户报的"只有一个群没发出去，
+        （同一屏里同一条消息稍后读得到 "14:49"、稍后无法读取），标签一变身份就变，
+        于是一条失败消息会被当成"新消息"反复转发 —— 用户报的"只有一个群未送达，
         却连着别的群和私信一起一直转发"就是这个。
         """
         if self._forward_content_guard <= 0:
@@ -39,7 +39,7 @@ class ForwardingMixin:
         self._recent_fwd[("xtc", contact or "", text or "")] = now
 
     def _has_active_plan(self, contact, text: str) -> bool:
-        """是否已有"同一联系人 + 同一文本"的补投计划在跑（有就别再发一遍整条）。"""
+        """是否已有"同一联系人 + 同一文本"的补投计划在跑（若存在则请勿重复发送整条消息）。"""
         with self._fwd_plan_lock:
             for key, plan in self._fwd_plan.items():
                 if key[1] == (contact or "") and key[2] == (text or ""):
@@ -68,7 +68,7 @@ class ForwardingMixin:
         """有图片/表情在等原图、且等的时间还在 `order_hold_secs` 内 -> 后面的消息先压一下。
 
         为什么：那条图（在等原图）如果被后来的文字"插队"，QQ 里就是**错位**
-        （用户实测）。压住的这段时间里消息不会丢：媒体就绪后由补发流程按顺序一起带出去；
+        （用户实测）。阻塞的这段时间里消息不会丢：媒体就绪后由补发流程按顺序一起带出去；
         超过 `order_hold_secs` 就照旧先发，不让一条慢图把整条对话卡死。
         """
         if self._order_hold_secs <= 0 or not self._pending_media:
@@ -110,7 +110,7 @@ class ForwardingMixin:
 
         规则：取 `catchup_max_age` 与"距上次成功读界面已过去的时间 + 60 秒"的较大者 ——
         桥接中断（窗口失去焦点、容器休眠）期间错过的消息都在这个窗口内，不会被当成
-        "旧消息"丢掉；而连续运行时仍然只补 `catchup_max_age` 以内的。
+        "旧消息"丢弃；而连续运行时仍然只补 `catchup_max_age` 以内的。
         """
         if self._catchup_max_age <= 0:
             return 0.0
@@ -144,7 +144,7 @@ class ForwardingMixin:
     def _media_hash(media: dict | None) -> str:
         """媒体的内容哈希（`img:<16 位>`）：**没有时间标签时也能稳定复现的身份**。
 
-        为什么需要：照片气泡经常读不到时间标签，身份就会退回空串，同一条照片会被重复
+        为什么需要：照片气泡经常无法读取时间标签，身份就会退回空串，同一条照片会被重复
         转发、时间也会变成转发时刻（实测 21:38 的照片在 23:07 又发一遍、抬头写成 23:07）。
         哈希只看图片内容，与标签无关，天然稳定。
         """
@@ -170,7 +170,7 @@ class ForwardingMixin:
         # 消息库去重必须按**这条消息的身份**（文本 + 时间），不能只按文本：
         # 所有照片的文本都是"图片"、同一个表情的名字也一样 —— 只按文本去重的话，
         # 第一条之后的所有图片/表情都会被当成"重复"而不入库，
-        # 于是 /小天才 历史消息 里**看不到任何图片和表情**（用户实测）。
+        # 于是 /小天才 历史消息 里**无法看到任何图片和表情**（用户实测）。
         if self._msg_stored(text, epoch):
             return
         self.msgs.append("xtc", contact or "", text, t=epoch,
@@ -184,7 +184,7 @@ class ForwardingMixin:
         """
         try:
             recent = self.msgs.recent(30)
-        except Exception:  # noqa: BLE001 读不到就当没有，宁可多存一条也别丢
+        except Exception:  # noqa: BLE001 无法读取就当没有，宁可多存一条也别丢
             return False
         t = text or ""
         for e in recent:
@@ -201,11 +201,11 @@ class ForwardingMixin:
 
     def _schedule_fwd_plan(self, contact, text: str, label: str, disp: str,
                            sticker: dict | None, failed: list, kind: str = "") -> None:
-        """登记/更新补投计划：**只记没发出去的目标**。"""
+        """登记/更新补投计划：**只记未送达的目标**。"""
         if not failed:
             return
         if self._forward_max_tries <= 0:
-            self._log("error", f"[转发] 有 {len(failed)} 个目标没发出去"
+            self._log("error", f"[转发] 有 {len(failed)} 个目标未送达"
                                f"（{'、'.join(f'{t}:{i}' for t, i in failed)}）：{text[:24]!r}；"
                                "forward.retry_max_tries=0 -> 不补投（只报这一次）")
             return
@@ -224,7 +224,7 @@ class ForwardingMixin:
                 plan["kind"] = kind or plan.get("kind") or ""
                 plan["tries"] = 0
                 plan["next_ts"] = time.monotonic() + gap
-        self._log("warning", f"[转发] 有 {len(failed)} 个目标没发出去"
+        self._log("warning", f"[转发] 有 {len(failed)} 个目标未送达"
                              f"（{'、'.join(f'{t}:{i}' for t, i in failed)}）：{text[:24]!r}；"
                              f"{int(gap)} 秒后**只重试这些目标**（最多 {self._forward_max_tries} 次，"
                              "已经成功的私聊/群不会重发）")
@@ -268,7 +268,7 @@ class ForwardingMixin:
                                  snapshot.get("disp", ""))
             self._log("error", f"[转发] 放弃补投（已试 {tries - 1} 次）: {text[:24]!r}；"
                                f"失败目标 {'、'.join(f'{t}:{i}' for t, i in failed)} 仍未发出，"
-                               "已停止重试（不会再刷屏）")
+                               "已停止重试（不会再重复输出）")
             return
         ok, _sent, still_failed = self._forward(
             snapshot.get("contact", ""), text,
@@ -308,7 +308,7 @@ class ForwardingMixin:
         kind 是这条消息的类型（sticker/image/text，按**气泡本身**判定）。
         三条纪律（用户实测过的坑）：
           * 已有补投计划 / 刚转发过同一内容 -> 直接跳过（标签跳变也不能骗过它）；
-          * 有目标成功就立刻记历史：轮询不会再拿这条消息重转（私聊不会被刷屏）；
+          * 有目标成功就立刻记历史：轮询不会再拿这条消息重转（私聊不会被重复输出）；
           * 失败的目标进补投计划：只补它们，退避 + 有上限，不再"每 5 秒一轮"。
         """
         disp = display_label or label
@@ -353,7 +353,7 @@ class ForwardingMixin:
 
         照片（`text` == `图片`）：
           1) 缓存里的**原图**（大图；形状与气泡一致、写入时间就在消息时间附近才敢用）；
-          2) 拿不到就发气泡截图（低清但一定对）—— 照片动辄 2000x3000，纯 Python 解不动
+          2) 无法取得就发气泡截图（低清但一定对）—— 照片动辄 2000x3000，纯 Python 解不动
              （实测只解 DC 就要 37 秒），所以这条路不比像素，只认唯一候选。
 
         near_epoch：补发老消息时传"这条消息自己的时间"，好让缓存查找按消息时间去匹配
@@ -407,13 +407,13 @@ class ForwardingMixin:
         ref0 = None            # 滚动前先抠一张备用（可能被裁，但内容一定是对的）
         # **气泡被消息列表裁掉时先滚进可视区**：实测贴边那条抠下来只有半张（原图比对
         # 0.78 不过 -> 发出去的是半张 png），往下滚一屏后同一张能到 0.99。
-        # 抓完图按原路滚回去（列表停在中间会让轮询读不到新消息）。
+        # 抓完图按原路滚回去（列表停在中间会让轮询无法读取新消息）。
         steps: list[int] = []
         vb = None
         if item is not None:
             try:
                 vb = self.xtc.chat_view_bounds(root)
-            except Exception as e:  # noqa: BLE001 拿不到可视区就按"没被裁"处理
+            except Exception as e:  # noqa: BLE001 无法取得可视区就按"没被裁"处理
                 self._log("debug", f"读消息列表可视区失败（按未裁处理）: {e}")
                 vb = None
         # 气泡被裁时先抠一张备用（可能半张，但内容一定对）。刚到达的气泡第一帧
@@ -450,8 +450,8 @@ class ForwardingMixin:
             self._log("info", f"[媒体] 这条气泡被消息列表裁到了，已滚动 {len(steps)} 次取完整图"
                               "（抓完会滚回底部）")
         if item is None and not is_image:
-            # 表情气泡本来定位到了、滚动后却找不到了（App 自动滚回底部 / 被顶走）：
-            # **不许按时间猜缓存**（实测这条路上猜出过一张 72x72 的小图），
+            # 表情气泡本来定位到了、滚动后却找不到了（App 自动滚回底部 / 被移出可视区）：
+            # **不许按时间推测缓存**（实测这条路上推测出过一张 72x72 的小图），
             # 但可以先回到**滚动前那份快照**把界面上那张抠下来 —— 半张也强于没有图。
             if steps:
                 for step in reversed(steps):
@@ -460,7 +460,7 @@ class ForwardingMixin:
                 # 用**滚动前就抠好的那一张**（那时坐标还是准的）：可能被裁掉一点，
                 # 但内容一定是对的；绝不按旧坐标重新抠（列表已经动过了）。
                 self._log("info", "[表情包] 滚动取完整图失败，改用滚动前抠下的那张"
-                                  "（可能被裁掉一点，但内容是对的）")
+                                  "（可能被裁剪，内容无误）")
                 try:
                     return self._capture_media_now(root0, text, name, is_image, item0,
                                                    near_epoch=near_epoch, ref=ref0)
@@ -478,13 +478,13 @@ class ForwardingMixin:
                     got = None
                 if got and got.get("data"):
                     return got
-            self._log("info", "[表情包] 没能取到这张表情的图，先不取图（稍后重试，避免发错）")
+            self._log("info", "[表情包] 未能取得这张表情的图，先不取图（稍后重试，避免发错）")
             return None
         try:
             return self._capture_media_now(root, text, name, is_image, item,
                                            near_epoch=near_epoch)
         finally:
-            # 滚回原位：逆向、同样次数（列表停在中间会让轮询读不到新消息）
+            # 滚回原位：逆向、同样次数（列表停在中间会让轮询无法读取新消息）
             for step in reversed(steps):
                 self.xtc.scroll_chat_by(vb, -step)
 
@@ -504,7 +504,7 @@ class ForwardingMixin:
             need_ref = True
             if self._emoji_store is not None and name and not is_image:
                 try:
-                    # 索引已就绪才能"秒判"名字是否唯一；没就绪就直接截图（别为了省一次
+                    # 索引已就绪才能"秒判"名字是否唯一；没就绪就直接截图（别为了减少一次
                     # 截图去等 4 秒建索引，那样反而抠错位置）
                     if self._emoji_store.index_ready():
                         need_ref = not self._emoji_store.name_is_unique(name)
@@ -541,7 +541,7 @@ class ForwardingMixin:
                     # 真老的照片没有新鲜文件，自然落到"发气泡截图"兜底。
                     got = self._emoji_store.find_photo(near_epoch=near_epoch, aspect=aspect,
                                                        min_px=max(bw, bh))
-                except Exception as e:  # noqa: BLE001 取不到就退回截图
+                except Exception as e:  # noqa: BLE001 无法取得就退回截图
                     self._log("debug", f"找照片原图失败（改用截图）: {e}")
                     got = None
                 if got and got.get("data"):
@@ -550,11 +550,11 @@ class ForwardingMixin:
                     got["label"] = "图片"
                     return got
             if not item:
-                self._log("info", f"[图片] 界面上没找到这条图片消息的气泡（{text!r}），按文字转发")
+                self._log("info", f"[图片] 界面上未找到这条图片消息的气泡（{text!r}），按文字转发")
                 return None
             if ref:
                 self._log("info", f"[图片] 按气泡截图 {len(ref)} 字节（{item.get('bounds')}），"
-                                  "随转发发给 QQ（缓存里没找到原图）")
+                                  "随转发发给 QQ（缓存里未找到原图）")
                 return {"data": ref, "kind": "png", "animated": False,
                         "source": "screenshot", "label": "图片"}
             self._log("info", f"[图片] 未能拿到这张照片（气泡 {item.get('bounds')}），按文字转发")
@@ -584,7 +584,7 @@ class ForwardingMixin:
                               f"{len(ref)} 字节（静止一帧）")
             return {"data": ref, "kind": "png", "animated": False, "source": "screenshot"}
         if not item:
-            self._log("info", f"[表情包] 界面上没找到这条表情的气泡（{text!r}），按文字转发")
+            self._log("info", f"[表情包] 界面上未找到这条表情的气泡（{text!r}），按文字转发")
             return None
         try:
             png = self.xtc.capture_sticker(item.get("bounds"))

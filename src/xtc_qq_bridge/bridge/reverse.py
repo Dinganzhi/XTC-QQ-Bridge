@@ -33,7 +33,7 @@ class ReverseMixin:
         if not text:
             return False
         where = f"群 {group_id}" if group_id else (f"私聊 {user_id}" if user_id else "未知会话")
-        # 收到就打印：便于在控制台确认 QQ 命令/消息真的到达了桥接（用户报告"看不到"）
+        # 收到就打印：便于在控制台确认 QQ 命令/消息真的到达了桥接（用户报告"无法看到"）
         self._log("info", f"[收到QQ命令] 来源={where} 内容={text!r}"
                           + (f" request_id={request_id}" if request_id else "")
                           + f"（队列中 {self._job_queue.qsize() + self._fast_queue.qsize()}"
@@ -47,9 +47,9 @@ class ReverseMixin:
         return True
 
     def _blind_send_allowed(self, contact: str) -> bool:
-        """能不能走"先手打字"：最近一次轮询确认过**就是目标聊天页**（含标题校验）。
+        """能不能走"预输入"：最近一次轮询确认过**就是目标聊天页**（含标题校验）。
 
-        为什么要这个门闩：先手打字是按**缓存坐标**盲点输入框/发送按钮，
+        为什么要这个门闩：预输入是按**缓存坐标**盲点输入框/发送按钮，
         只有"确实在目标聊天页"时才安全。条件：
           * 近 30 秒内轮询判过 STATE_CHAT；
           * 那次读到的聊天标题就是目标联系人（防止盲点把消息发到别的聊天里）；
@@ -71,10 +71,10 @@ class ReverseMixin:
         return True
 
     def _push_text_to_xtc(self, text: str, tag: str = "QQ->小天才") -> bool:
-        """把一段文字送进小天才聊天窗口（能用"先手打字"就用，失败退回稳妥流程）。
+        """把一段文字送进小天才聊天窗口（能用"预输入"就用，失败退回稳妥流程）。
 
         tag 只用于日志前缀（QQ->小天才 / 送达确认），两条路径共用同一套发送逻辑，
-        所以"回执"也能享受先手打字的 ~1 秒速度，而不是每次都走 2~3 次 dump 的稳妥流程。
+        所以"回执"也能享受预输入的 ~1 秒速度，而不是每次都走 2~3 次 dump 的稳妥流程。
         """
         contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
         if not contact:
@@ -82,7 +82,7 @@ class ReverseMixin:
             return False
         ok = False
         skip_safe = False
-        # ① "先手打字"：直接按缓存坐标点输入框 + 广播注入 + 点发送，
+        # ① "预输入"：直接按缓存坐标点输入框 + 广播注入 + 点发送，
         #    **不等轮询那次 dump、也不抢操作锁** —— 文字 ~1 秒内就出现在输入框里。
         #    复核放在后面（要 dump），失败再退回稳妥流程。
         if self._blind_send_allowed(contact):
@@ -99,11 +99,11 @@ class ReverseMixin:
                 else:
                     skip_safe = not retryable
                     self._log("warning" if skip_safe else "info",
-                              f"[{tag}] 先手发送未确认（{why}）"
+                              f"[{tag}] 预输入发送未确认（{why}）"
                               + ("，且不宜重发，按失败上报" if skip_safe else "，改用稳妥流程"))
             else:
                 self._log("debug", f"[{tag}] 预输入未启用（{why}），走稳妥流程")
-        # ② 稳妥流程（未走先手 / 先手没发出去且可安全重发时）
+        # ② 稳妥流程（未走预输入 / 预输入未送达且可安全重发时）
         if not ok and not skip_safe:
             with self._op_lock:
                 in_chat = self.xtc.open_chat(contact)
@@ -217,12 +217,12 @@ class ReverseMixin:
         确认消息以"发送成功"开头且为家长侧消息（右侧气泡），读取路径按前缀过滤，不会循环转发。
 
         这段是**低优先级任务**（见 `_queue_confirm_xtc`）：要往聊天页打字，占界面锁好几秒，
-        所以排在用户新发的 QQ 消息后面做；能用先手打字就用（~1 秒）。"""
+        所以排在用户新发的 QQ 消息后面做；能用预输入就用（~1 秒）。"""
         if not self._confirm_delivery():
             return
         try:
             contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
-            # 能用先手打字时不必先 dump 一次查"在不在聊天页"（门闩已经保证刚确认过聊天页）
+            # 能用预输入时不必先 dump 一次查"在不在聊天页"（门闩已经保证刚确认过聊天页）
             if not self._blind_send_allowed(contact) and not self.xtc.is_in_chat():
                 return  # 不在聊天页就不打扰
             confirm_text = "发送成功：" + message

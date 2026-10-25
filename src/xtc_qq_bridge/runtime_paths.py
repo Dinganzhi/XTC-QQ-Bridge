@@ -16,11 +16,11 @@ Nuitka 的两种打包模式对"文件在哪"的答案完全不同（已实测�
 - **BUNDLE_DIR（只读资源）**：`Path(__file__).resolve().parent`。模板、APK、插件源码等
   用 `--include-data-files/-dir` 打进来的东西都在这里，两种模式都成立。
 - **APP_DIR（可写数据）**：exe 所在目录（`sys.argv[0]`）。`config.yaml`、`logs/`、`data/`
-  都放这里；**绝不能**用 `__file__`，否则 onefile 会写进临时目录并在退出时丢掉。
+  都放这里；**绝不能**用 `__file__`，否则 onefile 会写进临时目录并在退出时丢弃。
   APP_DIR 不可写时（例如放在 Program Files）退回到用户数据目录。
 
 注意：`__compiled__.containing_dir` 在 standalone 模式下返回的是**上层输出目录**而不是
-`.dist` 目录（实测），因此这里不用它，统一以 `sys.argv[0]` 为准。
+`.dist` 目录（实测），因此这里无需它，统一以 `sys.argv[0]` 为准。
 """
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ BUNDLE_DIR: Path = _bundle_dir()
 
 
 def _writable(d: Path) -> bool:
-    """目录是否可写（写一个临时文件试一下；失败不抛异常）。"""
+    """目录是否可写（写一个临时文件尝试一次；失败不抛异常）。"""
     probe = d / ".xtc_write_probe"
     try:
         d.mkdir(parents=True, exist_ok=True)

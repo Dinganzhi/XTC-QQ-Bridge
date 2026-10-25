@@ -153,7 +153,7 @@ class PopupMixin:
             #       com.xtc.watch/...popup.activity.CustomActivity14，按钮是
             #       btn_left="不更新" / btn_right="立即安装"）。
             #       以前只认 PopupWindow/Dialog 和固定文案，认不出它，于是弹窗永远
-            #       关不掉、消息一直读不到。这里按"结构"处理，与具体文案无关：
+            #       关不掉、消息一直无法读取。这里按"结构"处理，与具体文案无关：
             #       先点负向按钮（不更新/稍后/取消），找不到就按返回键；绝不点正向按钮。
             if popup:
                 key = self._popup_signature(root, focus)

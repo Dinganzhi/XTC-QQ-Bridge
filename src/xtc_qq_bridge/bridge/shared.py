@@ -83,7 +83,7 @@ class PluginForwarder:
         self.client = client
         self.logger = logger
         self._last_err_log = float("-inf")   # 初值用 -inf：monotonic 零点任意，0.0 会误判成"刚报过"
-        self._err_log_interval = 60.0  # 同一故障最多 60s 报一次，避免刷屏
+        self._err_log_interval = 60.0  # 同一故障最多 60s 报一次，避免重复输出
 
     def send(self, target_type, target_id, message: str) -> bool:
         ok, detail = self.send_detail(target_type, target_id, message)
@@ -95,7 +95,7 @@ class PluginForwarder:
         return ok
 
     def send_detail(self, target_type, target_id, message: str) -> tuple:
-        """转发并带出真实失败原因（QQ 侧发不出去 / 超时 / 连不上插件 是三种完全不同的病）。"""
+        """转发并带出真实失败原因（QQ 侧无法发送 / 超时 / 连不上插件 是三种完全不同的病）。"""
         fn = getattr(self.client, "send_detail", None)
         if fn is None:                       # 兼容旧的 client
             return self.client.send(target_type, target_id, message), ""

@@ -135,7 +135,7 @@ class LoginMixin:
                 elif state == LOGIN_NOT_LOGGED_IN:
                     msgs.append("未登录（未配置账密，请手动登录）")
                 else:
-                    msgs.append("无法确认登录态（App 不在前台或界面读不到，未做登录动作）")
+                    msgs.append("无法确认登录态（App 不在前台或界面无法读取，未做登录动作）")
                 # 4) 聊天页：已经在聊天页就不导航
                 if self.xtc.is_in_chat():
                     msgs.append("已在聊天页")
@@ -153,7 +153,7 @@ class LoginMixin:
                 # 5) 文字模式/输入框：只有真的有残留才清空
                 if self.xtc.is_in_chat():
                     msgs.append(self.xtc.ensure_input_clean())
-                    # 6) 顺手学一次"发送按钮坐标"：先手打字要用它，学完**重启后的第一条**
+                    # 6) 顺手学一次"发送按钮坐标"：预输入要用它，学完**重启后的第一条**
                     #    QQ 消息也能 ~1 秒内把文字打进去（只注入一个探针字符随即清空，不发消息）
                     if self.xtc.learn_send_point():
                         msgs.append("已记录发送按钮坐标")

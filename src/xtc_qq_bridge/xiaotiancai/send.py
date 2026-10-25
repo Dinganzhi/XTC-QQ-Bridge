@@ -9,7 +9,7 @@ class SendMixin:
     """发送相关：发送消息、发送判定、坐标缓存与预输入"""
 
     def chat_input_text(self) -> str:
-        """读取聊天输入框当前文本；读不到返回 ''。"""
+        """读取聊天输入框当前文本；无法读取返回 ''。"""
         try:
             root = self._dump_fast()
         except AdbError:
@@ -27,7 +27,7 @@ class SendMixin:
         def _verify() -> bool:
             try:
                 root = self._dump_fast()
-                self._last_verify_root = root        # 供 _send_once 复用，省一次 dump
+                self._last_verify_root = root        # 供 _send_once 复用，减少一次界面读取
             except AdbError:
                 return True  # dump 失败无法判定，不阻塞发送流程
             edit = self._find_input(root)
@@ -125,7 +125,7 @@ class SendMixin:
         返回 True 仅当能确认消息已交出去：
         - 出现包含该文本的**新**己方气泡；或
         - 输入框已不再包含该文本，且没有出现新的"发送失败"类提示。
-        读不到界面、找不到输入框、出现新的失败提示 -> 返回 False（调用方如实回报失败）。
+        无法读取界面、找不到输入框、出现新的失败提示 -> 返回 False（调用方如实回报失败）。
 
         重试策略：只有"输入框里仍留着这段文本"（点击发送没生效）才安全重发，
         最多 xiaotiancai.ui.send_retries 轮；无法确认时绝不重发（避免重复消息）。
@@ -168,7 +168,7 @@ class SendMixin:
             # 1) 发送前基线：优先复用很新的界面快照（轮询每 2 秒 dump 一次）
             root = self.recent_snapshot()
             if root is None or self._find_input(root) is None:
-                root = self._dump_with_retry(2)   # 读不到界面（界面不空闲）时自动收键盘重试
+                root = self._dump_with_retry(2)   # 无法读取界面（界面不空闲）时自动收键盘重试
                 if root is None or self._find_input(root) is None:
                     # 找不到输入框：可能有弹窗盖住了聊天页，先清理再重读界面
                     if self._dismiss_blockers():
@@ -203,7 +203,7 @@ class SendMixin:
                 ok, why = self._confirm_sent(text, base_fail, base_own)
                 if ok:
                     return True, why
-                # 只有"输入框仍留有内容"才能安全重来（说明没发出去）；
+                # 只有"输入框仍留有内容"才能安全重来（说明未送达）；
                 # 其它情况（气泡/界面不明）不重试，免得把消息发两遍。
                 if "输入框仍留有内容" not in why:
                     return False, why
@@ -294,7 +294,7 @@ class SendMixin:
 
         已知残余风险（可接受）：位置比对用的是**最近快照**，所以"刚缩放完窗口、还没
         轮到下一次轮询 dump 就发消息"这一种情况仍可能按旧坐标点一次；点完的确认 dump
-        会发现没发出去（文字还在框里），随后**就着快照补点一次**（`_retap_send`），
+        会发现未送达（文字还在框里），随后**就着快照补点一次**（`_retap_send`），
         仍不行才清缓存退回稳妥流程 —— 最坏是多花一次 dump，不会静默发错。
         """
         cache = self._send_cache
@@ -306,7 +306,7 @@ class SendMixin:
             return None
         try:
             w, h = self.adb.get_screen_size()
-        except Exception:  # noqa: BLE001 拿不到屏幕尺寸就不冒险
+        except Exception:  # noqa: BLE001 无法取得屏幕尺寸就不冒险
             return None
         if self._same_bounds(cached_in, input_bounds):
             x, y = int(point[0]), int(point[1])
@@ -331,7 +331,7 @@ class SendMixin:
         return (x, y)
 
     def _remember_send_point(self, input_bounds, send_node, root: ET.Element) -> None:
-        """记下这次点成功的发送按钮坐标 + 输入框坐标，供下次"先手打字"用。"""
+        """记下这次点成功的发送按钮坐标 + 输入框坐标，供下次"预输入"用。"""
         try:
             target = send_node
             if str(send_node.get("clickable", "")).lower() != "true":
@@ -344,7 +344,7 @@ class SendMixin:
                     "point": (int(center[0]), int(center[1])),
                     "input_point": ((x1 + x2) // 2, (y1 + y2) // 2),
                 }
-                self._save_send_cache()   # 落盘：重启后第一条消息也能走"先手打字"
+                self._save_send_cache()   # 落盘：重启后第一条消息也能走"预输入"
         except Exception as e:  # noqa: BLE001 缓存失败不影响发送
             self.log("debug", f"发送按钮坐标缓存失败: {e}")
 
@@ -361,12 +361,12 @@ class SendMixin:
                     d = (n.get("content-desc") or "").strip()
                     if d.startswith("和") and d.endswith("的聊天"):
                         return d[1:-3].strip()
-        except Exception:  # noqa: BLE001 标题读不到就算了（调用方据此不放行快发）
+        except Exception:  # noqa: BLE001 标题无法读取就算了（调用方据此不放行快发）
             pass
         return ""
 
     def blind_send_ready(self) -> bool:
-        """能不能"先手打字"：需要上次成功发送留下的坐标缓存 + 一份可用的界面快照。
+        """能不能"预输入"：需要上次成功发送留下的坐标缓存 + 一份可用的界面快照。
 
         坐标缓存由**上一次真正发成功**的发送留下（重启后第一条走稳妥流程），
         快照用轮询刚 dump 的那份（只为拿"发送前基线"，不做任何 UI 操作）。
@@ -380,7 +380,7 @@ class SendMixin:
         return self.recent_snapshot() is not None
 
     def begin_blind_send(self, text: str) -> tuple[bool, str]:
-        """先手把文字打进去（**不占桥接的操作锁、不读界面**）：文字 ~1 秒内出现在输入框。
+        """预输入把文字打进去（**不占桥接的操作锁、不读界面**）：文字 ~1 秒内出现在输入框。
 
         为什么快：稳妥流程要先等轮询那次 ~3.8 秒的 dump（操作锁）再自己读一次界面，
         文字才被注入；这里直接用缓存坐标点输入框 -> 广播注入 -> 点缓存坐标的发送按钮。
@@ -395,7 +395,7 @@ class SendMixin:
             return False, "还没有发送坐标缓存（先走稳妥流程建立）"
         base = self.recent_snapshot()
         if base is None:
-            return False, "没有可用的界面快照（拿不到发送前基线）"
+            return False, "无可用界面快照（无法取得发送前基线）"
         self._blind = {
             "text": text,
             "base_fail": self._fail_signature(base),
@@ -423,19 +423,19 @@ class SendMixin:
             return False, f"ADB 异常: {e}"
 
     def end_blind_send(self, text: str) -> tuple[bool, str, bool]:
-        """复核"先手打字"的结果：返回 (是否确认发出, 说明, 失败时能否安全重发)。
+        """复核"预输入"的结果：返回 (是否确认发出, 说明, 失败时能否安全重发)。
 
         用一次 dump 同时判断：出现新己方气泡（最强证据）/ 出现新失败提示 /
-        输入框仍留有内容（没发出去，可安全重发）/ 输入框已清空且无新失败提示。
+        输入框仍留有内容（未送达，可安全重发）/ 输入框已清空且无新失败提示。
 
-        文字还留在输入框里时**先就着快照补点一次发送**（见 `_retap_send`）：实测那多半只是
+        文字还留在输入框里时**先就着快照补点一次发送**（见 `_retap_send`）：实测那通常只是
         那一下没点中（输入框变高了/按钮位置变了），补点一次就出去了 —— 比回退到
         "清空 + 重新注入 + 重新找按钮"的稳妥流程快 5~8 秒。
         """
         blind = self._blind or {}
         self._blind = None
         if not blind:
-            return False, "没有待复核的先手发送", False
+            return False, "没有待复核的预输入发送", False
         base_fail = blind.get("base_fail") or []
         base_own = blind.get("base_own") or {}
         try:
@@ -447,13 +447,13 @@ class SendMixin:
         except AdbError as e:
             return False, f"复核失败: {e}", False
         if not ok and retryable:
-            # 补点还是没发出去（文字仍在输入框里）：清掉缓存坐标，让稳妥流程重来
+            # 补点还是未送达（文字仍在输入框里）：清掉缓存坐标，让稳妥流程重来
             self._send_cache = None
             self._save_send_cache()
         return ok, why, retryable
 
     def _load_send_cache(self) -> None:
-        """从磁盘恢复上次学到的发送按钮坐标（拿不到就照旧现场学）。"""
+        """从磁盘恢复上次学到的发送按钮坐标（无法取得就照旧现场学）。"""
         if not self._cache_path:
             return
         try:
@@ -502,7 +502,7 @@ class SendMixin:
     def learn_send_point(self, probe: str = "a") -> bool:
         """启动时用一次"探针注入"学出发送按钮坐标（不会发出任何消息）。
 
-        为什么需要：先手打字靠**发送按钮的坐标**，而它只在输入框有内容时才出现 ——
+        为什么需要：预输入靠**发送按钮的坐标**，而它只在输入框有内容时才出现 ——
         不先学一次的话，**重启后的第一条** QQ 消息只能走稳妥流程（两次 dump）。
         这里往输入框注入一个探针字符 -> dump 一次 -> 记下输入框与发送按钮坐标 ->
         立刻清空输入框。全程只输入、不点发送，所以不会有任何消息被发出去。
@@ -574,11 +574,11 @@ class SendMixin:
         """发送后确认（通常只 dump 一次，约 3 秒）。返回 (是否确认发出, 说明)。
 
         第一次 dump 前先等 `_confirm_delay`：点发送后 App 要一点时间才把气泡画出来，
-        等太短会白 dump 一次（设备上一次 ~3 秒，白等就变成"发一条要十几秒"）。
+        等太短会白 dump 一次（设备上一次 ~3 秒，空等就变成"发一条要十几秒"）。
         后面几次只在前一次证据不足时才继续。
 
         每次 dump 的**结果与耗时**都记下来：多花了一次 dump 就在 INFO 里写一行说明，
-        "到底慢在哪一步"从此不用猜（实测最常见的就是第一次 dump 撞上界面还没稳定而失败）。
+        "到底慢在哪一步"从此无需猜（实测最常见的就是第一次 dump 撞上界面还没稳定而失败）。
         """
         last = "界面读取失败"
         base_fail_cnt = self._counter(base_fail)
@@ -592,7 +592,7 @@ class SendMixin:
                 last = f"界面读取失败({e})"
                 notes.append(f"第{i + 1}次 dump 失败（{time.monotonic() - t0:.1f}s）")
                 continue
-            self._last_confirm_root = root      # 供"补点一次发送"复用，省一次 dump
+            self._last_confirm_root = root      # 供"补点一次发送"复用，减少一次界面读取
             # 新出现的"发送失败"提示 = 明确失败
             now_fail = self._counter(self._fail_signature(root))
             new_fail = [k for k, v in now_fail.items() if v > base_fail_cnt.get(k, 0)]
@@ -688,7 +688,7 @@ class SendMixin:
           真正可点的是它的父 `fl_chat_text_send`）；
         - 输入框为空时：**没有** tv_send_view；此时旧的 content-desc 子串匹配会命中
           `iv_chat_msg_item_state`（每条消息右侧的"发送中/发送失败"状态图标），
-          于是"没输入内容也以为发送按钮存在"——注入其实没成功却继续点它，
+          于是"没输入内容也以为发送按钮存在"——注入实际没成功却继续点它，
           表现为"莫名其妙发送失败"。所以这里排除状态图标，且 desc 必须完全相等。
         """
         rid = self.ui.get("send_resource_id", "")
@@ -723,7 +723,7 @@ class SendMixin:
         try:
             if str(send_node.get("clickable", "")).lower() != "true":
                 target = self._clickable_ancestor(send_node, root) or send_node
-        except Exception:  # noqa: BLE001 拿不到祖先就点自己
+        except Exception:  # noqa: BLE001 无法取得祖先就点自己
             target = send_node
         self.adb.tap_element(target)
 

@@ -61,7 +61,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 操作锁：发送/导航期间暂停轮询，避免两个线程同时 uiautomator dump 冲突
         self._op_lock = threading.Lock()
         # 表情包 / 照片（**仅 小天才 -> QQ 单向**）：优先读 App 数据目录/图片缓存里的
-        # **原文件**（动图 GIF 能保住动画、照片能拿回原图），拿不到再按气泡截图，
+        # **原文件**（动图 GIF 能保住动画、照片能拿回原图），无法取得再按气泡截图，
         # 最后退回发"表情X"/"图片"文字。
         _emoji = cfg.get("emoji") or {}
         self._emoji_image = bool(_emoji.get("forward_image", True))
@@ -82,20 +82,20 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 有发送任务在排队/执行时置位：轮询据此让路（见 _poll_loop），别和发送抢 dump
         self._send_pending = False
         self._send_pending_ts = float("-inf")
-        # 最近一次"轮询确认过就在聊天页"的时刻与标题（"先手打字"快发的放行条件）
+        # 最近一次"轮询确认过就在聊天页"的时刻与标题（"预输入"快发的放行条件）
         self._chat_ok_ts = float("-inf")
         self._chat_ok_title = ""
         # "别睡"心跳：每 keep_awake_interval 秒发一次 WAKEUP（0 = 关闭）。
         # 实测：容器 大约每 50 秒把虚拟屏睡一次（stayOn/screen_off_timeout 都挡不住），
         # 而每 10 秒发一次 WAKEUP 能让它连续 2 分钟保持 Awake、App 一直留在前台
-        # （单次开销仅 0.08 秒）。这是"先手打字"能稳定命中、发送不再莫名 10~30 秒的关键。
+        # （单次开销仅 0.08 秒）。这是"预输入"能稳定命中、发送不再莫名 10~30 秒的关键。
         try:
             self._keep_awake_interval = float((cfg.get("adb") or {}).get("keep_awake_interval", 10) or 0)
         except (TypeError, ValueError):
             self._keep_awake_interval = 10.0
         self._last_awake_poke = float("-inf")
         # 断连重连的退避状态：设备真的连不上（如 容器连接 卡成 offline）时，
-        # 不要每 10 秒就"重连一次"刷屏 + 白跑 12 个候选端口；失败后指数退避到最多 60 秒。
+        # 不要每 10 秒就"重连一次"重复输出 + 空跑 12 个候选端口；失败后指数退避到最多 60 秒。
         self._reconnect_fails = 0
         self._next_reconnect_ts = float("-inf")
         # 取图时等发送线程让出界面锁的最长时间（秒）：超过就先按旧坐标试，
@@ -111,9 +111,9 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._warned_no_cred = False      # 未配置账密的提示只打一次
         self._notify_seen: dict[str, float] = {}   # 通知去重：文本 -> 上次发送时刻
         self._log_seen: dict[str, float] = {}      # 日志去重：key -> 上次打印时刻
-        self._poll_fail_streak = 0        # 连续"读不到消息"的轮数（触发界面自愈）
+        self._poll_fail_streak = 0        # 连续"无法读取消息"的轮数（触发界面自愈）
         self._last_state = ""             # 上一次判定的 App 状态（用于"状态变化才记日志"）
-        # 漏消息补发（从最新往回走、撞库即停）：弹窗挡住/界面读不到期间到达的、
+        # 漏消息补发（从最新往回走、撞库即停）：弹窗挡住/界面无法读取期间到达的、
         # 以及启动前积压在聊天里的消息，都会按时间顺序补齐
         _xc = cfg.get("xiaotiancai") or {}
         self._catchup_enabled = bool(_xc.get("catchup_missed", True))
@@ -123,7 +123,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._catchup_scan = int(_xc.get("catchup_scan", 30) or 0)  # 0 = 不限制
         # 有图片/表情还在等原图时，后面的消息最多压多久再发（秒；0 = 不压、照旧先发）
         # 实测"错位"就是这么来的：那条图在等原图（几秒~几十秒），期间来的文字先发出去，
-        # 于是 QQ 里看到"文字在图前面"。压住一小会儿，等图就绪后按顺序一起发。
+        # 于是 QQ 里看到"文字在图前面"。阻塞一小会儿，等图就绪后按顺序一起发。
         try:
             self._order_hold_secs = max(0.0, float(_xc.get("order_hold_secs", 45) or 0))
         except (TypeError, ValueError):
@@ -145,10 +145,10 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 为了给发送让路而"先取出来、稍后再做"的普通任务（保持原有先后顺序）
         self._held_jobs: collections.deque = collections.deque()
         self._job_thread: threading.Thread | None = None
-        # ---- 转发"补投计划"：只补没发出去的目标，绝不因为"有个群失败"就把私聊/别的群再发一遍 ----
+        # ---- 转发"补投计划"：只补未送达的目标，绝不因为"有个群失败"就把私聊/别的群再发一遍 ----
         # 为什么要独立计划 + 独立线程（用户实测过的坑）：
         #   * 旧实现靠"轮询重新读屏"来重试，于是**退避节奏完全失控**（每 5 秒重发一次）；
-        #   * 重试时它会把**所有目标**再发一遍（私聊被刷屏几十分钟）；
+        #   * 重试时它会把**所有目标**再发一遍（私聊被重复输出几十分钟）；
         #   * 消息身份在"标签读到了/没读到"之间会跳变，靠身份去重也挡不住这种重发。
         # 现在：第一次尝试就把"这条已经处理过"记进历史，失败的目标写进补投计划，
         # 由专门的线程按退避节奏**只补那些目标**；到达上限后放弃并明确报错。
@@ -195,12 +195,12 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         except (TypeError, ValueError):
             self._label_fallback_max = 12 * 3600.0
         try:
-            # 补发时向上多翻几屏继续找（0 = 只看当前可见区）
+            # 补发时向上多滚动几屏继续找（0 = 只看当前可见区）
             self._catchup_screens = max(0, int(_xc.get("catchup_screens", 1) or 0))
         except (TypeError, ValueError):
             self._catchup_screens = 1
         try:
-            # 每隔多少秒做一次**深度扫描**（无视已处理消息、多翻几屏），0 = 关闭
+            # 每隔多少秒做一次**深度扫描**（无视已处理消息、多滚动几屏），0 = 关闭
             self._catchup_deep_every = max(0.0, float(
                 _xc.get("catchup_deep_every", 600) or 0))
         except (TypeError, ValueError):
@@ -250,7 +250,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
 
         用途：桥接停过一段时间（ADB 掉线、容器休眠、窗口失去焦点）后，把积压的图片与
         文字按原顺序补齐。不启动轮询与 webhook，转发改为**同步执行**（没有工作线程）。
-        screens > 0 时覆盖 `xiaotiancai.catchup_screens`（向上多翻几屏）。
+        screens > 0 时覆盖 `xiaotiancai.catchup_screens`（向上多滚动几屏）。
         返回本次转发的条数。
         """
         contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
@@ -269,7 +269,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     self.xtc.settle()
                 if not self.xtc.is_in_chat():
                     if not self.xtc.open_chat(contact):
-                        self._log("error", f"[补发] 打不开与「{contact}」的聊天，未能补发")
+                        self._log("error", f"[补发] 无法打开与「{contact}」的聊天，未能补发")
                         return 0
                     self.xtc.settle()
         except Exception as e:  # noqa: BLE001 界面准备失败就直接返回
@@ -305,7 +305,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._login_thread.start()
         self._job_thread = threading.Thread(target=self._job_worker, name="xtc-jobs", daemon=True)
         self._job_thread.start()
-        # 补投线程：只补"没发出去的目标"（不碰界面，所以不会和发送抢界面锁）
+        # 补投线程：只补"未送达的目标"（不碰界面，所以不会和发送抢界面锁）
         self._fwd_retry_thread = threading.Thread(target=self._forward_retry_loop,
                                                   name="xtc-fwd-retry", daemon=True)
         self._fwd_retry_thread.start()
@@ -313,7 +313,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 启动即自动初始化（等价于 QQ 命令 /小天才 初始化，以前只有手动发命令才会做）：
         # 清弹窗 -> 确认前台 -> 按需登录 -> 进入聊天页 -> 清空输入框残留。
         # 不做这一步时，启动后的第一轮轮询可能还在列表页/残留状态上，
-        # 读到的第一条"新消息"其实是启动前的旧消息。
+        # 读到的第一条"新消息"实际是启动前的旧消息。
         try:
             self._job_queue.put(("init", ""))
             self._log("info", "已排队启动自动初始化（清弹窗 / 进聊天页 / 清输入框残留）")
@@ -419,8 +419,8 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 time.sleep(0.05)
                 continue
             # 轻量"别睡"心跳：容器会随宿主窗口状态息屏（screen_off_timeout 拉满也挡不住），
-            # 隔一会儿发一次 WAKEUP，把屏叫醒并重置用户活动计时 —— 屏不睡，App 就一直在前台，
-            # "App 不在前台 -> 重新拉起"（实测每次 ~20 秒）和"先手打字"被门闩挡住都会少很多。
+            # 隔稍后发一次 WAKEUP，把屏叫醒并重置用户活动计时 —— 屏不睡，App 就一直在前台，
+            # "App 不在前台 -> 重新拉起"（实测每次 ~20 秒）和"预输入"被门闩挡住都会少很多。
             if self._keep_awake_interval > 0 and \
                     loop_started - self._last_awake_poke >= self._keep_awake_interval:
                 self._last_awake_poke = loop_started
@@ -451,7 +451,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     self._log_state(state)
                     xtc_contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
                     if state == self.xtc.STATE_CHAT:
-                        # 记下"最近一次确认过就在聊天页"（含标题），"先手打字"快发据此放行
+                        # 记下"最近一次确认过就在聊天页"（含标题），"预输入"快发据此放行
                         self._chat_ok_ts = time.monotonic()
                         if root is not None:
                             self._last_ok_read_ts = time.time()
@@ -475,9 +475,9 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                                "容器息屏导致 App 不在前台，已唤醒屏幕"
                                                "（唤醒后通常直接回到聊天页）", interval=120)
                         elif state == self.xtc.STATE_POPUP:
-                            # 弹窗遮挡（如"升级提醒"）：弹窗不关就完全读不到消息，
+                            # 弹窗遮挡（如"升级提醒"）：弹窗不关就完全无法读取消息，
                             # 所以这里**不设冷却**，每次轮询都尝试关掉；
-                            # 关不掉时由 xiaotiancai 侧 10 分钟提醒一次，避免刷屏。
+                            # 关不掉时由 xiaotiancai 侧 10 分钟提醒一次，避免重复输出。
                             if self.xtc.settle():
                                 self._log("info", "检测到弹窗遮挡界面，已自动关闭")
                             else:
@@ -492,7 +492,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                 self._last_chat_open = time.monotonic()
                                 if not self.xtc.open_chat(xtc_contact):
                                     reason = self.xtc.last_open_reason or "未知原因"
-                                    # 同一原因 5 分钟只报一次，避免轮询刷屏
+                                    # 同一原因 5 分钟只报一次，避免轮询重复输出
                                     self._log_once(f"open_chat:{reason[:24]}",
                                                    f"进入聊天失败：{reason}", interval=300)
                 finally:
@@ -507,14 +507,14 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                         self._forward_backlog(root, contact or "")
                     except Exception as e:  # noqa: BLE001
                         self._log("warning", f"补发流程异常: {e}")
-                # 连续读不到任何东西（且不在聊天页/被弹窗挡住）-> 自愈
+                # 连续无法读取任何东西（且不在聊天页/被弹窗挡住）-> 自愈
                 if not text and not own_recent:
                     self._poll_fail_streak += 1
                     if self._poll_fail_streak in (6, 20) or self._poll_fail_streak % 60 == 0:
                         with self._op_lock:
                             state = self.xtc.recover(
                                 (self.cfg.get("target") or {}).get("xtc_contact", ""))
-                        self._log("info", f"轮询连续 {self._poll_fail_streak} 轮没有读到消息，"
+                        self._log("info", f"轮询连续 {self._poll_fail_streak} 轮未读到消息，"
                                           f"界面自愈: {state}")
                 else:
                     self._poll_fail_streak = 0
@@ -555,7 +555,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                            or self.echo.is_echo(text)
                            or self._forward_suppressed(contact, text, label))
                     if not dup and not label:
-                        # 读不到时间标签时只能按文本保守判定：宁可不重发，也不要反复刷同一条
+                        # 无法读取时间标签时只能按文本保守判定：宁可不重发，也不要反复刷同一条
                         dup = self.msgs.seen(text, "xtc")
                     # 太旧的积压消息不再转发（用户实测："九点四十八分才发了个四点半的消息"）：
                     # 它必然排在已发过的更新消息后面 = 错位。记进历史，别每轮再翻出来。
@@ -581,17 +581,17 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     # **类型一律以气泡本身为准**：实测手打了一条内容就是"表情"的文本，
                     # 按前缀判成表情包后等了 10 分钟，最后发出一条没有图的"[表情]"（空气消息）。
                     # 优先用 `latest_kind()`：它与上面那条 text 来自**同一次解析**；
-                    # 只有它拿不到（空）时才回退到拿界面再核对一遍。
+                    # 只有它无法取得（空）时才回退到拿界面再核对一遍。
                     kind = ((self.xtc.latest_kind() if text else "") or
                             (self.xtc.message_kind(root, text) if text else "text"))
                     is_media = kind in ("sticker", "image")
                     mkey = self._fwd_key(contact, text, label)
                     if not dup and is_media and mkey in self._pending_media:
-                        dup = True          # 本轮静默跳过：在等媒体/重试中，不转发也不刷日志
+                        dup = True          # 本轮静默跳过：在等媒体/重试中，不转发也不重复输出日志
                     if not dup and not is_media and self._order_hold_active():
                         # 有图片/表情还在等原图：这条先压一下，否则它一定排在那张图前面（错位）。
                         # 不丢：等媒体就绪后由补发流程按顺序带出去（最多压 order_hold_secs 秒）。
-                        self._log("debug", f"[顺序] 有图片/表情在等原图，这条先暂缓: {text[:24]!r}")
+                        self._log("debug", f"[顺序] 有图片/表情在等原图，这条暂缓: {text[:24]!r}")
                         dup = True
                     if not dup:
                         self._log("info", f"[收到小天才消息] 来源={self._xtc_source(contact)} "
@@ -611,10 +611,10 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                 if got_lock:
                                     self._op_lock.release()
                             if sticker is None:
-                                # 拿不到媒体：登记"稍后重试"，**这一轮先不发**
+                                # 无法取得媒体：登记"稍后重试"，**这一轮先不发**
                                 # （不发的话 QQ 只会收到"图片"两个字）
                                 self._media_retry_failed(mkey, contact, text, label, time_label,
-                                                         "界面上还是占位图、缓存里也还没有原图",
+                                                         "界面上还是占位图、缓存里也尚无原图",
                                                          kind=kind)
                                 skip_media = True
                             else:
@@ -652,10 +652,10 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             time.sleep(max(0.0, self._poll_interval - (time.monotonic() - loop_started)))
 
     def _scroll_probe(self, root) -> int:
-        """当前界面能不能向上翻（返回可用的位移，翻不动返回 0）。只读，不真的滚。"""
+        """当前界面能不能向上翻（返回可用的位移，无法滚动时返回 0）。只读，不真的滚。"""
         try:
             vb = self.xtc.chat_view_bounds(root)
-        except Exception:  # noqa: BLE001 读不到可视区 -> 视为不能翻
+        except Exception:  # noqa: BLE001 无法读取可视区 -> 视为不能翻
             return 0
         if not vb:
             return 0
@@ -686,7 +686,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             if epoch is None:
                 return False               # 没有时间依据 -> 当作"库里没有"，让上层去补
             return self._msg_stored(text, epoch, window=300.0)
-        # 普通文本：沿用保守规则"同文本即已处理"（宁可少补一条，也不要刷屏）
+        # 普通文本：沿用保守规则"同文本即已处理"（宁可少补一条，也不要重复输出）
         return self.msgs.seen(text, "xtc")
 
     @staticmethod
@@ -703,7 +703,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
           不一样 -> 转发，再往上看一条，直到撞上库里已有的一条为止。
 
         好处：弹窗挡住期间漏掉的、以及启动前积压在聊天里的消息，都会按时间顺序补齐；
-        而已处理过的消息一旦撞上就停，不会无限往上翻（也不需要记"启动时刻"来卡范围）。
+        而已处理过的消息一旦撞上就停，不会无限向上滚动（也不需要记"启动时刻"来卡范围）。
 
         返回补发条数。命令文本与系统提示只跳过、不作为停止边界。
         """
@@ -716,7 +716,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             return 0
         # 有表情/图片要做补发时：**先在界面锁内重新读一次界面**，整轮补发都用这一份新鲜快照。
         # 为什么：补发是连着发的，每转发成功一条就会往聊天里写一条"发送成功"提示把列表往上顶；
-        # 用轮询那份（可能已经过去几秒）的坐标去抠图，抠到的是被顶走后的空白区。
+        # 用轮询那份（可能已经过去几秒）的坐标去抠图，抠到的是被移出可视区后的空白区。
         # 一次 dump 服务整轮（而不是每条媒体各 dump 一次）—— 后者在积压多条图片时白花好几秒。
         if any(it.get("sticker") or it.get("image") for it in bubbles):
             fresh = self._fresh_chat_root()
@@ -734,7 +734,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         scanned = 0
         hit_store = False          # 本屏里撞到过"库里已有"的消息（日志/调试用）
         stop_all = False           # 需要整体停止（超龄 / 超出扫描上限 / 媒体在等）
-        steps: list[int] = []      # 往上翻过的位移，最后按原路滚回底部
+        steps: list[int] = []      # 向上滚动过的位移，最后按原路滚回底部
         # 深度扫描：普通轮询在"这一屏全是已处理的"时停；深度扫描无视已处理、一直翻到上限，
         # 用来找回被埋在已处理消息下面的漏发消息（实测前一天的图片在 3 屏之上）。
         deep = self._force_deep or (
@@ -747,7 +747,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         scan_limit = max(self._catchup_scan, 120) if deep else self._catchup_scan
         if self._order_hold_active():
             # 有图片/表情在等原图：这一轮先不补发任何东西（否则更新的那条会插到图前面 = 错位）
-            self._log("debug", "[补发] 有图片/表情在等原图，先压一轮不补发（保持顺序）")
+            self._log("debug", "[补发] 有图片/表情在等原图，本轮暂缓补发（保持顺序）")
             return 0
         try:
             for _screen in range(screens_limit + 1):
@@ -782,7 +782,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     # 早先试过"用原图文件的写入时间当身份"，但 App 会重写缓存文件（同一张照片
                     # 出现过 2203046 与 2292962 两个文件、时间也不一样），会把同一条照片重复转发。
                     if kind in ("sticker", "image") and not ident:
-                        # 只有在"确实翻得动"的时候才先去翻一屏找标签；翻不动（读不到可视区、
+                        # 只有在"确实翻得动"的时候才先去翻一屏找标签；翻不动（无法读取可视区、
                         # 或者当前环境不支持滑动）就按无标签照常补发，绝不能让照片被漏掉。
                         if len(steps) < self._catchup_screens and self._scroll_probe(root):
                             break            # 跳出本屏 -> 外层会上翻一屏再扫
@@ -793,7 +793,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                         age = self._label_age(ident or disp_lbl)
                         if age is not None and age > stale_limit:
                             # 太旧的积压消息不转发：它必然排在已发过的更新消息后面（错位）。
-                            # 只提示一次并记住，随后静默；再往上的消息只会更旧，本轮直接停止。
+                            # 只提示一次并注意，随后静默；再往上的消息只会更旧，本轮直接停止。
                             if not self.history.seen("xtc", contact or "", text, ident):
                                 self._log("info",
                                           f"[补发] 这条是 {age / 60:.0f} 分钟前的消息，超过 "
@@ -803,7 +803,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                             stop_all = True
                             break
                     if self._in_store(contact, text, ident):
-                        # 库里有它 -> 不重复转发。但**不能就此停住往上翻**：实测
+                        # 库里有它 -> 不重复转发。但**不能就此停住向上滚动**：实测
                         # "16:38 发的两条消息到 21:48 才转发" 就是因为更新的那条已经在库里，
                         # 旧实现一撞库就 break，把更老、却从没转发过的消息永远挡在外面。
                         self._log("debug", f"[补发] 库里已有，跳过（继续往上找）: {text[:24]!r}")
@@ -835,7 +835,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                         if mkey in self._pending_media:
                             # 已经在"等媒体"队列里：交给 `_retry_pending_media`（那里掌握退避
                             # 节奏，且不依赖它是不是最新一条）。普通轮询里直接停（保持顺序）；
-                            # 深度扫描里跳过它继续往上找，否则一条永远取不到原图的旧表情会
+                            # 深度扫描里跳过它继续往上找，否则一条永远无法取得原图的旧表情会
                             # 把更上面的漏发消息全部挡住（实测：昨天的图片就是这样被挡住的）。
                             self._log("debug", f"[补发] 这条的媒体在等待重试，先跳过: {text[:24]!r}")
                             if deep:
@@ -858,9 +858,9 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                 # 都共用一个空身份，第二张就会被当成"刚试过"而漏发。
                                 ident = mhash0
                         if sticker is None:
-                            # 媒体还没就绪：登记等待重试，这一条先不放行（不发"图片"两个字）
+                            # 媒体尚未就绪：登记等待重试，这一条先不放行（不发"图片"两个字）
                             self._media_retry_failed(mkey, contact, text, ident, disp_lbl,
-                                                     "界面上还是占位图、缓存里也还没有原图",
+                                                     "界面上还是占位图、缓存里也尚无原图",
                                                      kind=kind)
                             if deep:
                                 continue     # 深度扫描：跳过它，继续往上找更早的消息
@@ -873,15 +873,15 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 if stop_all:
                     break                    # 超龄 / 媒体在等 / 超出扫描上限
                 if screen_all_known and not deep:
-                    break                    # 这一屏全是已处理的 -> 已经接上了，不必再往上翻
+                    break                    # 这一屏全是已处理的 -> 已经接上了，不必再向上滚动
                 if len(steps) >= self._catchup_screens:
                     break
                 # 这一屏全都没在库里 -> 上面很可能还有没读到的消息（实测：图片被顶到可见区
-                # 之外就永远补不到）。往上翻一屏继续找，最后按原路滚回底部。
+                # 之外就永远补不到）。向上滚动一屏继续找，最后按原路滚回底部。
                 try:
                     vb = self.xtc.chat_view_bounds(root)
-                except Exception as e:  # noqa: BLE001 拿不到可视区就不翻
-                    self._log("debug", f"[补发] 读不到消息列表可视区，不向上翻: {e}")
+                except Exception as e:  # noqa: BLE001 无法取得可视区就不翻
+                    self._log("debug", f"[补发] 无法读取消息列表可视区，不执行向上滚动: {e}")
                     break
                 step = int((vb[3] - vb[1]) * 0.7) or 200
                 if not self.xtc.scroll_chat_by(vb, step):
@@ -894,12 +894,12 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 try:
                     bubbles = self.xtc._chat_bubbles(root, include_own=False)
                 except Exception as e:  # noqa: BLE001 解析失败就停在这一屏
-                    self._log("debug", f"[补发] 往上翻后的界面解析失败: {e}")
+                    self._log("debug", f"[补发] 向上滚动后的界面解析失败: {e}")
                     break
                 if not bubbles:
                     break
         finally:
-            # 滚回底部：列表停在中间会让轮询读不到新消息
+            # 滚回底部：列表停在中间会让轮询无法读取新消息
             for step in reversed(steps):
                 try:
                     vb2 = self.xtc.chat_view_bounds(root)
@@ -908,7 +908,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 if vb2:
                     self.xtc.scroll_chat_by(vb2, -step)
         if steps:
-            self._log("debug", f"[补发] 为了找更早的消息向上翻了 {len(steps)} 屏（已滚回底部）")
+            self._log("debug", f"[补发] 为了找更早的消息向上滚动了 {len(steps)} 屏（已滚回底部）")
 
         if not pending:
             return 0
@@ -944,7 +944,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             max_gap = self._label_fallback_max
         try:
             recent = self.msgs.recent(1)
-        except Exception:  # noqa: BLE001 取不到就用旧行为
+        except Exception:  # noqa: BLE001 无法取得就用旧行为
             return ""
         if not recent:
             return ""
@@ -957,7 +957,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         return datetime.fromtimestamp(t).strftime("%m-%d %H:%M")
 
     def _fresh_chat_root(self):
-        """在界面锁内重新读一次界面（拿不到锁就等一小会儿，超时返回 None）。
+        """在界面锁内重新读一次界面（无法取得锁就等一小会儿，超时返回 None）。
 
         补发取图用它：发送线程（点输入框/打字/点发送/写"发送成功"提示）拿的是同一把锁，
         所以"读界面 -> 抠图"这一小段界面不会被人动。
@@ -966,7 +966,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         try:
             try:
                 return self.xtc.adb.dump_ui(retries=2, delay=0.3)
-            except Exception as e:  # noqa: BLE001 读不到就返回 None，调用方沿用旧快照
+            except Exception as e:  # noqa: BLE001 无法读取就返回 None，调用方沿用旧快照
                 self._log("debug", f"[补发] 重新读界面失败: {e}")
                 return None
         finally:
