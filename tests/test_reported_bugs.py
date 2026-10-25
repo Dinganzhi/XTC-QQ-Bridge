@@ -1616,6 +1616,104 @@ def test_stale_limit_grows_with_outage() -> None:
         cleanup(root)
 
 
+def test_sticker_precapture_retries_blank_first_frame() -> None:
+    """气泡刚出现时第一帧可能是占位图：应隔一会儿再抠一次，而不是直接放弃。
+
+    用户反馈（10-25）：16:25 的表情气泡被列表裁到、滚动后又定位失败，
+    而"滚动前预抠的那张"恰好是空白占位图 -> 两个小概率叠加，最后只发出"[表情]"。
+    现在预抠图失败会再抠一次（间隔 0.4s），拿到就留着兜底。
+    """
+    view = n(cls="androidx.recyclerview.widget.RecyclerView",
+             rid="com.xtc.watch:id/rv_chat_msg_chat", bounds="[22,178][472,576]")
+    bubble = n(cls="android.widget.ImageView", text="",
+               desc="张三发的消息,表情",
+               rid="com.xtc.watch:id/chat_msg_item_content",
+               bounds="[78,178][198,280]")
+    xml = node_xml(view + bubble)
+    real = _png_pattern(120, 120, (255, 255, 255), (20, 20, 100, 100), (30, 60, 200))
+    blank = _png_pattern(120, 120, (250, 250, 250), (0, 0, 120, 120), (250, 250, 250))
+    shots = {"n": 0, "locate": 0}
+
+    class _Xtc:
+        IMAGE_TEXT = "图片"
+        STATE_CHAT = "chat"
+        adb = None
+
+        def sticker_of_latest(self, root, text="", match_label=""):
+            shots["locate"] += 1
+            if shots["locate"] > 1:      # 滚动后（App 自动回底）定位失败
+                return None
+            return {"text": text or "表情", "bounds": (78, 178, 198, 280),
+                    "time_label": "", "own_label": ""}
+
+        def chat_view_bounds(self, root):
+            return (22, 178, 472, 576)
+
+        def bubble_clipped(self, root, bounds):
+            return True
+
+        def capture_sticker(self, bounds):
+            shots["n"] += 1
+            return blank if shots["n"] == 1 else real      # 第一帧是占位图
+
+        def scroll_chat_by(self, vb, step):
+            return True
+
+        def _dump_with_retry(self, attempts=1):
+            return ET.fromstring(xml)
+
+        def _is_system_msg(self, text):
+            return False
+
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=_Xtc(), forwarder=None, logger=None)
+        got = br._capture_sticker(ET.fromstring(xml), "表情", kind="sticker")
+        check("首帧空白时重抠一次，最终仍拿到图",
+              bool(got) and bool(got.get("data")), str(got and {k: v for k, v in got.items() if k != "data"}))
+        check("确实抠了两次", shots["n"] >= 2, f"captures={shots['n']}")
+    finally:
+        cleanup(root)
+
+
+def test_sticker_media_retry_gives_up_fast() -> None:
+    """表情贴纸等不到图时要**很快**放弃（不能像照片那样等十几分钟）。
+
+    用户反馈（10-25）：16:25 的表情一直取不到图，重试 8 次（5/10/20/40/80/160/300/300 秒）
+    拖到 16:36 才发出一个"[表情]"，后面消息全被压住。贴纸不依赖缓存原图，
+    等再久也不会变，所以只给 3 次、约 20 秒的窗口；照片仍保留原来的长阶梯。
+    """
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=None, forwarder=None, logger=None)
+        br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
+        br._cmd_done_file = str(_paths(root)["done"])
+        key = ("xtc", "屑猹不喝茶", "表情", "10-25 16:25")
+        br._media_retry_failed(key, "张三", "表情", "10-25 16:25", "10-25 16:25",
+                               "界面上是占位图", kind="sticker")
+        st = br._pending_media[key]
+        check("表情重试间隔固定为 6 秒", abs(st["next_ts"] - time.monotonic() - 6.0) < 2.0,
+              str(st))
+        br._media_retry_failed(key, "张三", "表情", "10-25 16:25", "10-25 16:25", "仍取不到",
+                               kind="sticker")
+        br._media_retry_failed(key, "张三", "表情", "10-25 16:25", "10-25 16:25", "仍取不到",
+                               kind="sticker")
+        check("表情最多重试 3 次就放弃", br._media_retry_decision(key) == "give_up",
+              str(br._pending_media[key]))
+
+        # 照片不受影响：仍然走原来的长阶梯
+        pkey = ("xtc", "屑猹不喝茶", "图片", "10-25 16:30")
+        br._media_retry_failed(pkey, "张三", "图片", "10-25 16:30", "10-25 16:30", "还没落盘",
+                               kind="image")
+        st2 = br._pending_media[pkey]
+        check("照片仍按 5 秒起步、多次重试",
+              st2["tries"] == 1 and br._media_retry_decision(pkey) == "wait", str(st2))
+    finally:
+        cleanup(root)
+
+
 def test_sticker_reveal_fallback_keeps_image() -> None:
     """气泡被列表裁到时先滚进可视区；**滚动后定位失败**也要用滚动前抠下的那张。
 
@@ -5739,6 +5837,8 @@ def main() -> int:
                test_media_hash_prevents_reforward,
                test_history_shows_media_markers,
                test_sticker_reveal_fallback_keeps_image,
+               test_sticker_media_retry_gives_up_fast,
+               test_sticker_precapture_retries_blank_first_frame,
                test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,

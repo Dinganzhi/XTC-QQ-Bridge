@@ -406,15 +406,22 @@ class ForwardingMixin:
             except Exception as e:  # noqa: BLE001 拿不到可视区就按"没被裁"处理
                 self._log("debug", f"读消息列表可视区失败（按未裁处理）: {e}")
                 vb = None
+        # 气泡被裁时先抠一张备用（可能半张，但内容一定对）。刚到达的气泡第一帧
+        # 可能还是占位图 —— 隔 0.4 秒再抠一次，避免"滚动后定位失败 + 备用图是空白"
+        # 两个小概率叠在一起，最后只发出一个"[表情]"。
         clipped0 = bool(item and vb and self.xtc.bubble_clipped(root, item["bounds"]))
-        if clipped0:
-            try:
-                ref0 = self.xtc.capture_sticker(item["bounds"])
-            except Exception as e:  # noqa: BLE001 抠图失败就只走滚动那条路
-                self._log("debug", f"[媒体] 滚动前预抠图失败: {e}")
-                ref0 = None
-            if ref0 and imgtool.looks_blank(ref0):
-                ref0 = None
+        if clipped0 and item.get("bounds"):
+            for attempt in range(2):
+                try:
+                    shot = self.xtc.capture_sticker(item["bounds"])
+                except Exception as e:  # noqa: BLE001 抠图失败就只走滚动那条路
+                    self._log("debug", f"[媒体] 预抠图失败（第 {attempt + 1} 次）: {e}")
+                    shot = None
+                if shot and not imgtool.looks_blank(shot):
+                    ref0 = shot
+                    break
+                if attempt == 0:
+                    time.sleep(0.4)
         for _ in range(2):
             if not item or not vb or not self.xtc.bubble_clipped(root, item["bounds"]):
                 break

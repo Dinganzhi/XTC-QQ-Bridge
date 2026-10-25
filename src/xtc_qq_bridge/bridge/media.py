@@ -14,12 +14,25 @@ class MediaMixin:
         if st is None:
             return "now"
         now = time.monotonic()
-        if (now - float(st.get("first_ts") or now) > self._media_retry_max_wait
+        # 表情贴纸不依赖缓存原图：图上就是图上，等再久也不会变，因此只给很短的窗口，
+        # 避免"一条表情把后面消息全压住、11 分钟后才发出一个[表情]"。
+        if self._is_sticker_media(st.get("kind"), st.get("text")):
+            if (now - float(st.get("first_ts") or now) > 30.0
+                    or int(st.get("tries") or 0) >= 3):
+                return "give_up"
+        elif (now - float(st.get("first_ts") or now) > self._media_retry_max_wait
                 or int(st.get("tries") or 0) >= self._media_retry_max):
             return "give_up"
         if now < float(st.get("next_ts") or 0.0):
             return "wait"
         return "now"
+
+    @staticmethod
+    def _is_sticker_media(kind: str | None, text: str | None) -> bool:
+        """这条待取图的消息是不是表情贴纸（贴纸不需要等缓存原图）。"""
+        if (kind or "").strip().lower() == "sticker":
+            return True
+        return (text or "").strip().startswith("表情")
 
     def _media_retry_failed(self, key: tuple, contact, text: str, label: str,
                             disp: str, reason: str = "", kind: str = "") -> None:
@@ -32,12 +45,18 @@ class MediaMixin:
             st = {"tries": 0, "first_ts": now, "next_ts": now}
             self._pending_media[key] = st
         st["tries"] = int(st.get("tries") or 0) + 1
-        gap = min(300.0, self._media_retry_base * (2 ** (st["tries"] - 1)))
+        if self._is_sticker_media(kind, text):
+            # 贴纸：固定 6 秒后重试，最多 3 次（合计约 20 秒）；等不到就按文字发
+            gap = 6.0
+            max_tries = 3
+        else:
+            gap = min(300.0, self._media_retry_base * (2 ** (st["tries"] - 1)))
+            max_tries = self._media_retry_max
         st["next_ts"] = now + gap
         st.update({"contact": contact, "text": text, "label": label, "disp": disp,
                    "kind": kind or ""})
         self._log("info", f"[媒体] {text[:24]!r} 的原图还没就绪（{reason or '缓存/界面里都还没有'}）；"
-                          f"{int(gap)} 秒后重试（第 {st['tries']}/{self._media_retry_max} 次），"
+                          f"{int(gap)} 秒后重试（第 {st['tries']}/{max_tries} 次），"
                           "先不发文字，免得只发出去「图片」两个字")
 
     def _media_retry_clear(self, key: tuple) -> None:
