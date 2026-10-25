@@ -174,7 +174,7 @@ class HistoryMixin:
             except ValueError:
                 return None
             if not m.group(1) and dt > now + timedelta(days=1):
-                dt = dt.replace(year=dt.year - 1)   # 没写年份且落在未来 -> 多半是去年的
+                dt = dt.replace(year=dt.year - 1)   # 没写年份且落在未来 -> 通常是去年的
             return dt.timestamp()
         # "今天 16:18" / "今日 16:18"
         m = re.fullmatch(r"(?:今天|今日)\s*(\d{1,2}):(\d{2})", label)

@@ -11,7 +11,7 @@ class StateMixin:
     def app_state_with_root(self, attempts: int = 2) -> tuple:
         """读一次界面并判定状态，返回 (state, root)。
 
-        state 取值见 STATE_* 常量。读不到界面时 root 可能为 None。
+        state 取值见 STATE_* 常量。无法读取界面时 root 可能为 None。
         """
         root = self._dump_with_retry(attempts)
         return self.app_state(root), root
@@ -20,7 +20,7 @@ class StateMixin:
     def _tree_is_empty(root: ET.Element) -> bool:
         """界面快照是不是"空的"（UI 还没渲染好/dump 到了空树）。
 
-        不能用"节点数 < 3"来判断：登录页有时只有两三个控件，会被误判成读不到。
+        不能用"节点数 < 3"来判断：登录页有时只有两三个控件，会被误判成无法读取。
         真正的空树是所有节点都没有文本、描述、id、也不可点击。
         """
         for n in root.iter("node"):
@@ -53,7 +53,7 @@ class StateMixin:
             return self.STATE_BLIND
         try:
             # 弹窗优先：弹窗盖在上面时，dump 出来的往往只有弹窗本身（下面的聊天页
-            # 读不到），若先判聊天页会得出错误结论，所以先认弹窗、把它关掉再说。
+            # 无法读取），若先判聊天页会得出错误结论，所以先认弹窗、把它关掉再说。
             if self._looks_like_popup(root, self.current_activity()):
                 return self.STATE_POPUP
             if self.looks_like_chat_page(root):
@@ -62,7 +62,7 @@ class StateMixin:
                 return self.STATE_LOGIN
             if self.looks_like_message_list(root):
                 return self.STATE_LIST
-        except Exception:  # noqa: BLE001 判定异常按"读不到"处理
+        except Exception:  # noqa: BLE001 判定异常按"无法读取"处理
             return self.STATE_BLIND
         return self.STATE_OTHER
 
@@ -84,7 +84,7 @@ class StateMixin:
         """最近一次界面快照（默认 max_age = ui.snapshot_reuse，秒），过期返回 None。
 
         只用于"基线/控件位置"这类容错信息（例如发送前记下已有气泡数、输入框位置），
-        调用方拿到后仍会做自己的判断；过期就拿不到，自己 dump 即可。
+        调用方拿到后仍会做自己的判断；过期就无法取得，自己 dump 即可。
         """
         if self._snapshot is None:
             return None
@@ -103,7 +103,7 @@ class StateMixin:
         为什么要"找回窗口"：容器窗口被最小化/关闭或息屏后，Android 侧
         `mCurrentFocus=null`，uiautomator 会一直报 "null root node"——这时先唤醒屏幕、
         再重新拉起 App，通常就能恢复读取。
-        日志节流：同一类失败 30 秒内只打一次 warning，其余降级为 debug（避免刷屏）。
+        日志节流：同一类失败 30 秒内只打一次 warning，其余降级为 debug（避免重复输出）。
         """
         for i in range(max(1, attempts)):
             try:
@@ -166,7 +166,7 @@ class StateMixin:
         try:
             installed = self.adb.package_installed(self.package)
         except AdbError as e:
-            # 读不到包列表 ≠ 没安装（ADB offline 时命令会失败）。别说成"没装"误导排障。
+            # 无法读取包列表 ≠ 没安装（ADB offline 时命令会失败）。别说成"未安装"误导排障。
             self.log("warning", f"无法确认小天才 App 是否已安装（ADB 连接异常）: {e}")
             return False
         if not installed:
@@ -199,7 +199,7 @@ class StateMixin:
         """判断登录态，返回 'logged_in' / 'not_logged_in' / 'unknown'。
 
         **以界面为准，Activity 名只作兜底**（用户反馈过"明明已登录却提示未登录"）：
-        - App 不在前台 / 界面读不到（息屏、锁屏、dump 失败）→ 'unknown'
+        - App 不在前台 / 界面无法读取（息屏、锁屏、dump 失败）→ 'unknown'
           （绝不当成"未登录"，否则会去点登录按钮、甚至误触发自动登录）；
         - 界面像登录页（密码框 / 获取验证码 / 短信验证码登录 / login_markers）→ 'not_logged_in'；
         - 界面像主界面（聊天页 / 消息列表 / 微聊·我的 等）→ 'logged_in'；
@@ -215,13 +215,13 @@ class StateMixin:
                 return val
         act = self.current_activity()
         if not act.startswith(self.package):
-            # 拿不到 Activity 信息，或 App 真的不在前台：无法判断登录态
+            # 无法取得 Activity 信息，或 App 真的不在前台：无法判断登录态
             return self._remember_login(self.LOGIN_UNKNOWN)
         if root is None:
             try:
                 root = self.adb.dump_ui(retries=2, delay=0.4)
             except AdbError:
-                # 读不到界面（息屏/空闲性/安全窗口）→ 无法判断，不缓存为"未登录"
+                # 无法读取界面（息屏/空闲性/安全窗口）→ 无法判断，不缓存为"未登录"
                 return self.LOGIN_UNKNOWN
         # 首启隐私协议弹窗 = 尚未进入 App
         joined = "".join(n.get("text", "") or "" for n in root.iter("node"))
@@ -298,7 +298,7 @@ class StateMixin:
     def require_login(self, root: ET.Element | None = None) -> bool:
         """能否读消息：只有**明确未登录**才算不能读。
 
-        注意：'unknown'（App 不在前台 / 界面读不到，例如息屏）不再当成"未登录"刷日志，
+        注意：'unknown'（App 不在前台 / 界面无法读取，例如息屏）不再当成"未登录"重复输出日志，
         也不会（在桥接层）触发自动登录 —— 这正是"已经登录了还提示未登录"的修复点之一。
         """
         state = self.login_state(root=root)
@@ -309,7 +309,7 @@ class StateMixin:
                 self._warned_not_login = True
             return False
         if state == self.LOGIN_UNKNOWN:
-            self.log("debug", "无法确认登录态（App 不在前台或界面暂时读不到），本轮跳过读取")
+            self.log("debug", "无法确认登录态（App 不在前台或界面暂时无法读取），本轮跳过读取")
             return False
         self._warned_not_login = False
         return True
@@ -322,7 +322,7 @@ class StateMixin:
         后来改成"含 chat 且不含列表/首页类字样"，但那段判断用的是**整个组件名**——
         实机上报的是 `com.xtc.wechat.view.chatlist.ChatActivity`：**包名里的
         `chatlist` 含 "list"**，于是聊天页永远被排除，`is_in_chat()` 每次都要再
-        dump 一次界面（设备上一次 ~3 秒，发送链路白等 3 秒）。现在只拿**类名**
+        dump 一次界面（设备上一次 ~3 秒，发送链路空等 3 秒）。现在只拿**类名**
         （最后一段）做判断，`ui.activity_chat_exclude` 也是按类名匹配。
         """
         a = (act or "").lower()
@@ -439,7 +439,7 @@ class StateMixin:
                 steps.append("未登录（等待自动登录/手动登录）")
                 return "，".join(steps)
             if state == self.LOGIN_UNKNOWN:
-                steps.append("无法确认登录态（界面读不到/App 不在前台），未做登录动作")
+                steps.append("无法确认登录态（界面无法读取/App 不在前台），未做登录动作")
                 return "，".join(steps)
             if contact and not self.is_in_chat():
                 if self.open_chat(contact):

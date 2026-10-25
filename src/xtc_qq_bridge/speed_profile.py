@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """速度 / 稳定 档位（`performance.profile`）：一次把"稳一点"或"快一点"的默认值铺开。
 
-为什么要这个：发送快慢和"稳不稳"是**一组互相牵制**的参数（要不要先手盲打、等多久再 dump、
+为什么要这个：发送快慢和"稳不稳"是**一组互相牵制**的参数（要不要预输入盲打、等多久再 dump、
 dump 重试几次、轮询间隔多少、图没下载完等多久…）。让用户逐个去调这些键不现实，
 所以给几档：**stable / balanced / fast / turbo**。
 
@@ -16,7 +16,7 @@ from typing import Any
 # 每一档要铺的默认值：路径 -> 值（路径都是 config.yaml 里的真实层级）
 # 想加一档/改一档，只动这里即可（README / config.example.yaml 里也有一份说明）
 PROFILES: dict[str, dict[str, Any]] = {
-    # ---------------- 稳定优先：不用盲打、等更久、重试更宽容 ----------------
+    # ---------------- 稳定优先：无需盲打、等更久、重试更宽容 ----------------
     "stable": {
         "xiaotiancai.check_interval": 2.0,
         "xiaotiancai.label_now_window": 300,
@@ -25,9 +25,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "xiaotiancai.ui.blind_send": False,      # 不盲打：每条都先读界面再注入
         "xiaotiancai.ui.fast_send": False,       # 不点缓存坐标
         "xiaotiancai.ui.interaction_delay": 0.8,
-        "xiaotiancai.ui.confirm_delay": 1.0,     # 点完发送多等一会儿再 dump（少一次白 dump）
+        "xiaotiancai.ui.confirm_delay": 1.0,     # 点完发送多等稍后再 dump（少一次白 dump）
         "xiaotiancai.ui.send_retries": 3,
-        "xiaotiancai.ui.snapshot_reuse": 1.0,    # 快照很快过期 -> 每次重新读，信息最新
+        "xiaotiancai.ui.snapshot_reuse": 1.0,    # 快照较快过期 -> 每次重新读，信息最新
         "adb.dump_retries": 3,
         "adb.dump_delay": 1.0,
         "adb.keep_awake_interval": 5,            # 更勤地叫醒虚拟屏（息屏是最常见的故障源）
@@ -60,7 +60,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "forward.retry_backoff": 60,
         "forward.retry_max_tries": 3,
     },
-    # ---------------- 速度优先：先手打字 + 更短等待 + 少一轮 dump 重试 ----------------
+    # ---------------- 速度优先：预输入 + 更短等待 + 少一轮 dump 重试 ----------------
     "fast": {
         "xiaotiancai.check_interval": 3.0,       # 轮询留出空隙 -> 发送更容易立刻拿到界面锁
         "xiaotiancai.label_now_window": 300,
@@ -147,7 +147,7 @@ def apply_profile(cfg: dict) -> tuple[str, list[str], list[str]]:
             pinned.append(f"{path}={node[leaf]}")
             continue
         if leaf in node and node[leaf] == value:
-            continue                       # 值本来就一样，不用记
+            continue                       # 值本来就一样，无需记
         node[leaf] = value
         filled.append(f"{path}={value}")
     return name, filled, pinned
@@ -160,6 +160,6 @@ def describe() -> str:
 
 
 def _short(bundle: dict) -> str:
-    return (f"先手打字={'开' if bundle['xiaotiancai.ui.blind_send'] else '关'}、"
+    return (f"预输入={'开' if bundle['xiaotiancai.ui.blind_send'] else '关'}、"
             f"确认等待={bundle['xiaotiancai.ui.confirm_delay']}s、"
             f"轮询={bundle['xiaotiancai.check_interval']}s")

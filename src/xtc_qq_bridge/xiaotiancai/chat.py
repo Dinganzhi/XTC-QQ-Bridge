@@ -53,8 +53,8 @@ class ChatMixin:
                 if self.is_in_chat():
                     return True
         self._dismiss_blockers()
-        # 读到界面之前先看一眼登录态：未登录时没必要去找联系人
-        # （实机测试：未登录时在登录页反复找联系人会白等 40 多秒）
+        # 读到界面之前先查看登录态：未登录时没必要去找联系人
+        # （实机测试：未登录时在登录页反复找联系人会空等 40 多秒）
         if self.login_state(force=True) == self.NOT_LOGGED_IN:
             self.last_open_reason = (f"小天才 App 未登录（当前在登录页），"
                                      f"登录后才能进入与 {contact!r} 的聊天")
@@ -64,7 +64,7 @@ class ChatMixin:
         # 不再抛出 "cat: ... No such file" 这种误导性 ERROR）
         root = self._dump_with_retry(2)
         if root is None:
-            self.last_open_reason = (f"连续读不到界面控件（联系人 {contact}），稍后会自动重试"
+            self.last_open_reason = (f"连续无法读取界面控件（联系人 {contact}），稍后会自动重试"
                                      "（若反复出现，多为界面一直不空闲，"
                                      "可调大 adb.dump_retries / adb.dump_delay）")
             self._warn_throttled("open_chat_no_dump", "打开聊天暂缓：" + self.last_open_reason)
@@ -99,7 +99,7 @@ class ChatMixin:
                 self.last_open_reason = (
                     f"找不到联系人 {contact!r}：{page}；"
                     f"当前可见联系人: {'、'.join(visible) or '(无)'}"
-                    "（可改 config.yaml -> target.xtc_contact 或 ui.contact_name_ids）")
+                    "（可修改 config.yaml -> target.xtc_contact 或 ui.contact_name_ids）")
                 # 轮询每 2 秒一次，这类失败会连续发生 -> 同因 5 分钟只报一次
                 self._warn_throttled("open_chat_not_found", self.last_open_reason)
                 return False
@@ -116,7 +116,7 @@ class ChatMixin:
                     if self._dismiss_blockers():
                         time.sleep(0.5)
                     if reclick < 2:
-                        root = self._dump_with_retry(1)   # 读不到不影响本轮继续等待
+                        root = self._dump_with_retry(1)   # 无法读取不影响本轮继续等待
                         if root is not None:
                             node = self._find_contact_node(root, contact)
                             if node is not None:
@@ -278,7 +278,7 @@ class ChatMixin:
                              max_swipes: int = 3) -> tuple:
         """联系人可能在屏幕外：在消息列表里向上滑几次找它。返回 (节点或None, 见过的名字)。
 
-        只在"确实是消息列表"时调用（调用方已判断），避免在别的页面乱滑。
+        只在"确实是消息列表"时调用（调用方已判断），避免在别的页面在非消息列表页面误滚动。
         """
         seen = self._visible_contact_names(root)
         try:
@@ -358,7 +358,7 @@ class ChatMixin:
             if not self.require_login(root):
                 return (None, None, "", "", [])
             # 一次 dump 同时用于登录态判断与消息解析（登录态有缓存，避免重复 dump）；
-            # 读不到界面（界面一直不空闲等）→ 返回空，交给轮询层稍后重试/自愈，
+            # 无法读取界面（界面一直不空闲等）→ 返回空，交给轮询层稍后重试/自愈，
             # 不抛异常也不刷 ERROR 日志。
             root = root if root is not None else self._dump_with_retry(2)
             if root is None:
@@ -403,7 +403,7 @@ class ChatMixin:
         实测：class=ImageView、text 为空、content-desc 形如
         `童武洋发的消息,图片消息，双击查看`；图片还没下载完时 desc 里可能还没有
         "图片消息"几个字（只剩发送方），所以"空的说明 + 够大的 ImageView 气泡"
-        也算图片 —— 否则这张照片会被**静默丢掉**（用户报的"图片发不出去、
+        也算图片 —— 否则这张照片会被**静默丢弃**（用户报的"图片无法发送、
         控制台一行都没有"）。
         表情（desc_body 以"表情"开头）与语音等其它 ImageView 气泡（desc_body 是
         "语音"这类文字）都不会被误判；尺寸门槛用来排除头像/小图标。
@@ -472,7 +472,7 @@ class ChatMixin:
                     continue  # 右侧气泡 = 自己发的消息
             # 图片消息（照片）：气泡是 ImageView、没有文字，desc 里写"图片消息，双击查看"
             # （图片还没下完时 desc 可能只有"XX发的消息"）。以前这类消息 text 为空 -> 被
-            # 静默丢掉，控制台一行日志都没有（用户报的"图片发不出去、也没提示"）。
+            # 静默丢弃，控制台一行日志都没有（用户报的"图片无法发送、也没提示"）。
             kind = self._bubble_kind(cls, n.get("text", ""), desc, b)
             if kind == "image":
                 t = IMAGE_TEXT
@@ -528,7 +528,7 @@ class ChatMixin:
                 break
         if chosen is None:
             return ""
-        if not all_bubbles:            # 拿不到其它气泡时退回旧行为
+        if not all_bubbles:            # 无法取得其它气泡时退回旧行为
             return chosen[2]
         label_bottom = chosen[1]
         below = [ob[1] for ob in (self._bounds(x) for x in all_bubbles)
@@ -699,7 +699,7 @@ class ChatMixin:
             # 垃圾文案（"表情"/"语音"/"发送"…）只是**输入栏按钮**的文字：
             # ① 表情/图片气泡一定是真实消息，永不按垃圾文案丢弃；
             # ② 带发送方标注（`XX发的消息,…`）的气泡也是真实消息 ——
-            #    实测手打了一句内容就是"表情"的文本，就是被这条规则悄悄丢掉的，
+            #    实测手打了一句内容就是"表情"的文本，就是被这条规则悄悄丢弃的，
             #    于是"表情"只能靠猜类型，最后发出没有图的两个字。
             if t in junk and not (is_sticker or is_image) and not desc:
                 continue
@@ -756,7 +756,7 @@ class ChatMixin:
 
         `match_label` 可能是**绝对**标签（补发路径传的是 `10-19 21:30`），而界面上的标签
         是相对的（`昨天 21:30`）—— 两边都归一化成绝对时间再比，否则永远匹配不上
-        （实测：图片因此被判成"界面上没找到气泡"，补发失败）。
+        （实测：图片因此被判成"界面上未找到气泡"，补发失败）。
         """
         want = (text or "").strip()
         want_lbl = (match_label or "").strip()
@@ -835,7 +835,7 @@ class ChatMixin:
         """把表情气泡那块**截图抠成 PNG**（失败返回 None，调用方退回发文字）。
 
         为什么截图而不是拿原图：贴纸是 App 内部资源（可能在 so/apk 里、也可能是网络图），
-        ADB 拿不到；而贴纸在屏幕上就是它本身，按气泡区域裁剪即得原图。
+        ADB 无法取得；而贴纸在屏幕上就是它本身，按气泡区域裁剪即得原图。
         只裁气泡本身的区域（不加内边距）：实机实测 ImageView 的 bounds 正好是贴纸范围。
 
         截图偶发失败（刚唤醒/界面正在重绘）时**重试一次**：实机遇到过"明明气泡就在屏幕上，

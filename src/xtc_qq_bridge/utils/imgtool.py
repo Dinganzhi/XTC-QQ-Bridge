@@ -44,7 +44,7 @@ def decode_frames(data: bytes, max_frames: int = FRAME_LIMIT) -> list[dict]:
 
 def frame_grid(frame: dict, gw: int = 10, gh: int = 10,
                crop: float = 0.06) -> tuple[list, list]:
-    """把一帧压成 gw*gh 的网格（每格平均 RGB）+ 每格权重（0~1，透明格为 0）。
+    """把一帧合并为 gw*gh 的网格（每格平均 RGB）+ 每格权重（0~1，透明格为 0）。
 
     crop：先裁掉四周这一点比例再取网格 —— 屏幕上的气泡截图会带一点背景/圆角，
     原图也可能多出些留白，裁边能让两者的构图对齐。
@@ -209,7 +209,7 @@ def looks_blank(data_or_frame, min_std: float = 18.0, max_dom: float = 0.97) -> 
 
     **刻意不做"又亮又平就判空白"这种启发式**：浅色的贴纸（白底 + 细线稿）本身就很亮，
     误判会让一条本来能发图的消息退化成文字、甚至引发"没有基准图 -> 去缓存里猜"的连锁反应。
-    "抠到被顶走的空白区"这种问题改由**流程**解决（补发前重新读界面 + 界面锁挡住发送线程，
+    "抠到被移出可视区的空白区"这种问题改由**流程**解决（补发前重新读界面 + 界面锁挡住发送线程，
     见 `MessageBridge._capture_media_fresh`），而不是靠猜图像内容。
     """
     dom, std, _mean = _content_all(data_or_frame)

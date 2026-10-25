@@ -15,7 +15,7 @@ class MediaMixin:
             return "now"
         now = time.monotonic()
         # 表情贴纸不依赖缓存原图：图上就是图上，等再久也不会变，因此只给很短的窗口，
-        # 避免"一条表情把后面消息全压住、11 分钟后才发出一个[表情]"。
+        # 避免"一条表情把后面消息全阻塞、11 分钟后才发出一个[表情]"。
         if self._is_sticker_media(st.get("kind"), st.get("text")):
             if (now - float(st.get("first_ts") or now) > 30.0
                     or int(st.get("tries") or 0) >= 3):
@@ -36,7 +36,7 @@ class MediaMixin:
 
     def _media_retry_failed(self, key: tuple, contact, text: str, label: str,
                             disp: str, reason: str = "", kind: str = "") -> None:
-        """媒体取不到：登记"稍后重试"，这一轮**先不转发**（免得 QQ 只收到"图片"两个字）。"""
+        """媒体无法取得：登记"稍后重试"，本轮**暂不转发**（避免 QQ 仅收到占位文本）。"""
         now = time.monotonic()
         st = self._pending_media.get(key)
         if st is None:
@@ -55,15 +55,15 @@ class MediaMixin:
         st["next_ts"] = now + gap
         st.update({"contact": contact, "text": text, "label": label, "disp": disp,
                    "kind": kind or ""})
-        self._log("info", f"[媒体] {text[:24]!r} 的原图还没就绪（{reason or '缓存/界面里都还没有'}）；"
+        self._log("info", f"[媒体] {text[:24]!r} 的原图尚未就绪（{reason or '缓存/界面里都还没有'}）；"
                           f"{int(gap)} 秒后重试（第 {st['tries']}/{max_tries} 次），"
-                          "先不发文字，免得只发出去「图片」两个字")
+                          "暂不发送文字，避免仅发出占位文本")
 
     def _media_retry_clear(self, key: tuple) -> None:
         self._pending_media.pop(key, None)
 
     def _retry_pending_media(self, root) -> None:
-        """到点后重试"媒体还没就绪"的消息：拿到图就补发，等太久就退回发文字。
+        """到点后重试"媒体尚未就绪"的消息：拿到图就补发，等太久就退回发文字。
 
         为什么放在轮询里、而且**不依赖"它还是不是最新一条"**：App 先画出"图片"占位气泡、
         原图可能几分钟后才落盘（实测 22:12 检测到、22:19:44 原图文件才出现）。这期间要是
@@ -95,7 +95,7 @@ class MediaMixin:
                         self._op_lock.release()
             if sticker is None and decision != "give_up":
                 self._media_retry_failed(key, contact, text, label, disp,
-                                         "重试时还是没拿到原图/截图", kind=kind)
+                                         "重试时仍未取得原图/截图", kind=kind)
                 continue
             self._media_retry_clear(key)
             self._log("info", f"[媒体] {'拿到图，补发' if sticker else '等太久了，按文字转发'}: "
@@ -144,8 +144,8 @@ class MediaMixin:
         """心跳发现 ADB 断连时的重连 + 退避。返回 True=本轮继续轮询，False=跳过本轮。
 
         退避的意义（实机踩过）：设备的 transport 卡成 offline 时，`adb connect` 只会回
-        "already connected to ..."，重连其实**救不回来**；旧实现每 10 秒就重跑一遍
-        "12 个候选端口 × 2 个 host"的连接尝试，日志刷屏且白等。现在失败一次就退避
+        "already connected to ..."，重连实际**救不回来**；旧实现每 10 秒就重执行一次
+        "12 个候选端口 × 2 个 host"的连接尝试，日志重复输出且空等。现在失败一次就退避
         （10/20/30…最多 60 秒），并且只在第一次与每次失败时各喊一声。
         """
         if now < self._next_reconnect_ts:
@@ -183,12 +183,12 @@ class MediaMixin:
     def _typed_body(self, text: str, kind: str = "") -> str:
         """给转发内容加上**类型标记**，让表情和照片一眼分得开（用户要求）。
 
-        * 表情（贴纸，kind=sticker）-> `[表情] 开心`（名字读不到时就是 `[表情]`）
+        * 表情（贴纸，kind=sticker）-> `[表情] 开心`（名字无法读取时就是 `[表情]`）
         * 照片（图片消息，kind=image）-> `[图片]`
         * 文字消息（kind=text 或空）**原样不动** —— 包括手打的内容恰好以"表情"开头的文本：
           用户实测那种消息被标成了"[表情]"、还没有图，看起来像"空气消息"。
 
-        为什么要标：贴纸拿不到原图时会退化成**气泡截图**（一张 png），看起来和照片没区别，
+        为什么要标：贴纸无法取得原图时会退化成**气泡截图**（一张 png），看起来和照片没区别，
         用户分不清哪条是表情、哪条是照片（实测 15:24 那条）。标记只加在**发出去的文字**上，
         去重/历史的身份仍然是原始 `text`，不会影响判重。
         """

@@ -312,10 +312,10 @@ class CommandMixin:
                 action = self._auto_login_decision(state)
                 if action == "none":
                     if state == LOGIN_UNKNOWN:
-                        # 无法判断（App 不在前台 / 息屏 / 界面读不到）：**不去登录**，
+                        # 无法判断（App 不在前台 / 息屏 / 界面无法读取）：**不去登录**，
                         # 只稍后再看。旧实现把这种情况当成"未登录"，于是已登录也报未登录。
                         self._log_once("login_unknown",
-                                       "无法确认小天才登录态（App 不在前台或界面暂时读不到），"
+                                       "无法确认小天才登录态（App 不在前台或界面暂时无法读取），"
                                        "跳过本轮自动登录")
                         self._login_not_before = now + 60
                     else:
@@ -355,7 +355,7 @@ class CommandMixin:
         return "login" if (phone and password) else "no_cred"
 
     def _log_once(self, key: str, text: str, interval: float = 600.0) -> None:
-        """同类日志按 key 节流（避免每 5 秒刷屏）。"""
+        """同类日志按 key 节流（避免每 5 秒重复输出）。"""
         now = time.monotonic()
         if now - self._log_seen.get(key, float("-inf")) < interval:
             return
@@ -366,7 +366,7 @@ class CommandMixin:
         """状态变化时记一条 INFO；长时间停在非聊天状态则每 10 分钟提醒一次。
 
         目的：日志里能一眼看出"当时到底处于什么状态"，而不是满屏重复的失败告警
-        （用户反馈"不能判断当前状态，还老是提示找不到联系人"）。
+        （用户反馈"不能判断当前状态，还频繁提示找不到联系人"）。
         """
         text = self.xtc.STATE_TEXT.get(state, state)
         if state != self._last_state:
@@ -379,7 +379,7 @@ class CommandMixin:
             self._log_once(f"stuck:{state}", f"小天才状态持续为「{text}」", interval=600.0)
 
     def _notify_once(self, key: str, text: str, interval: float = 600.0) -> None:
-        """同一类通知在 interval 秒内只发一次（避免刷屏）。"""
+        """同一类通知在 interval 秒内只发一次（避免重复输出）。"""
         now = time.monotonic()
         if now - self._notify_seen.get(key, float("-inf")) < interval:
             self._log("debug", f"[通知去重] {text}")

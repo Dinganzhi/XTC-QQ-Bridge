@@ -14,7 +14,7 @@ UI 树解析等能力。
 设计要点：
 - adb 查找顺序：config 指定路径 -> 环境变量 ADB_PATH -> 平台常见安装路径 -> PATH。
 - 设备查找顺序：**已有的在线设备** -> 环境变量 ADB_SERIAL -> 配置端口（Windows）
-  -> 常见端口（5555 / 16384 / 62001 …）-> 多次重试。任何情况下都不会顶掉已连接的
+  -> 常见端口（5555 / 16384 / 62001 …）-> 多次重试。任何情况下都不会覆盖已连接的
   设备去抢端口。
 - 启动 App：解析 launcher activity（cmd/pm resolve-activity）-> `am start -n`
   -> `monkey -p <pkg>`（更稳定）-> `cmd package` 兜底，并轮询前台确认。
@@ -74,9 +74,9 @@ class ADBController:
         # 曾经出现过"屏幕未点亮 -> null root"时置位：此后每次 dump 前先确认/唤醒屏幕，
         # 避免每次都先用 3~8 秒去撞 uiautomator 失败（实机 设备上单次 dump 从 45s 降到 2s）。
         self._screen_suspect = False
-        # 限频用：同类提示（息屏/唤醒/读取失败）在短时间内只打一次，避免每轮轮询刷屏
+        # 限频用：同类提示（息屏/唤醒/读取失败）在短时间内只打一次，避免每轮轮询重复输出
         self._throttle: dict[str, float] = {}
-        # 上次成功的 dump 策略名（见 _dump_strategies）：记住后不再每次都先撞失败
+        # 上次成功的 dump 策略名（见 _dump_strategies）：注意后不再每次都先撞失败
         self._dump_strategy = ""
         self._sdk: int | None = None
         self._clipboard_ok: bool | None = None
@@ -93,7 +93,7 @@ class ADBController:
         # uiautomator 同一时间只允许一个连接：跨线程串行化 dump，
         # 避免轮询线程与发送线程同时 dump 导致 "already registered"。
         self._dump_lock = threading.Lock()
-        # 心跳类日志的节流时间戳（key -> monotonic），避免"设备 offline"每 10 秒刷一次
+        # 心跳类日志的节流时间戳（key -> monotonic），避免"设备 offline"每 10 秒重复输出一次
         # "屏幕刚确认过亮着"的有效期：poke_awake 每 10 秒一次，这 12 秒内不再重复查电源状态
         self._awake_until = float("-inf")
         self._awake_ttl = 12.0
@@ -160,7 +160,7 @@ class ADBController:
         return cands
 
     def connect(self, ports: list[int] | None = None, timeout: float = 8.0) -> bool:
-        """依次尝试候选端口连接；**已有的在线设备永远优先**（不会被顶掉）。
+        """依次尝试候选端口连接；**已有的在线设备永远优先**（不会被覆盖）。
 
         设备的 ADB 无线调试端口默认 58526（容器Builds 同），雷电/MuMu 为 5555/16384。
         """
@@ -219,8 +219,8 @@ class ADBController:
         """从**在线**设备里挑一个（容器/已有设备优先），成功后写入 self.serial。
 
         注意：不能只凭 `adb connect` 回的那句 "connected" 就认账 —— 设备 offline 时它
-        也会回 "already connected to ..."，照单全收就会一直"重连成功"却什么都读不到。
-        所以最终必须以"状态是 device"为准（状态表拿不到时退回在线设备列表，再不行用
+        也会回 "already connected to ..."，照单全收就会一直"重连成功"却什么都无法读取。
+        所以最终必须以"状态是 device"为准（状态表无法取得时退回在线设备列表，再不行用
         get-state 直接问一次）。
         """
         states = self._safe_states()
@@ -243,7 +243,7 @@ class ADBController:
         return False
 
     def _safe_states(self) -> dict:
-        """`adb devices` 的全部状态；取不到就返回空字典（不抛异常）。"""
+        """`adb devices` 的全部状态；无法取得就返回空字典（不抛异常）。"""
         try:
             return self.device_states() or {}
         except Exception:  # noqa: BLE001 自定义/桩实现可能没有这个方法
@@ -262,7 +262,7 @@ class ADBController:
             if state == "device":
                 return True
             if state and state != "unknown":
-                return False          # offline / unauthorized：不用再等
+                return False          # offline / unauthorized：无需再等
             time.sleep(0.4)           # 状态还没出来：给它一点时间（刚 connect 时常见）
         return False
 
@@ -296,8 +296,8 @@ class ADBController:
             self.serial = target
             self.logger.info(f"设备 {target} 已恢复在线（重启 adb server 后）")
             return True
-        self.logger.warning(f"设备 {target} 仍是 offline：多半是 容器 侧网络/容器卡住，"
-                            "可在 容器 设置里点「修复」或重启容器")
+        self.logger.warning(f"设备 {target} 仍是 offline：通常为容器侧网络异常或容器无响应，"
+                            "可在 容器 设置里点击「修复」或重启容器")
         return False
 
     def _pick_serial(self, serials: list[str] | None = None) -> str:
@@ -320,7 +320,7 @@ class ADBController:
                 if state == "device":
                     return True
                 # serial 失效（容器 重启后端口会变）：清掉重新选。
-                # 这条会随 10 秒心跳反复出现，所以节流成 60 秒一次，避免刷屏。
+                # 这条会随 10 秒心跳反复出现，所以节流成 60 秒一次，避免重复输出。
                 self._log_throttled(
                     f"state_{self.serial}",
                     f"设备 {self.serial} 状态为 {state or 'unknown'}，重新选择设备", interval=60)
@@ -345,7 +345,7 @@ class ADBController:
                     return True
             except AdbError as e:
                 self.logger.warning(f"连接失败: {e}")
-            # 最后一轮仍失败：按平台尝试拉起目标环境后再等一会儿
+            # 最后一轮仍失败：按平台尝试拉起目标环境后再等稍后
             if i == retries - 2:
                 if auto_launch_emulator:
                     names = available_launchers()
@@ -609,7 +609,7 @@ class ADBController:
         if "mwakefulness=asleep" in low or "mscreenon=false" in low or "state=off" in low:
             return False
         if "mwakefulness=awake" in low or "mscreenon=true" in low:
-            self._mark_awake()          # 记住"刚确认过亮着"，短时间内不必再查（省 0.1~0.3 秒）
+            self._mark_awake()          # 注意"刚确认过亮着"，短时间内不必再查（省 0.1~0.3 秒）
             return True
         return None
 
@@ -636,7 +636,7 @@ class ADBController:
         `screen_off_timeout` 拉到极大值、`svc power stayon true` 都挡不住（实测设置都还在，
         屏照样睡）。所以每次判断"App 是不是在前台"之前先花 ~0.3 秒问一次电源状态，
         睡着就叫醒 —— 唤醒后 App 通常立刻回到前台（它本来就是 resumed 的 Activity），
-        比"重新拉起 App"（实测要 20 秒）划算得多。
+        比"重新拉起 App"（实测要 20 秒）更为有利。
 
         提速：桥接每 10 秒就 `poke_awake()` 发一次 WAKEUP，所以"刚确认过亮着"的 12 秒内
         直接跳过这次 `dumpsys power`（每次省 0.1~0.3 秒，而它处在**每轮轮询 + 每次发送**
@@ -646,7 +646,7 @@ class ADBController:
             return False
         if self.screen_on() is not False:
             return False
-        self._screen_suspect = True          # 记住"这块屏会睡"，之后 dump 前主动先唤醒
+        self._screen_suspect = True          # 注意"这块屏会睡"，之后 dump 前主动先唤醒
         self.wake_up()
         return True
 
@@ -654,7 +654,7 @@ class ADBController:
         """便宜的"别睡"心跳：直接发 WAKEUP（已经亮着时是无害空操作）。
 
         桥接每隔 `adb.keep_awake_interval`（默认 10 秒）调一次：既把睡过去的屏叫醒，
-        也重置"用户活动"计时，让 App 尽量一直留在前台（前台判定的坑就少一大半）。
+        同时重置"用户活动"计时，让 App 尽量一直留在前台（前台判定缺陷显著减少）。
         """
         try:
             self.shell("input keyevent 224", timeout=10)
@@ -727,9 +727,9 @@ class ADBController:
         """设备上有没有装这个包。
 
         strict=True（默认）：**命令本身失败时抛 AdbError**（ADB 断连 / 设备 offline），
-        绝不返回 False —— 否则调用方会把"读不到"误报成"没安装"。实机踩过：设备的
-        transport 变成 offline 后，日志每 10 秒刷一次"设备上没有安装 com.xtc.watch"，
-        其实 App 装得好好的。
+        绝不返回 False —— 否则调用方会把"无法读取"误报成"没安装"。实机踩过：设备的
+        transport 变成 offline 后，日志每 10 秒重复输出一次"设备上没有安装 com.xtc.watch"，
+        实际 App 装得好好的。
         strict=False：纯探测，失败就当作"没有"。
         """
         if strict:
@@ -791,7 +791,7 @@ class ADBController:
 
         速度（实机 容器 实测）：`am start -n` 0.46s 到前台、`monkey` 0.97s 到前台，
         而 `am start -a MAIN/LAUNCHER` 在有的镜像上**根本起不来**——旧实现给每个策略
-        25 秒的前台等待，撞上这种策略就白等 25 秒（用户报"发一条要十几秒"里就有它）。
+        25 秒的前台等待，撞上这种策略就空等 25 秒（用户报"发一条要十几秒"里就有它）。
         现在：① 单策略等待 6 秒、0.4 秒轮询一次；② 输出里一旦出现
         SecurityException / not exported / does not exist 这类**硬失败**就立刻换策略，
         不再傻等。
@@ -852,7 +852,7 @@ class ADBController:
     def screencap_rgba(self) -> tuple[bytes, int, int]:
         """原始截屏（RGBA_8888 像素），返回 (pixels, width, height)。
 
-        为什么不用 `-p`（PNG）：抠图要按像素裁，而解码 PNG 需要额外依赖（Pillow）。
+        为什么无需 `-p`（PNG）：抠图要按像素裁，而解码 PNG 需要额外依赖（Pillow）。
         `screencap` 不带 `-p` 直接给原始像素，裁剪 + 自己编码 PNG 只用标准库（见 utils/pngtool.py）。
 
         头部长度：12 字节（w,h,format）或 16 字节（多一个 colorspace，Android 9+ 实测 容器 就是
@@ -881,10 +881,10 @@ class ADBController:
     def screencap_crop_png(self, box) -> bytes:
         """截屏并抠出 box=(x1,y1,x2,y2)，返回 PNG 字节（用于把表情包原样发出去）。
 
-        **为什么不用 `screencap -p`（PNG 直出）**：实测整屏 PNG 传输只要 1.05 秒（88KB），
+        **为什么无需 `screencap -p`（PNG 直出）**：实测整屏 PNG 传输只要 1.05 秒（88KB），
         但纯 Python 解一张 1366x768 的 PNG（逐字节反滤波）要 5~6 秒，合计比搬 4MB 原始
         像素（1.78 秒）**更慢**。所以这里走"原始 RGBA + 自己裁剪编码"这条路（合计 ~2.1 秒），
-        除非将来换成能快速解码的实现，否则别再改回 PNG 通道。
+        除非将来换成能快速解码的实现，否则请勿再改回 PNG 通道。
         """
         rgba, w, h = self.screencap_rgba()
         return pngtool.crop_png_from_rgba(rgba, w, h, box)
@@ -893,7 +893,7 @@ class ADBController:
         """读设备上的文件（`exec-out cat`，二进制直出）。
 
         用途：读小天才 App 可读数据目录里的表情原图（含动图 GIF）——比截图保真得多。
-        读不到（不存在/没权限）返回 b""，不抛异常。
+        无法读取（不存在/没权限）返回 b""，不抛异常。
         """
         try:
             out, _ = self._run(["exec-out", f"cat {path}"], timeout=timeout, binary=True)
@@ -928,7 +928,7 @@ class ADBController:
 
     @staticmethod
     def _short_reason(text: str, limit: int = 200) -> str:
-        """把 ADB/uiautomator 的多行输出压成一行短原因（写进异常信息用）。"""
+        """把 ADB/uiautomator 的多行输出合并为单行简短原因（写进异常信息用）。"""
         return " ".join(str(text or "").split())[:limit]
 
     def _parse_dump(self, xml: str) -> ET.Element:
@@ -997,8 +997,8 @@ class ADBController:
         "当前时间"（用户报的"消息时间还是不对"就是这么来的）。
         实测完整版成功率 5/5、平均只慢 ~0.4s（3.5s vs 3.1s），所以默认先用它。
 
-        某些镜像上完整 dump 可能被系统 Killed：那就自动落到下一策略，并**记住**
-        能用的那个（见 _dump_strategy），下次直接用它先试，不会每次都白等。
+        某些镜像上完整 dump 可能被系统 Killed：那就自动落到下一策略，并**注意**
+        能用的那个（见 _dump_strategy），下次直接用它先试，不会每次都空等。
         """
         strategies = [
             ("file-full", lambda: self._dump_via_file_combined(False)),
@@ -1086,7 +1086,7 @@ class ADBController:
         # 归类：只取最有代表性的一条原因
         key_detail = next((d for d in details if self._short_reason(d)), "")
         if "null root node" in low or "no root node" in low:
-            reason = "uiautomator 拿不到根节点（屏幕未点亮 / 窗口被最小化或关闭）"
+            reason = "uiautomator 无法取得根节点（屏幕未点亮 / 窗口被最小化或关闭）"
             hint = ("请让 容器窗口保持打开（最小化或关闭 容器窗口时 Android 侧没有窗口焦点，"
                     "任何界面读取都会失败）；桥接会自动尝试唤醒屏幕并重新拉起 App")
         elif not focus:
@@ -1147,7 +1147,7 @@ class ADBController:
                     continue
                 details.append(f"{name}: {why}")
                 if self._looks_like_screen_off([why]):
-                    # 根节点拿不到：换目录/换压缩都没用，先唤醒屏幕（本轮回退到下一策略）
+                    # 根节点无法取得：换目录/换压缩都没用，先唤醒屏幕（本轮回退到下一策略）
                     self._screen_suspect = True
                     if not woke:
                         woke = True
@@ -1164,7 +1164,7 @@ class ADBController:
             if i < retries - 1:
                 time.sleep(max(0.3, delay) * (i + 1))   # 递进等待：界面越不稳等越久
         if thin is not None:
-            self.logger.warning("界面反复只读到 0~2 个节点（页面仍在切换/加载），先按空界面处理")
+            self.logger.warning("界面反复只读到 0~2 个节点（页面仍在切换/加载），暂按空界面处理")
             return thin
         raise AdbError(self._dump_failure_message(details))
 
@@ -1266,8 +1266,8 @@ class ADBController:
         self.logger.warning(
             "文本注入失败（输入框未收到内容）。请检查：ADBKeyBoard 是否为当前输入法"
             "（adb shell ime set com.android.adbkeyboard/.AdbIME）、输入框是否已获得焦点；"
-            f"若设备上没装 ADBKeyBoard，请把 {' 或 '.join(ADBKEYBOARD_APK_NAMES)} "
-            "放到项目目录后重跑（本项目不做在线安装）")
+            f"若设备上未安装 ADBKeyBoard，请把 {' 或 '.join(ADBKEYBOARD_APK_NAMES)} "
+            "放到项目目录后重新运行（本项目不做在线安装）")
         return False
 
     # ---------------------------------------------------- 各注入通道
@@ -1288,7 +1288,7 @@ class ADBController:
             if not self._adbkeyboard_ready():
                 return False
             if ensure_ime and not self._adbkeyboard_active():
-                self.logger.info("ADBKeyBoard 不是当前输入法，正在切换...")
+                self.logger.info("ADBKeyBoard 不是当前输入法，正在切换")
                 self.set_default_ime(ADBKEYBOARD_IME)
                 time.sleep(0.8)
             if self._adbkeyboard_b64_ok:
@@ -1308,7 +1308,7 @@ class ADBController:
         if not self._adbkeyboard_ready():
             return False
         if ensure_ime and not self._adbkeyboard_active():
-            self.logger.info("ADBKeyBoard 不是当前输入法，正在切换...")
+            self.logger.info("ADBKeyBoard 不是当前输入法，正在切换")
             self.set_default_ime(ADBKEYBOARD_IME)
             time.sleep(0.8)
         # 1) 明文广播（最快，绝大多数设备可用）
@@ -1417,7 +1417,7 @@ class ADBController:
         return bool(re.search(r"mInputShown\s*=\s*true", out))
 
     def get_clipboard(self) -> str | None:
-        """读取设备剪贴板文本（读不到返回 None）。"""
+        """读取设备剪贴板文本（无法读取返回 None）。"""
         out = self.try_shell("cmd clipboard get-text", timeout=15)
         if out:
             text = out.strip()
@@ -1515,7 +1515,7 @@ class ADBController:
             self.logger.warning(
                 "设备上没有 ADBKeyBoard，且项目目录里找不到本地 APK（"
                 + " / ".join(ADBKEYBOARD_APK_NAMES) +
-                "）。请把该 APK 放到项目根目录后重跑，或手动安装："
+                "）。请把该 APK 放到项目根目录后重新运行，或手动安装："
                 f"adb install -r <APK路径> && adb shell ime enable {ADBKEYBOARD_IME} && "
                 f"adb shell ime set {ADBKEYBOARD_IME}"
             )

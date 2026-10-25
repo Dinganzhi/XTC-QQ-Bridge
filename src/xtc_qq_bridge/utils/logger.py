@@ -5,7 +5,7 @@
 中文 Windows 的控制台默认是 GBK（cp936），而日志文本里可能带有 GBK 无法表示的字符
 （例如某些 emoji、日文标点、特殊符号）。此时 `StreamHandler` 会在
 `stream.write()` 抛 `UnicodeEncodeError`，logging 会打印一句 "--- Logging error ---"
-后**整条日志丢失**——表现就是"控制台看不到收到的命令/消息"。
+后**整条日志丢失**——表现就是"控制台无法看到收到的命令/消息"。
 这里统一把标准输出/错误设成 `errors="replace"`（保留原编码，只把无法表示的字符换成 ?），
 日志再也不会因为个别字符而整条消失。
 """
@@ -171,7 +171,7 @@ def setup_logger(level: str = "INFO", file: str | None = None,
                                      encoding="utf-8")
             fh.setFormatter(fmt)
             logger.addHandler(fh)
-        except Exception as e:  # 日志文件打不开不致命
+        except Exception as e:  # 日志文件无法打开不致命
             logger.warning(f"日志文件不可用({file}): {e}")
 
     return logger

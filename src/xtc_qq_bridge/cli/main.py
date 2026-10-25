@@ -151,7 +151,7 @@ def main() -> None:
     ap.add_argument("--debug", choices=["dump-ui", "adb-info"], help="调试命令")
     ap.add_argument("--once", action="store_true", help="轮询一轮后退出")
     ap.add_argument("--catchup", nargs="?", const="0", default=None, metavar="SCREENS",
-                    help="一次性补发积压消息后退出（可选：向上多翻几屏，默认按配置）")
+                    help="一次性补发积压消息后退出（可选：指定向上滚动的屏数，默认按配置）")
     ap.add_argument("--no-adbkeyboard", action="store_true", help="跳过 ADBKeyBoard 自动安装")
     ap.add_argument("--paths", action="store_true", help="打印运行路径（配置/日志/数据目录）后退出")
     ap.add_argument("--verify", action="store_true",
@@ -216,12 +216,12 @@ def main() -> None:
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
         log.info(f"日志文件: {log.handlers[-1].baseFilename if log.handlers else '-'}")
-        log.info(f"速度档位: {_profile}（套用了 {len(_filled)} 项默认值；"
-                 f"config.yaml -> performance.profile 可改，单独写某个键可覆盖档位）")
+        log.info(f"速度档位: {_profile}（已应用 {len(_filled)} 项默认值；"
+                 f"可通过 config.yaml -> performance.profile 修改，单独指定某项可覆盖档位设置）")
         if _pinned:
-            log.info(f"  · 你在 config.yaml 里写死、档位不会覆盖的 {len(_pinned)} 项："
+            log.info(f"  · 在 config.yaml 中显式指定、不受档位影响的 {len(_pinned)} 项："
                      + "、".join(_pinned[:8]) + ("…" if len(_pinned) > 8 else "")
-                     + "（想让档位说了算：performance.force: true）")
+                     + "（如需以档位配置为准，请设置 performance.force: true）")
         _raw = speed_profile.raw_profile(cfg)
         if _raw and _raw.lower() not in speed_profile.PROFILES:
             log.warning(f"performance.profile={_raw!r} 不是有效档位"
@@ -270,12 +270,12 @@ def main() -> None:
     # "null root node"，每次读界面都要先唤醒（实机单次 dump 从 1s 变 20~45s）。
     if adb_cfg.get("keep_awake", True):
         if adb.keep_awake():
-            log.info("已请求容器保持常亮（避免息屏后 uiautomator 读不到界面）")
+            log.info("已请求容器保持常亮（避免息屏后 uiautomator 无法读取界面）")
         else:
             log.warning("保持常亮设置未生效（镜像可能不允许写设置）；息屏时桥接会自动唤醒屏幕")
 
     from ..xiaotiancai import Xiaotiancai
-    # 发送按钮坐标缓存落盘：重启后第一条 QQ 消息也能走"先手打字"（否则要多等两三次 dump）
+    # 发送按钮坐标缓存落盘：重启后第一条 QQ 消息也能走"预输入"（否则要多等两三次 dump）
     xtc = Xiaotiancai(adb, cfg.get("xiaotiancai") or {}, logger=log,
                       cache_path=str(runtime_paths.data_path("ui_send_cache.json")))
     xtc.launch()
@@ -295,8 +295,8 @@ def main() -> None:
         else:
             log.warning("小天才 App 未登录（自动登录已关闭）——请手动登录")
     elif state == xtc.LOGIN_UNKNOWN:
-        # 读不到界面（息屏/锁屏/App 不在前台）时不再谎报"未登录"
-        log.warning("暂时无法确认小天才登录态（界面读不到或 App 不在前台）；"
+        # 无法读取界面（息屏/锁屏/App 不在前台）时不再谎报"未登录"
+        log.warning("暂时无法确认小天才登录态（界面无法读取或 App 不在前台）；"
                     "桥接会继续运行并按需自动恢复，不视为未登录")
 
     if xc_cfg.get("auto_install_adbkeyboard", True) and not args.no_adbkeyboard:
@@ -331,7 +331,7 @@ def main() -> None:
 
     bridge.start()
     if args.once:
-        time.sleep(3)  # 至少跑一轮
+        time.sleep(3)  # 至少执行一轮
         bridge.stop()
         log.info("--once 测试完成")
         return
@@ -396,7 +396,7 @@ def run_check(config_path=None) -> int:
         return 1
     print(adb.dump_diagnostics())
     apk = runtime_paths.bundled_apk()
-    print(f"捆绑 APK: {apk or '(未找到：设备上没装 ADBKeyBoard 时无法输入中文)'}")
+    print(f"捆绑 APK: {apk or '(未找到：设备上未安装 ADBKeyBoard 时无法输入中文)'}")
     plug = runtime_paths.resource_dir(runtime_paths.PLUGIN_SRC_DIR)
     print(f"捆绑插件: {plug or '(未找到：编译时需 --include-data-dir)'}"
           f"{'' if plug else f'（可用 --install-plugin 安装到 {runtime_paths.plugin_dir()}）'}")
