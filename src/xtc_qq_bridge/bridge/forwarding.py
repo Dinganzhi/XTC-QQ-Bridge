@@ -384,8 +384,18 @@ class ForwardingMixin:
             try:
                 if is_image:
                     return self.xtc.image_of_latest(r, text, match_label=match_label)
-                return (self.xtc.sticker_of_latest(r, text, match_label=match_label)
-                        or self.xtc.sticker_of_latest(r, ""))
+                found = self.xtc.sticker_of_latest(r, text, match_label=match_label)
+                if found is None and match_label:
+                    # App 会把时间相近的消息并成一组，**组内后续消息没有时间标签** ——
+                    # 带着标签去找必然落空（实测：17:15 的表情一直"没定位到"）。
+                    found = self.xtc.sticker_of_latest(r, text)
+                if found is None:
+                    # 最后一招：取"屏幕上最新那张表情"，但**必须文本对得上**，
+                    # 否则会把另一张表情的截图发出去（宁可没有图，也不发错图）。
+                    cand = self.xtc.sticker_of_latest(r, "")
+                    if cand is not None and (not text or cand.get("text") == text):
+                        found = cand
+                return found
             except Exception as e:  # noqa: BLE001 定位失败不影响取原图
                 self._log("debug", f"定位图片/表情气泡失败: {e}")
                 return None
@@ -456,6 +466,18 @@ class ForwardingMixin:
                                                    near_epoch=near_epoch, ref=ref0)
                 except Exception as e:  # noqa: BLE001 兜底也失败就放弃
                     self._log("debug", f"[表情包] 用滚动前的图收尾失败: {e}")
+            if name:
+                # 气泡已经滚出可视区（这很常见：重试间隔里又来新消息），但**名字还在**：
+                # 走"只认能被证明的候选"那条路 —— 名字唯一才用表情包的原始文件，
+                # 同名多套时宁可不发，也不发错图。没有基准图时这条是唯一的补救。
+                try:
+                    got = self._capture_media_now(root, text, name, is_image, None,
+                                                  near_epoch=near_epoch)
+                except Exception as e:  # noqa: BLE001 兜底失败就把消息按文字发
+                    self._log("debug", f"[表情包] 按名字找原图失败: {e}")
+                    got = None
+                if got and got.get("data"):
+                    return got
             self._log("info", "[表情包] 没能取到这张表情的图，先不取图（稍后重试，避免发错）")
             return None
         try:
@@ -542,8 +564,10 @@ class ForwardingMixin:
             try:
                 got = self._emoji_store.find(name, near_epoch=near_epoch,
                                              aspect=aspect, reference=ref,
-                                             # 看得到气泡却没抠到可用截图 -> 只认能被证明的候选
-                                             verified_only=bool(item) and ref is None)
+                                             # 没有可比对的截图（气泡没定位到/抠到空白）
+                                             # 就只认"能被证明的候选"：名字唯一才用原始文件，
+                                             # 同名多套时宁可不发，也不发错图。
+                                             verified_only=ref is None)
             except Exception as e:  # noqa: BLE001 读原文件失败就走截图
                 self._log("debug", f"读表情原文件失败（改用截图）: {e}")
                 got = None

@@ -1616,6 +1616,88 @@ def test_stale_limit_grows_with_outage() -> None:
         cleanup(root)
 
 
+def test_sticker_locate_falls_back_without_label() -> None:
+    """App 会把时间相近的消息并成一组，**组内后续消息没有时间标签**。
+
+    带标签去找必然落空（实测：17:15 的"表情晕乎乎"一直报"没能取到这张表情的图"），
+    所以定位失败时要再试一次"不带标签"的查找；都不行才取屏幕上最新那张，
+    并且**文本必须对得上** —— 否则会把另一张表情的截图发出去。
+    """
+    view = n(cls="androidx.recyclerview.widget.RecyclerView",
+             rid="com.xtc.watch:id/rv_chat_msg_chat", bounds="[22,178][472,576]")
+    bubble = n(cls="android.widget.ImageView", text="",
+               desc="张三发的消息,表情晕乎乎",
+               rid="com.xtc.watch:id/chat_msg_item_content",
+               bounds="[78,200][198,320]")
+    other = n(cls="android.widget.ImageView", text="",
+              desc="张三发的消息,表情",
+              rid="com.xtc.watch:id/chat_msg_item_content",
+              bounds="[78,330][198,450]")
+    xml = node_xml(view + bubble + other)
+    real = _png_pattern(120, 120, (255, 255, 255), (20, 20, 100, 100), (30, 60, 200))
+
+    class _Xtc:
+        IMAGE_TEXT = "图片"
+        STATE_CHAT = "chat"
+        adb = None
+
+        def __init__(self, mode: str):
+            self.mode = mode
+
+        def sticker_of_latest(self, root, text="", match_label=""):
+            # ① 带标签：永远找不到（组内消息没有标签）
+            if match_label:
+                return None
+            # ② 不带标签：按文本找
+            if text == "表情晕乎乎":
+                return {"text": text, "bounds": (78, 200, 198, 320),
+                        "time_label": "", "own_label": ""}
+            if text == "":
+                # 屏幕上最新那张是**另一条**表情（文本不同）
+                if self.mode == "wrong":
+                    return {"text": "表情", "bounds": (78, 330, 198, 450),
+                            "time_label": "", "own_label": ""}
+                return {"text": "表情晕乎乎", "bounds": (78, 200, 198, 320),
+                        "time_label": "", "own_label": ""}
+            return None
+
+        def chat_view_bounds(self, root):
+            return (22, 178, 472, 576)
+
+        def bubble_clipped(self, root, bounds):
+            return False
+
+        def capture_sticker(self, bounds):
+            return real
+
+        def scroll_chat_by(self, vb, step):
+            return True
+
+        def _dump_with_retry(self, attempts=1):
+            return ET.fromstring(xml)
+
+        def _is_system_msg(self, text):
+            return False
+
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=_Xtc("ok"), forwarder=None, logger=None)
+        got = br._capture_sticker(ET.fromstring(xml), "表情晕乎乎",
+                                  match_label="10-25 17:15", kind="sticker")
+        check("组内消息没有标签时也能定位并取到图",
+              bool(got) and bool(got.get("data")), str(got and {k: v for k, v in got.items() if k != "data"}))
+
+        br2 = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                       adb=None, xtc=_Xtc("wrong"), forwarder=None, logger=None)
+        # 名字对不上时，宁可没有图也不能把别的表情发出去
+        got2 = br2._capture_sticker(ET.fromstring(xml), "表情不存在的名字",
+                                    match_label="10-25 17:15", kind="sticker")
+        check("文本对不上时绝不拿别的表情顶替", got2 is None, str(got2))
+    finally:
+        cleanup(root)
+
+
 def test_sticker_precapture_retries_blank_first_frame() -> None:
     """气泡刚出现时第一帧可能是占位图：应隔一会儿再抠一次，而不是直接放弃。
 
@@ -5839,6 +5921,7 @@ def main() -> int:
                test_sticker_reveal_fallback_keeps_image,
                test_sticker_media_retry_gives_up_fast,
                test_sticker_precapture_retries_blank_first_frame,
+               test_sticker_locate_falls_back_without_label,
                test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
