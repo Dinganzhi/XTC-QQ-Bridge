@@ -131,6 +131,13 @@ class MediaMixin:
         age = self._label_age(ident)
         if age is not None and age <= self._label_now_window:
             return datetime.fromtimestamp(now).strftime("%m-%d %H:%M")
+        if age is not None and age <= self._label_recent_window:
+            # App 只给一组消息的第一条画时间标签，同组后续消息共用组首时间（实测
+            # 08:19~08:23 的 5 条消息标签全是 08:19）。设备侧没有逐条时间可用
+            # （节点、dumpsys window、notification、应用数据库都查过），
+            # 因此这段时间内用"观测时间"显示，避免整组都写成组首时间；
+            # 更早的消息仍用原始标签（补发旧消息绝不打上转发时刻）。
+            return datetime.fromtimestamp(now).strftime("%m-%d %H:%M")
         if ident:
             return ident                       # 原始时间（绝对化），不改成"现在"
         # 完全没有标签、也查不到"上一条已入库消息"时，只能给当前时间

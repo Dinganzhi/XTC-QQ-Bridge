@@ -209,6 +209,14 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 上次**成功读到聊天界面**的时刻（墙钟）；用来判断"中断了多久"，
         # 从而把"太旧不补"的年龄上限放宽到中断时长（见 _stale_limit）。
         self._last_ok_read_ts = 0.0
+        # 标签距今不超过该窗口时，显示用"观测时间"而非 App 的组内标签
+        # （App 只给一组消息的第一条画标签，同组后续共用组首时间）。
+        try:
+            self._label_recent_window = max(
+                float(self._label_now_window),
+                float(_xc.get("label_recent_window", 600) or 600))
+        except (TypeError, ValueError):
+            self._label_recent_window = 600.0
         self._force_deep = False        # 一次性补发（--catchup）时强制深度扫描
         _media = cfg.get("emoji") or {}
         try:

@@ -1616,6 +1616,40 @@ def test_stale_limit_grows_with_outage() -> None:
         cleanup(root)
 
 
+def test_display_time_uses_observation_within_recent_window() -> None:
+    """App 只给一组消息的第一条画标签，同组后续共用组首时间。
+
+    用户反馈（10-26）：08:19~08:23 之间的多条消息，QQ 里全部显示 08:19。
+    设备侧没有逐条时间（节点/dumpsys/notification/应用数据库都查过），
+    因此在"最近 10 分钟"窗口内改用观测时间显示，避免整组写成组首时间；
+    更早的消息仍用原始标签（补发旧消息绝不写成转发时刻）。
+    """
+    from datetime import datetime, timedelta
+
+    root = tmp_root()
+    try:
+        br = bridge_mod.MessageBridge({"target": {}, "xiaotiancai": {}, "webhook": {}},
+                                      adb=None, xtc=None, forwarder=None, logger=None)
+        br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
+        br._cmd_done_file = str(_paths(root)["done"])
+        now = datetime.now()
+
+        def lbl(minutes: float) -> str:
+            return (now - timedelta(minutes=minutes)).strftime("%m-%d %H:%M")
+
+        fresh = br._display_time_label("张三", lbl(2))
+        recent = br._display_time_label("张三", lbl(8))
+        old = br._display_time_label("张三", lbl(40))
+        check("2 分钟前的标签 -> 观测时间", fresh == now.strftime("%m-%d %H:%M"), fresh)
+        check("8 分钟前的标签 -> 也在 recent 窗口内，用观测时间",
+              recent == now.strftime("%m-%d %H:%M"), recent)
+        check("40 分钟前的标签 -> 保留原始标签（补发不打转发时刻）",
+              old == lbl(40), old)
+        check("窗口默认 600 秒", int(br._label_recent_window) == 600, str(br._label_recent_window))
+    finally:
+        cleanup(root)
+
+
 def test_sticker_locate_falls_back_without_label() -> None:
     """App 会把时间相近的消息并成一组，**组内后续消息没有时间标签**。
 
@@ -5922,6 +5956,7 @@ def main() -> int:
                test_sticker_media_retry_gives_up_fast,
                test_sticker_precapture_retries_blank_first_frame,
                test_sticker_locate_falls_back_without_label,
+               test_display_time_uses_observation_within_recent_window,
                test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
