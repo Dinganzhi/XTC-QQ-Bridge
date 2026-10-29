@@ -162,11 +162,28 @@ class EmojiStore:
         if hits and len(hits) == 1:
             hit = self._read_hit(hits[0])
             if hit:
-                # 名字在本地表情包里唯一 -> 确定性最高，直接用（也减少一次界面截图）
-                hit["score"] = None if ref_grid is None else 1.0
-                return hit
+                if ref_grid is None:
+                    # 名字唯一、但没有界面截图可比对：采用它（没有更好的依据），
+                    # 日志必须写明"未核对"，避免看起来像核对过。
+                    hit["score"] = None
+                    self._log("info", f"[表情包] 名字 {name!r} 在表情包里唯一，"
+                                      "但缺少可比的界面截图，按该文件发送（未逐像素核对）"
+                                      f"：{hit.get('w')}x{hit.get('h')}")
+                    return hit
+                # 名字唯一也**必须核对**：重名合并、包版本差异都可能"同名不同图"
+                score = self._score(ref_grid, hit["data"], hits[0], hit.get("mtime"))
+                hit["score"] = score
+                if score >= self.match_ok:
+                    return hit
+                self._log("info", f"[表情包] 名字 {name!r} 的候选与界面对不上"
+                                  f"（{score:.2f} < {self.match_ok:.2f}），不采用，改用界面截图")
         if hits and ref_grid is None:
-            # 重名又没基准图：只能按老行为信第一套（日志里会写明）
+            if verified_only:
+                # 重名 + 没有截图 = 无法证明是哪一张：**不猜**
+                # （实测 10-27 20:07 的"开心"就是这条路径发成了另一套表情包里的图）
+                self._log("info", f"[表情包] {name!r} 有 {len(hits)} 套同名表情，"
+                                  "又缺少可比的界面截图，无法确认是哪一张，改为按文字转发")
+                return None
             hit = self._read_hit(hits[0])
             if hit:
                 self._log("debug", f"表情 {name!r} 在 {len(hits)} 套包里重名、"

@@ -1616,6 +1616,66 @@ def test_stale_limit_grows_with_outage() -> None:
         cleanup(root)
 
 
+def test_sticker_unique_name_still_verified() -> None:
+    """表情发错图的两条路径（都发生在"没有界面截图可比对"时）必须堵住。
+
+    实测（10-27 20:07）："表情开心"发出去的是**另一套表情包**里的图 ——
+    日志里没有"与界面比对 x.xx"，说明既没核对、又按"第一套"乱取。
+    规则：有截图时一律按像素核对（名字唯一也要核对）；
+         没有截图时只有"名字唯一"才允许采用（日志写明未核对），重名一律不猜。
+    """
+    from xtc_qq_bridge.emoji_store import EmojiStore
+
+    real = _png_pattern(120, 120, (255, 255, 255), (20, 20, 100, 100), (30, 60, 200))
+    other = _png_pattern(120, 120, (0, 0, 0), (20, 20, 100, 100), (240, 240, 240))
+
+    class FakeAdb:
+        def shell(self, cmd, timeout=None):  # noqa: ANN001
+            return ""
+
+        def read_file(self, path):  # noqa: ANN001
+            return b""
+
+    class Store(EmojiStore):
+        """只覆盖候选来源：hits 由用例指定，省掉真实文件读取。"""
+
+        def __init__(self, hits, payload):
+            EmojiStore.__init__(self, FakeAdb(), logger=None)
+            self._hits = list(hits)
+            self._payload = payload
+            self._index = {"开心": list(hits)}
+            self._index_ts = 1e18          # 索引视为已就绪
+
+        def _pack_hits(self, name):  # noqa: ANN001
+            return list(self._hits)
+
+        def _read_hit(self, path):  # noqa: ANN001
+            return {"data": self._payload, "kind": "png", "w": 120, "h": 120,
+                    "animated": False, "path": path, "source": "pack", "mtime": 0.0}
+
+    # ---- 重名 + 没有截图：不猜（10-27 的错图就是这条）----
+    multi = Store(["p1", "p2"], other)
+    got = multi.find("开心", reference=None, verified_only=True)
+    check("重名且无截图时不取任何一套（改为文字）", got is None, str(got))
+
+    # ---- 重名 + 有截图：按像素挑对的 ----
+    st = Store(["p1", "p2"], real)
+    got2 = st.find("开心", reference=real, verified_only=False)
+    check("有截图时按像素核对取图", bool(got2) and (got2.get("score") or 0) >= st.match_ok,
+          str(got2 and got2.get("score")))
+
+    # ---- 唯一名 + 有截图但图不对：不采用（改用截图）----
+    st2 = Store(["p1"], other)
+    got3 = st2.find("开心", reference=real, verified_only=False)
+    check("名字唯一但图对不上时不采用该文件", got3 is None, str(got3))
+
+    # ---- 唯一名 + 没有截图：允许采用，但 score 必须是 None（未核对）----
+    st3 = Store(["p1"], real)
+    got4 = st3.find("开心", reference=None, verified_only=True)
+    check("名字唯一且无截图时采用，且标记为未核对",
+          bool(got4) and got4.get("score") is None, str(got4 and got4.get("score")))
+
+
 def test_root_access_and_private_roots() -> None:
     """root 开关：可用时读私有目录；不可用时自动退回普通权限，绝不抛异常。
 
@@ -6019,6 +6079,7 @@ def main() -> int:
                test_sticker_locate_falls_back_without_label,
                test_display_time_uses_observation_within_recent_window,
                test_root_access_and_private_roots,
+               test_sticker_unique_name_still_verified,
                test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
