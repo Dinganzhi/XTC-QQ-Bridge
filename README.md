@@ -452,6 +452,32 @@ emoji:
 > 需要 yaml 格式就装 pyyaml：`pip install pyyaml`。**完全没有 pyyaml 时**桥接主程序无法启动
 > （除非把配置写成 JSON）。
 
+### 3.1 root 权限（可选）
+
+设备已 root（Magisk / KernelSU 等）时可开启：
+
+```yaml
+root:
+  enabled: true          # 是否使用 root 读取 App 私有目录
+  su: "su -c"            # su 命令形式（一般无需修改）
+  timeout: 30            # 单条 su 命令超时（秒）
+```
+
+开启后桥接会多搜索一个目录 `/data/data/com.xtc.watch`（外部目录照旧搜索）：
+
+| 用途 | 效果（实测） |
+|---|---|
+| 表情/照片原图 | 缓存候选从 86 个增加到 227 个、表情包文件从 549 个增加到 559 个，取原图命中率更高 |
+| 分区存储受限的设备 | Android 11+ 上外部目录不可读时，仍能取到原图 |
+| 诊断 | `python main.py --check` 会报告 root 是否可用 |
+
+**不能**做的事：小天才 App 的聊天数据库 `databases/weichat.db` 与 `shared_prefs/weichat*.xml`
+均为加密存储（SQLCipher / 加密偏好），文件头不是 `SQLite format 3`；即使 root 也读不到
+逐条消息的时间戳。消息时间仍按“界面标签 + 观测时间”处理（见「消息时间规则」一节）。
+
+`su` 不可用时（未授权、未 root、或容器每次重启需重新授权），桥接会打印一条警告并自动退回
+普通权限，不会中断运行。
+
 ## 4. AstrBot 插件配置（两端对齐）
 
 插件位于 `astrbot_plugin_xtc_bridge/`，安装到 AstrBot 的插件目录（`install.bat` / `install.sh` 自动完成）：

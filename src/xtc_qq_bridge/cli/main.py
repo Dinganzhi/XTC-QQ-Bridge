@@ -356,6 +356,8 @@ def run_check(config_path=None) -> int:
     # "检测用的 adb"和"桥接真正用的 adb"可能是两个不同的可执行文件（实机踩过：config 里
     # 写的是 platform-tools，--check 却报 LDPlayer 自带的那个），排障时会被彻底带偏。
     adb_cfg = {}
+    root_cfg = {}
+    xtc_cfg = {}
     try:
         cfg_path = runtime_paths.resolve_config(config_path)
         if cfg_path.exists():
@@ -363,6 +365,8 @@ def run_check(config_path=None) -> int:
             from .. import speed_profile
             _p, _f, _pinned = speed_profile.apply_profile(_c)
             adb_cfg = (_c.get("adb") or {})
+            root_cfg = (_c.get("root") or {})
+            xtc_cfg = (_c.get("xiaotiancai") or {})
             print(f"速度档位: {_p}（套用 {len(_f)} 项默认值"
                   + (f"，另有 {len(_pinned)} 项在 config.yaml 里写死" if _pinned else "") + "）")
     except Exception:  # noqa: BLE001 配置有问题时退回自动探测，别让自检本身失败
@@ -395,6 +399,14 @@ def run_check(config_path=None) -> int:
         print(adb._connect_hint())
         return 1
     print(adb.dump_diagnostics())
+    # root（可选）：报告是否可用；可用时说明它能做什么、不能做什么
+    try:
+        from ..root_access import RootAccess, describe as describe_root
+        _root = RootAccess(adb, root_cfg)
+        for line in describe_root(_root, xtc_cfg.get("package", "com.xtc.watch")):
+            print(line)
+    except Exception as e:  # noqa: BLE001 诊断失败不影响自检
+        print(f"root          : 探测失败 {e}")
     apk = runtime_paths.bundled_apk()
     print(f"捆绑 APK: {apk or '(未找到：设备上未安装 ADBKeyBoard 时无法输入中文)'}")
     plug = runtime_paths.resource_dir(runtime_paths.PLUGIN_SRC_DIR)
