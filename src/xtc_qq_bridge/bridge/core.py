@@ -70,13 +70,26 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         # 照片（图片消息）单独一个开关：原图动辄 1~2MB，想省流量/流量贵的可以关掉，
         # 关掉后仍会发**气泡截图**（内容对，只是清晰度低）
         self._emoji_photo = bool(_emoji.get("forward_photo", True))
+        # root（可选）：设备已 root 时用 `su` 读 App 私有目录，取原图更可靠。
+        # 注意：聊天数据库/相关 prefs 由 App 加密（SQLCipher），root 也读不到逐条时间。
+        self._root = None
+        _root_cfg = cfg.get("root") or {}
+        if _root_cfg.get("enabled") and adb is not None:
+            try:
+                from ..root_access import RootAccess
+                self._root = RootAccess(adb, _root_cfg, logger=logger)
+                self._root.available()
+            except Exception as e:  # noqa: BLE001 root 不可用不影响主流程
+                self._log("debug", f"root 初始化失败（按普通权限运行）: {e}")
+                self._root = None
         self._emoji_store = None
         if self._emoji_image and self._emoji_from_data and adb is not None:
             try:
                 from ..emoji_store import EmojiStore
                 self._emoji_store = EmojiStore(
                     adb, package=(cfg.get("xiaotiancai") or {}).get("package", "com.xtc.watch"),
-                    logger=logger, match_ok=float(_emoji.get("match_ok", 0.80) or 0.80))
+                    logger=logger, match_ok=float(_emoji.get("match_ok", 0.80) or 0.80),
+                    root_access=self._root)
             except Exception as e:  # noqa: BLE001 取原文件的能力不可用就只用截图
                 self._log("debug", f"表情原文件读取不可用（改为截图）: {e}")
         # 有发送任务在排队/执行时置位：轮询据此让路（见 _poll_loop），别和发送抢 dump

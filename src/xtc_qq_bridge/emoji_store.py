@@ -61,8 +61,10 @@ class EmojiStore:
                  strict_secs: float = 120.0, match_stop: float = 0.90,
                  head_bytes: int = 64 * 1024, photo_min_bytes: int = 60 * 1024,
                  photo_max_bytes: int = 16 * 1024 * 1024,
-                 photo_window: float = 600.0):
+                 photo_window: float = 600.0, root_access=None):
         self.adb = adb
+        # 可选：设备已 root 时的私有目录访问（见 root_access.py）
+        self.root_access = root_access
         self.package = package
         self.logger = logger
         self.near_window = max(10.0, float(near_window))  # 按消息时间找缓存时允许的偏差
@@ -96,6 +98,26 @@ class EmojiStore:
     @property
     def root(self) -> str:
         return f"/sdcard/Android/data/{self.package}"
+
+    @property
+    def roots(self) -> list[str]:
+        """可搜索的 App 目录：外部存储；开启 root 时再加内部存储。
+
+        Android 11+ 的分区存储会让 `/sdcard/Android/data/<pkg>` 不可读，
+        App 也可能把同一份文件写到 `/data/data/<pkg>/`；有 root 时两处都能读，
+        取原图的命中率会明显提高。
+        """
+        out = [self.root]
+        if self.root_access is not None and self.root_access.available():
+            private = f"/data/data/{self.package}"
+            if private not in out:
+                out.append(private)
+        return out
+
+    @staticmethod
+    def _needs_root(path: str) -> bool:
+        """内部存储路径需要走 `su`；外部存储/其它路径仍用普通 shell。"""
+        return path.startswith("/data/")
 
     def name_is_unique(self, name: str) -> bool:
         """这个名字在本地表情包里是不是只有一套包有（有就无需像素核对）。"""
@@ -186,17 +208,39 @@ class EmojiStore:
         实测整个缓存也就几十个文件，一次 `find` 全列出来比按时间窗反复筛更简便，
         也不会因为"文件被重新渲染过（mtime 被刷新）"而漏掉目标；挑哪张靠像素核对。
         """
-        return self._listing(f"{self.root}/cache", max_bytes=max_bytes, min_bytes=min_bytes)
+        rows: list[tuple[float, int, str]] = []
+        now = 0.0
+        for base in self.roots:
+            part, n = self._listing(f"{base}/cache", max_bytes=max_bytes, min_bytes=min_bytes)
+            rows.extend(part)
+            now = now or n
+        return rows, now or time.time()
 
     def _photo_dir_listing(self, max_bytes: int | None = None,
                            min_bytes: int = 0) -> tuple[list[tuple[float, int, str]], float]:
         """App 自己的聊天照片目录（`weichat/picture`）里的 ([(mtime, size, path)], 设备时间)。"""
-        return self._listing(f"{self.root}/{PHOTO_SUBDIR}", max_bytes=max_bytes,
-                             min_bytes=min_bytes)
+        rows: list[tuple[float, int, str]] = []
+        now = 0.0
+        for base in self.roots:
+            part, n = self._listing(f"{base}/{PHOTO_SUBDIR}", max_bytes=max_bytes,
+                                    min_bytes=min_bytes)
+            rows.extend(part)
+            now = now or n
+        return rows, now or time.time()
 
     def _listing(self, where: str, max_bytes: int | None = None,
                  min_bytes: int = 0) -> tuple[list[tuple[float, int, str]], float]:
-        """列某个目录下的文件： [(mtime, size, path)] + 设备当前时间。"""
+        """列某个目录下的文件： [(mtime, size, path)] + 设备当前时间。
+
+        App 内部存储（`/data/...`）需要 root：有 root 时走 `su`，否则直接跳过
+        （普通 shell 读不到，去读只会得到空列表和一条误导性的日志）。
+        """
+        if self._needs_root(where):
+            if self.root_access is None or not self.root_access.available():
+                return [], time.time()
+            rows, now = self.root_access.list_files(where, max_bytes=max_bytes,
+                                                    min_bytes=min_bytes)
+            return rows, now or time.time()
         try:
             listing = self.adb.shell(
                 f"date +%s; find {where} -type f "
@@ -225,6 +269,10 @@ class EmojiStore:
         用途：照片原图的尺寸/形状筛选 —— 看文件头就够了，不需要整份内容。
         """
         n = int(nbytes or self.head_bytes)
+        if self._needs_root(path):
+            if self.root_access is None or not self.root_access.available():
+                return b""
+            return self.root_access.read_head(path, n)
         try:
             b64 = self.adb.shell(f"head -c {n} {path} | base64 -w0", timeout=30)
         except Exception as e:  # noqa: BLE001 无法读取就当没有
@@ -470,6 +518,20 @@ class EmojiStore:
         return out
 
     # ------------------------------------------------------------------ 表情包目录
+    def _find_desc_cmd(self) -> str:
+        """列出所有 root 下的 desc.json（内部目录用 `su` 包裹，避免"权限不够"静默漏掉）。"""
+        parts: list[str] = []
+        for base in self.roots:
+            target = f"{base}/{EMOJI_SUBDIR}"
+            cmd = f"find {target} -name desc.json 2>/dev/null"
+            if self._needs_root(target):
+                if self.root_access is None or not self.root_access.available():
+                    continue
+                quoted = cmd.replace("'", "'\\''")
+                cmd = f"{self.root_access.su} '{quoted}'"
+            parts.append(cmd)
+        return "; ".join(parts)
+
     def _pack_index(self) -> dict:
         """desc 名字 -> [表情文件路径...]（带 TTL 缓存；同名的包都留着，供"重名"判断）。"""
         if self._index and time.monotonic() - self._index_ts < self.index_ttl:
@@ -477,7 +539,7 @@ class EmojiStore:
         index: dict[str, list[str]] = {}
         try:
             jsons = self.adb.shell(
-                f"find {self.root}/{EMOJI_SUBDIR} -name desc.json 2>/dev/null", timeout=30)
+                (self._find_desc_cmd()), timeout=30)
         except Exception as e:  # noqa: BLE001
             self._log("debug", f"列表情包索引失败: {e}")
             return self._index
@@ -530,6 +592,10 @@ class EmojiStore:
 
     # ------------------------------------------------------------------ 工具
     def _read(self, path: str) -> bytes:
+        if self._needs_root(path):
+            if self.root_access is None or not self.root_access.available():
+                return b""
+            return self.root_access.read_bytes(path)
         try:
             return self.adb.read_file(path)
         except Exception as e:  # noqa: BLE001 无法读取就当没有

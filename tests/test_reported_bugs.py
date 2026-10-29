@@ -1616,6 +1616,67 @@ def test_stale_limit_grows_with_outage() -> None:
         cleanup(root)
 
 
+def test_root_access_and_private_roots() -> None:
+    """root 开关：可用时读私有目录；不可用时自动退回普通权限，绝不抛异常。
+
+    背景（10-26 用户要求）：设备已 root 时可读 `/data/data/<pkg>`，
+    取表情/照片原图更可靠。注意聊天数据库由 App 加密（SQLCipher），
+    root 也读不到逐条消息时间——这里只覆盖"私有目录可读/不可读"两条路径。
+    """
+    from xtc_qq_bridge import root_access
+    from xtc_qq_bridge.emoji_store import EmojiStore
+
+    class FakeAdb:
+        def __init__(self, root: bool) -> None:
+            self.root = root
+            self.calls: list[str] = []
+
+        def shell(self, cmd, timeout=None):  # noqa: ANN001
+            self.calls.append(cmd)
+            if "su" in cmd and "id" in cmd:
+                return "uid=0(root) gid=0(root)" if self.root else "uid=2000(shell)"
+            if "date +%s" in cmd:
+                return "1793000000\n1793000000 123 /data/data/com.xtc.watch/a.jpg"
+            if "base64" in cmd:
+                return "aGVsbG8="
+            return ""
+
+        def read_file(self, path):  # noqa: ANN001
+            return b"external"
+
+    # ---- 有 root ----
+    adb = FakeAdb(True)
+    root = root_access.RootAccess(adb, {"enabled": True})
+    check("root 可用", root.available() is True)
+    check("能按 base64 读文件", root.read_bytes("/data/data/x") == b"hello")
+    rows, _now = root.list_files("/data/data/com.xtc.watch")
+    check("能列私有目录", len(rows) == 1 and rows[0][2].endswith("a.jpg"), str(rows))
+
+    store = EmojiStore(adb, logger=None, root_access=root)
+    check("开启 root 后多搜内部目录",
+          "/data/data/com.xtc.watch" in store.roots, str(store.roots))
+    check("内部路径走 root", store._needs_root("/data/data/x") is True)
+    check("外部路径仍走普通 shell", store._needs_root("/sdcard/Android/data/x") is False)
+    check("表情包索引同时搜两处",
+          "su -c" in store._find_desc_cmd(), store._find_desc_cmd()[:120])
+
+    # ---- 没有 root：自动退回 ----
+    adb2 = FakeAdb(False)
+    root2 = root_access.RootAccess(adb2, {"enabled": True})
+    check("无 root 时 available=False", root2.available() is False)
+    store2 = EmojiStore(adb2, logger=None, root_access=root2)
+    check("无 root 时只搜外部目录",
+          store2.roots == ["/sdcard/Android/data/com.xtc.watch"], str(store2.roots))
+    check("无 root 时内部路径不报错", store2._read("/data/data/x") == b"")
+
+    # ---- 未启用 ----
+    root3 = root_access.RootAccess(FakeAdb(True), {"enabled": False})
+    check("未启用时不执行 su", root3.available() is False
+          and not any("su" in c for c in root3.adb.calls), str(root3.adb.calls[:2]))
+    check("诊断行说明未启用",
+          "未启用" in root_access.describe(root3)[0], str(root_access.describe(root3)))
+
+
 def test_display_time_uses_observation_within_recent_window() -> None:
     """App 只给一组消息的第一条画标签，同组后续共用组首时间。
 
@@ -5957,6 +6018,7 @@ def main() -> int:
                test_sticker_precapture_retries_blank_first_frame,
                test_sticker_locate_falls_back_without_label,
                test_display_time_uses_observation_within_recent_window,
+               test_root_access_and_private_roots,
                test_stale_limit_grows_with_outage,
                test_clipped_bubble_detection,
                test_blank_bubble_shot_is_not_sent,
