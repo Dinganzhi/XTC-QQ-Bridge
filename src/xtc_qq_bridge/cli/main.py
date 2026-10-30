@@ -145,7 +145,7 @@ def verify_bundle() -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=f"小天才 <-> QQ 桥接（AstrBot 插件版）v{__version__}")
+    ap = argparse.ArgumentParser(description=f"XTC-QQ-Bridge（小天才 <-> QQ 桥接）{__version__}")
     ap.add_argument("--config", default="", help="配置文件路径（默认：exe 旁边的 config.yaml）")
     ap.add_argument("--check", action="store_true", help="环境自检后退出")
     ap.add_argument("--debug", choices=["dump-ui", "adb-info"], help="调试命令")
@@ -212,7 +212,7 @@ def main() -> None:
             print(f"[警告] 生成本次日志文件失败（改用固定日志文件）: {e}")
     log = setup_logger(level=_log_cfg.get("level", "INFO"), file=_log_file)
     if not args.no_banner:
-        log.info(f"xtc-qq-bridge v{__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
+        log.info(f"XTC-QQ-Bridge {__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
         log.info(f"日志文件: {log.handlers[-1].baseFilename if log.handlers else '-'}")

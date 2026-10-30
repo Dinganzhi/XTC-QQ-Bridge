@@ -412,12 +412,14 @@ class AboutTests(unittest.TestCase):
         text = PLUGIN._about_text()
         lines = [ln for ln in text.splitlines() if ln.strip()]
         self.assertLessEqual(len(lines), 6, text)
-        self.assertLessEqual(len(text), 220, text)
-        self.assertIn(bridge_version.__version__, text)
+        self.assertLessEqual(len(text), 240, text)
+        self.assertEqual(f"XTC-QQ-Bridge {bridge_version.__version__}", lines[0])
+        self.assertNotIn("v" + bridge_version.__version__, text)
         self.assertIn(bridge_version.AUTHOR, text)
         self.assertIn(bridge_version.REPO_URL, text)
         self.assertIn(bridge_version.LICENSE_NAME, text)
-        self.assertIn("版权", text)
+        self.assertIn("版权：Copyright 2026 Dinganzhi", text)
+        self.assertNotIn("©", text)
 
     def test_about_listed_in_usage_and_command_detection(self):
         self.assertIn("关于", PLUGIN._USAGE)
