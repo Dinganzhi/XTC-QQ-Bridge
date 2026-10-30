@@ -1,4 +1,4 @@
-# 小天才 <-> QQ 桥接插件（AstrBot v4.x）
+# XTC-QQ-Bridge 插件（小天才 <-> QQ 桥接 · AstrBot v4.x）
 
 配合仓库根目录的 Python 桥脚本使用（`main.py` / `bridge.py` / `xiaotiancai.py`）。
 已在 AstrBot v4.27.4（桌面版）实测通过。

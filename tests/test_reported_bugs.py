@@ -395,13 +395,16 @@ def test_about_command_both_sides() -> None:
 
     text = about_text()
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    check("关于文案不冗长", len(lines) <= 6 and len(text) <= 220,
+    check("关于文案不冗长", len(lines) <= 6 and len(text) <= 240,
           f"{len(lines)} 行 / {len(text)} 字符")
+    check("关于首行为展示名+版本",
+          lines and lines[0] == f"XTC-QQ-Bridge {__version__}", lines[0] if lines else "")
     check("关于含版本号", __version__ in text, __version__)
-    check("关于含作者/仓库/许可证",
-          AUTHOR in text and REPO_URL in text and LICENSE_NAME in text,
+    check("关于含作者/仓库/许可证/反馈",
+          all(x in text for x in (AUTHOR, REPO_URL, LICENSE_NAME, REPO_URL + "/issues")),
           f"{AUTHOR} | {REPO_URL} | {LICENSE_NAME}")
-    check("关于含版权", "版权" in text and "©" in text)
+    check("关于含版权且用 Copyright 而非 ©",
+          "版权：Copyright 2026 Dinganzhi" in text and "©" not in text)
     check("关于不含电话号码等私密信息",
           "10001" not in text and "123456789" not in text and "@" not in text)
 

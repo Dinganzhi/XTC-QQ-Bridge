@@ -1,4 +1,4 @@
-# 小天才 <-> QQ 桥接（AstrBot 插件版）
+# XTC-QQ-Bridge（小天才 <-> QQ 桥接 · AstrBot 插件版）
 
 > **说明**
 > - 支持平台：**Windows / Linux / macOS**；仅要求目标 Android 环境开放 ADB 调试。
