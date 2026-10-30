@@ -388,6 +388,43 @@ def test_history_source_from_plugin_payload() -> None:
         cleanup(root)
 
 
+def test_about_command_both_sides() -> None:
+    """「关于」命令：文案精简且信息完整，手表侧可直接回复，帮助列表里可见。"""
+    from xtc_qq_bridge.version import (AUTHOR, LICENSE_NAME, REPO_URL,
+                                       __version__, about_text)
+
+    text = about_text()
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    check("关于文案不冗长", len(lines) <= 6 and len(text) <= 220,
+          f"{len(lines)} 行 / {len(text)} 字符")
+    check("关于含版本号", __version__ in text, __version__)
+    check("关于含作者/仓库/许可证",
+          AUTHOR in text and REPO_URL in text and LICENSE_NAME in text,
+          f"{AUTHOR} | {REPO_URL} | {LICENSE_NAME}")
+    check("关于含版权", "版权" in text and "©" in text)
+    check("关于不含电话号码等私密信息",
+          "10001" not in text and "123456789" not in text and "@" not in text)
+
+    root = tmp_root()
+    try:
+        br = make_bridge(root)
+        sent: list[str] = []
+        br._reply_into_xtc = lambda t: (sent.append(t), True)[1]  # type: ignore
+        ok = br._do_cmd_job("/小天才 关于")
+        check("手表侧 /小天才 关于 直接回复",
+              ok and bool(sent) and sent[-1] == text,
+              (sent[-1].replace("\n", " | ")[:120] if sent else "(未回复)"))
+        check("手表侧帮助列表含 关于", "关于" in br._xtc_usage())
+        ok_alias = br._do_cmd_job("/小天才 版本")
+        check("手表侧 /小天才 版本 同样可用",
+              ok_alias and bool(sent) and sent[-1] == text)
+        ok_en = br._do_cmd_job("/小天才 about")
+        check("手表侧 /小天才 about 同样可用",
+              ok_en and bool(sent) and sent[-1] == text)
+    finally:
+        cleanup(root)
+
+
 # ------------------------------------------------------------------ 2. 命令重复
 def test_command_not_repeated() -> None:
     root = tmp_root()
@@ -6040,6 +6077,7 @@ def test_msg_log_sharding_and_cap() -> None:
 
 def main() -> int:
     for fn in (test_history_source_tags, test_history_source_from_plugin_payload,
+               test_about_command_both_sides,
                test_command_not_repeated, test_login_detection,
                test_password_field_masked, test_login_progress_not_failure,
                test_send_result_is_honest, test_send_speed_fast_path,
