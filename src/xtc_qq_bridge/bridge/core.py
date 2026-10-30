@@ -19,7 +19,8 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                   "/小天才 搜索 <昵称>          白名单QQ私聊/群聊中找人（附最后消息时间）\n"
                   "/小天才 在线人数 <分钟>      最近N分钟白名单QQ会话发言人数（1-60）\n"
                   "/小天才 提醒 <群号> <QQID> [内容]    在指定QQ群内@提醒该用户\n"
-                  "/小天才 历史消息 [条数] [来源]   查看对话记录（默认20条，可只看 手表/QQ群/QQ私聊）")
+                  "/小天才 历史消息 [条数] [来源]   查看对话记录（默认20条，可只看 手表/QQ群/QQ私聊）\n"
+                  "/小天才 关于                  查看版本、作者、仓库、许可证信息")
 
     def __init__(self, cfg: dict, adb, xtc, forwarder, logger=None):
         self.cfg = cfg

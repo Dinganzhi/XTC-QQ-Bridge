@@ -12,6 +12,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from xtc_qq_bridge import version as bridge_version  # noqa: E402
 
 
 def load_plugin():
@@ -387,6 +390,47 @@ class PluginLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(res.get("ok"))
         self.assertIn("超时", str(res.get("error")), res)
         self.assertNotIn("异常", str(res.get("error")), res)
+
+    async def test_about_command_replies_with_short_block(self):
+        results = []
+        self.event.session = types.SimpleNamespace(
+            platform_id="napcat", session_id="10001", session_name="测试")
+        self.event.plain_result = lambda text: text
+        self.event.set_result = lambda result: results.append(result)
+        self.plugin.config = {}
+        await self.plugin.on_xtc_command(self.event, "关于")
+        self.assertEqual([PLUGIN._about_text()], results)
+
+
+class AboutTests(unittest.TestCase):
+    """QQ 侧「关于」：文案与主程序一致（插件独立安装、无法 import 主程序包，内容靠本用例守卫）。"""
+
+    def test_about_text_matches_bridge(self):
+        self.assertEqual(bridge_version.about_text(), PLUGIN._about_text())
+
+    def test_about_text_is_short_and_complete(self):
+        text = PLUGIN._about_text()
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        self.assertLessEqual(len(lines), 6, text)
+        self.assertLessEqual(len(text), 220, text)
+        self.assertIn(bridge_version.__version__, text)
+        self.assertIn(bridge_version.AUTHOR, text)
+        self.assertIn(bridge_version.REPO_URL, text)
+        self.assertIn(bridge_version.LICENSE_NAME, text)
+        self.assertIn("版权", text)
+
+    def test_about_listed_in_usage_and_command_detection(self):
+        self.assertIn("关于", PLUGIN._USAGE)
+        # 命令模式关闭时，「关于」不能被当成普通消息转发到手表
+        self.assertTrue(PLUGIN.Main._looks_like_cmd("/小天才 关于"))
+        self.assertTrue(PLUGIN.Main._looks_like_cmd("小天才 版本"))
+        self.assertTrue(PLUGIN.Main._looks_like_cmd("/小天才 about"))
+
+    def test_plugin_metadata_version_matches_bridge(self):
+        meta = (ROOT / "astrbot_plugin_xtc_bridge/metadata.yaml").read_text(encoding="utf-8")
+        self.assertIn(f"version: {bridge_version.__version__}", meta)
+        self.assertIn(f"author: {bridge_version.AUTHOR}", meta)
+
 
 class ForwardHandlerTests(unittest.TestCase):
     def test_forward_timeout_cancels_queued_send(self):

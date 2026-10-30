@@ -5,7 +5,7 @@
 1. Python -> QQ：暴露本地 HTTP 端点（默认 http://127.0.0.1:11452/api/forward），
    接收 Python 桥脚本（main.py）的转发请求，经 context.send_message() 发送 QQ 消息。
    /api/forward 会等待实际发送结果再返回（避免"假成功"）。
-2. QQ -> 小天才：子命令 `/小天才 发送|登录|自动登录|初始化|命令模式`；
+2. QQ -> 小天才：子命令 `/小天才 发送|登录|自动登录|初始化|历史消息|关于|命令模式`；
    「命令模式」关闭时，群/私聊所有新消息都会转发到小天才。
 
 关键 API（v4）：
@@ -36,12 +36,32 @@ from astrbot.core.star.filter.command import GreedyStr
 # AstrBot < 4.27 的 Star.__init__ 不注入 self.logger，这里做兜底
 _FALLBACK_LOGGER = logging.getLogger("xtc_qq_bridge")
 
+# 项目元信息：与 src/xtc_qq_bridge/version.py 保持一致（tests 会校验，避免两处漂移）。
+# 插件作为独立目录安装到 AstrBot，无法 import 主程序包，因此这里保留一份。
+_PLUGIN_VERSION = "1.0.0-beta.3"
+_PLUGIN_TITLE = "小天才 ↔ QQ 桥接"
+_PLUGIN_AUTHOR = "Dinganzhi"
+_PLUGIN_REPO = "https://github.com/Dinganzhi/xtc-qq-bridge"
+_PLUGIN_LICENSE = "Apache-2.0"
+_PLUGIN_COPYRIGHT = "© 2026 Dinganzhi"
+
+
+def _about_text() -> str:
+    """「关于」命令文案（精简，避免在 QQ/手表上刷屏）。"""
+    return (f"{_PLUGIN_TITLE} v{_PLUGIN_VERSION}\n"
+            f"作者：{_PLUGIN_AUTHOR}\n"
+            f"许可：{_PLUGIN_LICENSE}\n"
+            f"仓库：{_PLUGIN_REPO}\n"
+            f"版权：{_PLUGIN_COPYRIGHT}")
+
+
 _USAGE = ("用法：\n"
           "/小天才 发送 <文本>    把消息发到小天才手表\n"
           "/小天才 登录          手动登录小天才\n"
           "/小天才 自动登录      开启/关闭十分钟自动登录检测\n"
           "/小天才 初始化        检测并恢复界面状态（登录/聊天/输入框）\n"
           "/小天才 历史消息 [条数] [来源]  查看历史记录（默认20条，可只看 手表/QQ群/QQ私聊）\n"
+          "/小天才 关于          查看版本、作者、仓库、许可证信息\n"
           "/小天才 命令模式      切换命令模式（开=仅命令转发；关=所有新消息都转发）")
 
 
@@ -158,6 +178,8 @@ class Main(star.Star):
                 await self._toggle_flow(event, "init")
             elif sub in ("历史消息", "history"):
                 await self._history_flow(event, rest)
+            elif sub in ("关于", "about", "版本", "version"):
+                event.set_result(event.plain_result(_about_text()))
             elif sub == "命令模式":
                 self._toggle_command_mode(event)
             else:
@@ -217,7 +239,8 @@ class Main(star.Star):
         if not parts or parts[0] != "小天才":
             return False
         subs = {"发送", "登录", "自动登录", "初始化", "命令模式", "历史消息",
-                "搜索", "在线人数", "提醒", "帮助", "小天才登录", "help", "发送登录"}
+                "搜索", "在线人数", "提醒", "帮助", "关于", "版本",
+                "小天才登录", "help", "about", "version", "发送登录"}
         if len(parts) == 1:
             return True  # 单独"小天才"= 帮助
         if parts[1] in subs:

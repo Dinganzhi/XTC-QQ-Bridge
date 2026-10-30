@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .shared import *  # noqa: F401,F403
+from ..version import about_text
 
 
 class CommandMixin:
@@ -100,6 +101,8 @@ class CommandMixin:
                 reply = self._cmd_online(args)
             elif sub in ("提醒", "remind"):
                 reply = self._cmd_remind(args)
+            elif sub in ("关于", "about", "版本", "version"):
+                reply = about_text()
             else:
                 reply = self._xtc_usage()            # 无法识别 -> 帮助列表
         except Exception as e:  # noqa: BLE001
