@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 APP_NAME = "xtc-qq-bridge"
@@ -92,20 +93,25 @@ BUNDLE_DIR: Path = _bundle_dir()
 
 
 def _writable(d: Path) -> bool:
-    """目录是否可写（写一个临时文件尝试一次；失败不抛异常）。"""
-    probe = d / ".xtc_write_probe"
+    """目录是否可写（写一个临时文件尝试一次；失败不抛异常）。
+
+    探测文件名必须**唯一**（进程号 + 随机串）：此前所有进程/线程都用同一个
+    `.xtc_write_probe`，并发探测时 A 刚 unlink、B 再 unlink 就抛 FileNotFoundError
+    （属于 OSError）→ 明明可写的目录被判成"不可写" → `_resolve_app_dir()` 悄悄把
+    APP_DIR 换到 %LOCALAPPDATA%/xtc-qq-bridge，于是 config.yaml、logs/、data/
+    全都指向另一个目录（实测 4 线程并发时 1600 次里有 1050 次误判）。
+    """
+    probe = d / f".xtc_write_probe.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     try:
         d.mkdir(parents=True, exist_ok=True)
         probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
         return True
     except OSError:
         return False
     finally:
         try:
-            if probe.exists():
-                probe.unlink()
-        except OSError:
+            probe.unlink(missing_ok=True)
+        except OSError:      # 清理失败不影响判定结果
             pass
 
 

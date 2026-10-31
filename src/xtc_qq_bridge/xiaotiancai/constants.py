@@ -127,6 +127,13 @@ LOGIN_LOGGED_IN = "logged_in"
 LOGIN_NOT_LOGGED_IN = "not_logged_in"
 LOGIN_UNKNOWN = "unknown"
 
+# 登录页**常驻**文案：`risk_markers` 的命中若只是这些文案的一部分，就不算"触发安全验证"。
+# 背景：随包模板曾把"验证码"写进 risk_markers 默认值，而登录页底部固定写着
+# "短信验证码登录 / 获取验证码"（state.py 正是拿它们当登录页特征），于是用默认配置的
+# 用户每次自动登录都在第一轮被判成风险界面，按 login_retry_after_risk（默认 900 秒）
+# 挂起等待人工，而真正的密码错误反而看不见。
+_RISK_FALSE_POSITIVES = ("短信验证码登录", "验证码登录", "获取验证码", "找回密码")
+
 
 
 # 动态 __all__：让各子模块 `from .constants import *` 也能拿到下划线开头的内部常量

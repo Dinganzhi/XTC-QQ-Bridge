@@ -209,8 +209,14 @@ class LoginMixin:
             # 6) 点登录（先收起键盘——输入密码后键盘仍打开，会挡住/截获点击）
             #    未离开账密登录页说明点击被吞，重试最多 3 次；
             #    若被"请勾选协议"拦住，则补勾一次再点。
-            self.adb.keyevent(4)
-            time.sleep(0.5)
+            #    **必须确认键盘真的可见**再按返回键：桥接用的是 ADBKeyBoard 这类无界面
+            #    输入法（`ime_shown()` 常为 False），此时 BACK 不是收键盘而是"返回上一页"，
+            #    会从账密登录页退回欢迎页甚至退出 App；随后找不到登录按钮 ->
+            #    报出误导性的"未找到登录按钮（页面结构变化？）"，并一直登录不上。
+            if (self.login.get("close_keyboard_before_tap", True)
+                    and self.keyboard_visible()):
+                self.adb.keyevent(4)
+                time.sleep(0.5)
             tapped = False
             for attempt in range(1, 4):
                 root = self._dump_fast()
@@ -350,15 +356,33 @@ class LoginMixin:
 
     def _detect_risk(self, root: ET.Element) -> str:
         """检测安全验证（账号风险）界面，返回命中的标记文案；无则返回 ''。
-        注意：不要用 "验证码" 这类宽泛词——登录页底部固定有"短信验证码登录"文案会误判。"""
+
+        注意：不要用 "验证码" 这类宽泛词 —— 登录页底部固定有"短信验证码登录"、
+        "获取验证码"等常驻文案，命中就误判。这条注意事项**必须由代码兜底**：
+        `risk_markers` 是用户可配项，而随包模板曾把"验证码"写进默认值，于是用默认
+        配置的用户每次自动登录都在第一轮被判成"触发安全验证"，按
+        `login_retry_after_risk`（默认 900 秒）挂起等待人工，真正的密码错误反而看不见。
+        """
         markers = self.ui.get("risk_markers",
                               ["安全验证", "风险", "滑块", "拖动滑块", "图形验证",
                                "完成验证", "请完成验证", "滑动验证"])
         texts = [n.get("text", "") for n in root.iter("node")]
         joined = "".join(texts)
+        # 登录页常驻文案：命中标记若只是它的子串，就不算风险
+        on_login_page = False
+        try:
+            on_login_page = bool(self._looks_like_login_page(root))
+        except Exception:  # noqa: BLE001 判定失败时按"不是登录页"处理
+            on_login_page = False
         for m in markers:
-            if m in joined:
-                return m
+            if not m or m not in joined:
+                continue
+            if any(m in fp for fp in _RISK_FALSE_POSITIVES if fp in joined):
+                continue        # 只出现在"短信验证码登录"这类常驻文案里
+            if on_login_page and not any(w in joined for w in (
+                    "请完成", "拖动", "滑块", "拼图", "验证后继续", "安全验证")):
+                continue        # 仍在登录页且没有任何"要做验证"的动作提示
+            return m
         return ""
 
     def _detect_login_progress(self, root: ET.Element) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .shared import *  # noqa: F401,F403
+from ..utils import timelabel
 
 
 class MediaMixin:
@@ -98,10 +99,20 @@ class MediaMixin:
                                          "重试时仍未取得原图/截图", kind=kind)
                 continue
             self._media_retry_clear(key)
+            # 内容哈希必须一路带下去：少了它，"没有时间标签的照片/表情"在历史库里的身份
+            # 就退化成 ("xtc", 联系人, "图片", "")——之后**所有**无标签照片都会被判成
+            # "已处理过"而静默丢弃（用户看到的就是"第二张照片再也没转发过来"）。
+            mhash = self._media_hash(sticker)
+            if mhash and self.history.seen("xtc", contact or "", text, mhash):
+                self._log("info", f"[媒体] 这张图片/表情之前已转发过（内容相同），不再重复: "
+                                  f"{text[:24]!r}")
+                continue
+            # 无时间标签时用内容哈希当身份，与实时路径、补发路径保持同一套规则
+            ident = label or (mhash or "")
             self._log("info", f"[媒体] {'拿到图，补发' if sticker else '等太久了，按文字转发'}: "
                               f"{text[:24]!r}")
-            self._queue_forward(contact, text, label, sticker=sticker,
-                                display_label=disp, kind=kind)
+            self._queue_forward(contact, text, ident, sticker=sticker,
+                                display_label=disp or ident, kind=kind, media_hash=mhash)
 
     def _label_age(self, label: str) -> float | None:
         """某个时间标签距今多少秒（解析不出来返回 None）。"""
@@ -172,6 +183,12 @@ class MediaMixin:
             return False
         self._log("info", "ADB 已重连" if self._reconnect_fails == 0
                           else f"ADB 已重连（第 {self._reconnect_fails + 1} 次尝试）")
+        # 断连期间做过的能力探测（SDK 级别 / 输入法 / 剪贴板 / 屏幕尺寸与旋转）
+        # 很可能是"失败即不可用"的错误结论，重连后一律重做，否则桥接会一直降级运行。
+        try:
+            self.adb.invalidate_probes()
+        except Exception:  # noqa: BLE001 老版本控制器没有该方法时忽略
+            pass
         self._reconnect_fails = 0
         self._next_reconnect_ts = float("-inf")
         return True
@@ -334,14 +351,9 @@ class MediaMixin:
 
         支持：`16:18`（今天）/ `今天 16:18` / `昨天 16:18` / `前天 16:18` /
         `星期一 16:18` / `8月30日 16:18` / 已经是绝对的 `09-25 16:18`、`2026-09-25 16:18`。
+        实现放在 `utils.timelabel`：界面操作层（定位气泡）也要用同一份归一化。
         """
-        epoch = self._label_epoch(time_label, now)
-        if epoch is None:
-            return ""
-        try:
-            return datetime.fromtimestamp(epoch).strftime("%m-%d %H:%M")
-        except (OverflowError, OSError, ValueError):  # noqa: BLE001 时间戳异常就当解析不出来
-            return ""
+        return timelabel.abs_label(time_label, now)
 
     def _qq_targets(self) -> list[tuple[str, str]]:
         """转发目标列表 [(type, id)]；qq_private/qq_group 支持单个字符串或列表。"""

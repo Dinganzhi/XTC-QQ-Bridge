@@ -2627,6 +2627,11 @@ def test_blind_send_fast_typing() -> None:
 
     # ⑤b 补点也不生效（两次都没点中）-> 如实报未确认 + 清掉缓存坐标（交给稳妥流程）
     adb.element_tap_sends = False                     # 连快照里的按钮也点不动
+    # 盲打前输入框必须是空的（残留闸门）：上一轮复核看到的"你好"是**发送之后**的状态，
+    # 不清掉的话新一轮盲打会被正确拒绝，这个用例就跑不到它要测的"补点也点不动"。
+    adb.set_ui(input_text="", tip="", bubble="")
+    xtc._snapshot = ET.fromstring(adb.xml)
+    xtc._snapshot_ts = time.monotonic()
     xtc._send_cache = {"input": (833, 678, 1179, 721), "point": (1200, 699),
                        "input_point": (1006, 699)}
     xtc.begin_blind_send("你好")
@@ -2639,6 +2644,9 @@ def test_blind_send_fast_typing() -> None:
 
     # ⑤c 补点后 App 报"发送失败"（网络异常）-> 如实上报，且**不重发**（避免重复消息）
     adb.tap_send_fails = True
+    adb.set_ui(input_text="", tip="", bubble="")
+    xtc._snapshot = ET.fromstring(adb.xml)
+    xtc._snapshot_ts = time.monotonic()
     xtc._send_cache = {"input": (833, 678, 1179, 721), "point": (1200, 699),
                        "input_point": (1006, 699)}
     xtc.begin_blind_send("你好")
@@ -2649,6 +2657,24 @@ def test_blind_send_fast_typing() -> None:
     check("失败提示类的不重发（避免重复消息）", retryable6 is False)
     adb.tap_send_fails = False
     adb.blind_tap_sends = True
+
+    # ⑤d **输入框里有上次没发掉的残留时，绝不能盲打**：ADBKeyBoard 是在光标处**追加**，
+    #     于是"残留 + 新内容"会被拼成一条发出去；而复核用的是 `needle in 气泡文本`，
+    #     拼接后的气泡包含新内容 -> 判成功 -> 桥接记"发送成功"，手表收到的却是脏消息，
+    #     而且永远不会被纠正（实测 repro：残留"上一条没发出去的残留" + 新消息"新消息"
+    #     -> 实际发出"上一条没发出去的残留新消息"，复核仍返回 True）。
+    adb.set_ui(input_text="上一条没发出去的残留", tip="", bubble="")
+    xtc._snapshot = ET.fromstring(adb.xml)
+    xtc._snapshot_ts = time.monotonic()
+    xtc._send_cache = {"input": (833, 678, 1179, 721), "point": (1200, 699),
+                       "input_point": (1006, 699)}
+    staged3, why7 = xtc.begin_blind_send("新消息")
+    check("输入框有残留时不盲打（避免拼接发出脏消息）", staged3 is False, why7)
+    check("拒绝盲打时说明原因并交回稳妥流程",
+          "输入框" in why7 and "稳妥流程" in why7, why7)
+    check("拒绝盲打时一个字都没注入",
+          not any(c.startswith("input_text_plain 新消息") for c in adb.calls), str(adb.calls))
+    adb.set_ui(input_text="", tip="", bubble="")
 
     # ⑥ 桥接门闩：太久没确认过聊天页 / 标题不对 -> 不先手
     br = bridge_mod.MessageBridge(
@@ -6078,8 +6104,131 @@ def test_msg_log_sharding_and_cap() -> None:
         cleanup(root)
 
 
+def test_msg_log_read_shards_and_memory_bound() -> None:
+    """消息库：read_shards>1 时不得把更老分库写进最新分库；内存占用必须有上界。
+
+    旧实现 `_load()` 把 `_cur_start` 固定写成 0，而 `_save()` 只写
+    `_entries[_cur_start:]` —— 于是 `read_shards>1` 且分库未写满（每次重启后都是这种状态）时，
+    最新分库文件会被重写成"所有已加载分库的合集"：历史消息出现重复，且每重启一轮翻一倍。
+    同时 `_entries` 在分库模式下从不裁剪，常驻进程内存随运行时长无上限增长。
+    """
+    root = tmp_root()
+    prefix = f".bugtest{_SEQ['n']}_"
+    try:
+        base = root / f"{prefix}shard.json"
+        ml = MessageLog(path=str(base), cap=0, shard_size=5, read_shards=1)
+        for i in range(1, 16):
+            ml.append("xtc", "张三", f"消息{i:02d}")
+        check("初始 3 个分库", ml.shard_count() == 3, f"shards={ml.shard_count()}")
+
+        # read_shards=3 重新打开，且 shard_size 调大（分库都没写满 -> 不会立刻轮换）
+        ml2 = MessageLog(path=str(base), cap=0, shard_size=50, read_shards=3)
+        check("多分库加载后写盘起点指向最新分库", ml2._cur_start == 10,
+              f"_cur_start={ml2._cur_start}")
+        ml2.append("xtc", "张三", "消息16")
+        third = json.loads((root / f"{prefix}shard-0003.json").read_text(encoding="utf-8"))
+        texts = [e["text"] for e in third]
+        check("最新分库不含更老分库的内容",
+              len(third) == 6 and "消息01" not in texts and "消息06" not in texts,
+              f"{len(third)} 条: {texts[:3]}")
+        check("历史查询完整且无重复",
+              [e["text"] for e in ml2.recent(16)] == [f"消息{i:02d}" for i in range(1, 17)],
+              str([e["text"] for e in ml2.recent(16)])[:120])
+
+        # 反复"重启 + 写入"不会让分库越来越大
+        for round_no in range(3):
+            m = MessageLog(path=str(base), cap=0, shard_size=50, read_shards=3)
+            m.append("xtc", "张三", f"轮次{round_no}")
+        sizes = [(p.name, len(json.loads(p.read_text(encoding="utf-8"))))
+                 for p in sorted(root.glob(f"{prefix}shard-*.json"))]
+        check("多轮重启后各分库条数不膨胀", all(n <= 50 for _, n in sizes), str(sizes))
+
+        # 内存上界：设了 cap 时，内存最多保留 cap 条（按整个分库丢弃更老的）
+        big = MessageLog(path=str(root / f"{prefix}big.json"), cap=60,
+                         shard_size=20, read_shards=1)
+        for i in range(500):
+            big.append("xtc", "张三", f"b{i}")
+        check("内存占用有上界（不超过 cap + 一个分库）",
+              0 < big.memory_entries() <= 60 + 20, f"memory={big.memory_entries()}")
+        check("内存收窄后条数仍与磁盘一致", big.count() <= 60 + 20,
+              f"count={big.count()}")
+        check("内存收窄后 seen 命中最新分库", big.seen("b499") is True)
+        check("内存收窄后 recent 顺序正确",
+              [e["text"] for e in big.recent(3)] == ["b497", "b498", "b499"],
+              str([e["text"] for e in big.recent(3)]))
+
+        # cap=0（不限制）：不裁剪内存，seen() 仍可回溯到本进程写入的最早一条
+        unlimited = MessageLog(path=str(root / f"{prefix}unl.json"), cap=0,
+                               shard_size=20, read_shards=1)
+        for i in range(500):
+            unlimited.append("xtc", "张三", f"u{i}")
+        check("cap=0 表示不限制（分库模式）", unlimited.count() == 500,
+              f"count={unlimited.count()}")
+        check("cap=0 时 seen 仍能回溯到最早", unlimited.seen("u0") is True)
+
+        # cap 生效时被删掉的分库不应再算进条数
+        capped = MessageLog(path=str(root / f"{prefix}cap.json"), cap=40,
+                            shard_size=20, read_shards=3)
+        for i in range(200):
+            capped.append("xtc", "张三", f"c{i}")
+        check("cap 生效后条数不超过上限+一个分库",
+              capped.count() <= 40 + 20, f"count={capped.count()}")
+        check("cap 生效后内存同样收窄", capped.memory_entries() <= 3 * 20 + 1,
+              f"memory={capped.memory_entries()}")
+
+        # 写盘失败不再静默（磁盘满/目录只读时，判定库会悄悄停止更新）
+        blocker = root / f"{prefix}blocker"
+        blocker.write_text("x", encoding="utf-8")
+        bad = MessageLog(path=str(blocker / "msg_log.json"), cap=0, shard_size=0)
+        bad.append("xtc", "张三", "写不进去")
+        check("写盘失败会记录原因（不再静默）", bool(bad.last_error), bad.last_error[:80])
+    finally:
+        cleanup(root)
+
+
+def test_media_bubble_label_match_does_not_crash() -> None:
+    """xtc-01（P0）：带时间标签定位图片/表情气泡时必然 AttributeError。
+
+    `_pick_bubble` 调的 `self._abs_time_label(...)` 只定义在桥接的 mixin 上，而
+    `Xiaotiancai` 并不继承它 —— 于是**只要这条消息带时间标签**（每个时间组的第一条
+    必然带）就抛 AttributeError，并被 forwarding._locate 的 `except Exception` 吞成一行
+    debug 日志，同时跳过它下面的三级兜底：照片拿不到气泡截图 -> 反复重试到超时 ->
+    QQ 只收到"图片"两个字。修法：两侧共用 utils.timelabel 的归一化实现。
+    """
+    import inspect
+
+    from xtc_qq_bridge.bridge import media as media_mod
+    from xtc_qq_bridge.utils import timelabel
+
+    xtc = Xiaotiancai(FakeAdb(), {"ui": {}}, logger=None)
+    check("界面层确实没有桥接的 _abs_time_label（不能依赖它）",
+          not hasattr(xtc, "_abs_time_label"))
+    items = [{"image": True, "text": "图片", "own_label": "昨天 21:30", "time_label": ""},
+             {"sticker": True, "text": "表情弹吉他", "own_label": "",
+              "time_label": "昨天 21:30"}]
+    want = timelabel.abs_label("昨天 21:30")
+    try:
+        hit = xtc._pick_bubble(items, "image", "图片", want)
+        hit2 = xtc._pick_bubble(items, "sticker", "表情弹吉他", want)
+    except AttributeError as e:
+        hit = hit2 = None
+        check("带标签定位不再抛 AttributeError", False, str(e))
+    else:
+        check("带标签定位不再抛 AttributeError", True)
+    check("相对标签（昨天 21:30）能匹配绝对标签", hit is not None, str(hit))
+    check("表情气泡同样能按标签定位到", hit2 is not None, str(hit2))
+    check("不传标签时仍能定位到最新那条",
+          xtc._pick_bubble(items, "image", "图片") is items[0])
+    # 归一化实现只留一份：桥接层必须已改为委托 utils.timelabel，避免两份代码漂移
+    src = inspect.getsource(media_mod)
+    at = src.find("def _abs_time_label")
+    check("桥接层的时间归一化已改为共用 utils.timelabel",
+          at > 0 and "timelabel.abs_label" in src[at:at + 900], src[at:at + 200])
+
+
 def main() -> int:
     for fn in (test_history_source_tags, test_history_source_from_plugin_payload,
+               test_media_bubble_label_match_does_not_crash,
                test_about_command_both_sides,
                test_command_not_repeated, test_login_detection,
                test_password_field_masked, test_login_progress_not_failure,
@@ -6162,6 +6311,7 @@ def main() -> int:
                test_backlog_walk_until_known,
                test_repeated_message_is_forwarded_again, test_backlog_runs_without_contact,
                test_msg_log_sharding_and_cap,
+                test_msg_log_read_shards_and_memory_bound,
                test_logger_tolerant_stream):
         print(f"--- {fn.__name__} ---")
         try:

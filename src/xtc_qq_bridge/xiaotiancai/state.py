@@ -54,7 +54,13 @@ class StateMixin:
         try:
             # 弹窗优先：弹窗盖在上面时，dump 出来的往往只有弹窗本身（下面的聊天页
             # 无法读取），若先判聊天页会得出错误结论，所以先认弹窗、把它关掉再说。
+            # 注意 Dialog/PopupWindow **不会**改变当前 Activity，dump 里聊天页也还在，
+            # 所以必须单独用 `_looks_like_dialog` 认系统对话框（android:id/parentPanel
+            # + button1/button2 这类）；否则弹窗被当成聊天页，`settle()` 永远不执行，
+            # 表现为"消息能读、发送却条条失败"，日志里也不提示有弹窗。
             if self._looks_like_popup(root, self.current_activity()):
+                return self.STATE_POPUP
+            if self._looks_like_dialog(root, self.current_activity()):
                 return self.STATE_POPUP
             if self.looks_like_chat_page(root):
                 return self.STATE_CHAT

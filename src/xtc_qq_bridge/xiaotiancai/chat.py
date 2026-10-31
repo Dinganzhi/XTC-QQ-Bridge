@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .constants import *  # noqa: F401,F403
+from ..utils import timelabel
 
 
 def _norm_name(text: str) -> str:
@@ -12,6 +13,40 @@ def _norm_name(text: str) -> str:
 
 class ChatMixin:
     """聊天相关：打开会话、联系人查找、读取消息、历史与命令轮询"""
+
+    def _own_side_ratio(self) -> float:
+        """右侧（自己发的气泡）的起始比例：默认 0.55，可用 `xiaotiancai.ui.own_side_ratio` 调整。
+
+        横屏/平板/折叠屏/不同分辨率机型上聊天栏的位置不一样，固定 0.55 会把己方气泡判成
+        对方发来的（表现为：家长自己说的话被当成孩子消息转发回 QQ，形成回声）。
+        """
+        try:
+            return max(0.30, min(0.90, float(self.ui.get("own_side_ratio", 0.55))))
+        except (TypeError, ValueError):
+            return 0.55
+
+    def _chat_screen_w(self, root) -> int:
+        """屏幕宽度：优先用**本次 dump 自己的几何**，取不到才去问 adb。
+
+        为什么不用 `adb.get_screen_size()`：`wm size` 查询失败时控制器会回落到内置的
+        1920x1080（旧版本还会把这个兜底值永久缓存），于是 1366x768 / 1080x1920 的设备上
+        阈值被算成 1056，而右对齐的己方气泡中心往往只有 800~1000 —— 己方消息被当成
+        对方发来的，转发回 QQ 就成了回声。
+        """
+        try:
+            w = 0
+            for n in root.iter("node"):
+                b = self._bounds(n)
+                if b and b[2] > w:
+                    w = max(w, b[2])
+            if w >= 200:
+                return int(w)
+        except Exception:  # noqa: BLE001 几何解析失败就退回 adb 查询
+            pass
+        try:
+            return int(self.adb.get_screen_size()[0])
+        except Exception:  # noqa: BLE001
+            return 1920
 
     @staticmethod
     def _id_tail(node) -> str:
@@ -431,7 +466,7 @@ class ChatMixin:
         - 时间标签取气泡上方最近的日期节点（tv_chat_msg_item_date，如 "06:56" / "昨天 23:42"）。
         注意：最新消息可能被输入栏遮挡（y 超出输入栏顶部），因此不做输入栏边界裁剪。
         """
-        screen_w = self.adb.get_screen_size()[0]
+        screen_w = self._chat_screen_w(root)
         filter_own = bool(self.ui.get("filter_own_bubbles", True))
         junk = set(self.ui.get("chat_junk_texts", _DEFAULT_JUNK))
         # 收集时间标签（按 y 排序，供气泡取最近上方标签）；压缩 dump 里退化成从
@@ -468,7 +503,7 @@ class ChatMixin:
                 # 无标注：按左右位置判断（自己发=右侧跳过）
                 if t in junk:
                     continue
-                if filter_own and center_x > screen_w * 0.55:
+                if filter_own and center_x > screen_w * self._own_side_ratio():
                     continue  # 右侧气泡 = 自己发的消息
             # 图片消息（照片）：气泡是 ImageView、没有文字，desc 里写"图片消息，双击查看"
             # （图片还没下完时 desc 可能只有"XX发的消息"）。以前这类消息 text 为空 -> 被
@@ -644,7 +679,7 @@ class ChatMixin:
         - include_own=False 时跳过自己发的消息。
         返回 [{text, is_own, contact, time_label, y_bottom}]。
         """
-        screen_w = self.adb.get_screen_size()[0]
+        screen_w = self._chat_screen_w(root)
         filter_own = bool(self.ui.get("filter_own_bubbles", True))
         junk = set(self.ui.get("chat_junk_texts", _DEFAULT_JUNK))
         dates: list[tuple[int, int, str]] = self._time_labels(root)
@@ -683,8 +718,13 @@ class ChatMixin:
                 if not t and desc_body:
                     t = desc_body                      # 表情/语音等从 desc 取类型
             else:
-                # 无标注：右侧气泡 = 自己发的消息
-                is_own = filter_own and center_x > screen_w * 0.55
+                # 无标注：右侧气泡 = 自己发的消息。
+                # `is_own` **只按位置算**，不受 filter_own_bubbles 影响：这个开关的语义是
+                # "要不要把自己发的气泡也收进来"（由调用方的 include_own 决定过滤），
+                # 而不是"不判断谁发的"。此前写成 `filter_own and ...`，于是关掉开关后
+                # is_own 恒为 False，`_own_texts_in_chat` 返回空 —— 家长侧在小天才里
+                # 输入的 `/小天才 …` 命令整体失效。
+                is_own = center_x > screen_w * self._own_side_ratio()
             # 类型只按**气泡本身**判断（见 _bubble_kind）：表情/照片/文本三选一。
             # 注意传的是气泡**原始** text（`t` 可能已经被 desc 内容替换过）。
             kind = self._bubble_kind(cls, n.get("text", ""), desc, b)
@@ -757,10 +797,15 @@ class ChatMixin:
         `match_label` 可能是**绝对**标签（补发路径传的是 `10-19 21:30`），而界面上的标签
         是相对的（`昨天 21:30`）—— 两边都归一化成绝对时间再比，否则永远匹配不上
         （实测：图片因此被判成"界面上未找到气泡"，补发失败）。
+
+        归一化用的是 `utils.timelabel`（与桥接层同一份实现）：此前这里调的是
+        `self._abs_time_label`，而该方法只存在于桥接的 mixin 上，`Xiaotiancai` 根本没有它
+        —— 只要带了时间标签就抛 AttributeError，并被上层 `except Exception` 吞成
+        "界面上找不到气泡"，连带跳过后面所有兜底（照片/表情因此退化成纯文字）。
         """
         want = (text or "").strip()
         want_lbl = (match_label or "").strip()
-        want_abs = (self._abs_time_label(want_lbl) or want_lbl) if want_lbl else ""
+        want_abs = timelabel.abs_label(want_lbl) if want_lbl else ""
         hit = None
         for it in items:                      # 已按 y 从小到大（旧->新）
             if not it.get(flag):
@@ -775,7 +820,7 @@ class ChatMixin:
                     if not c:
                         continue
                     if c == want_lbl or (want_abs and
-                                         (self._abs_time_label(c) or c) == want_abs):
+                                         (timelabel.abs_label(c) or c) == want_abs):
                         matched = True
                         break
                 if not matched:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .shared import *  # noqa: F401,F403
+from ..utils import timelabel
 
 
 class HistoryMixin:
@@ -159,71 +160,7 @@ class HistoryMixin:
         'HH:MM'->今天；'今天'/'昨天'/'前天 HH:MM'->对应日期；'星期X HH:MM'->最近的那个星期X；
         'M月D日 HH:MM'、'09-25 16:18'、'2026-09-25 16:18'->该日期。
         解析失败返回 None（归档时用当前时间兜底）。"""
-        label = (time_label or "").strip()
-        if not label:
-            return None
-        now = now or datetime.now()
-        # 已经是绝对时间：09-25 16:18 / 2026-09-25 16:18 / 2026/09/25 16:18
-        m = re.search(r"(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})[\sT]+(\d{1,2}):(\d{2})", label)
-        if m:
-            try:
-                dt = now.replace(year=int(m.group(1)) if m.group(1) else now.year,
-                                 month=int(m.group(2)), day=int(m.group(3)),
-                                 hour=int(m.group(4)), minute=int(m.group(5)),
-                                 second=0, microsecond=0)
-            except ValueError:
-                return None
-            if not m.group(1) and dt > now + timedelta(days=1):
-                dt = dt.replace(year=dt.year - 1)   # 没写年份且落在未来 -> 通常是去年的
-            return dt.timestamp()
-        # "今天 16:18" / "今日 16:18"
-        m = re.fullmatch(r"(?:今天|今日)\s*(\d{1,2}):(\d{2})", label)
-        if m:
-            return now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                               second=0, microsecond=0).timestamp()
-        m = re.fullmatch(r"(\d{1,2}):(\d{2})", label)
-        if m:
-            dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                             second=0, microsecond=0)
-            if dt > now + timedelta(minutes=2):
-                # 只有时分、却落在**未来**：那只能是**昨天**那条 —— App 的分组标签跨零点后
-                # 还画着旧样子（实测 10-15 16:23 的表情在 10-16 00:00 又出现一次，
-                # 被算成"今天 16:23"：身份变了 -> 重复转发，时间也标错一天）。
-                # 消息不可能来自未来，所以这里一律回退一天。
-                dt -= timedelta(days=1)
-            return dt.timestamp()
-        m = re.fullmatch(r"(昨天|前天)\s*(\d{1,2}):(\d{2})", label)
-        if m:
-            days_back = 1 if m.group(1) == "昨天" else 2
-            return (now - timedelta(days=days_back)).replace(
-                hour=int(m.group(2)), minute=int(m.group(3)),
-                second=0, microsecond=0).timestamp()
-        # "星期一 16:18" -> 最近一个已经过去的那个星期几
-        m = re.search(r"星期([一二三四五六日天])", label)
-        if m:
-            tm = re.search(r"(\d{1,2}):(\d{2})", label)
-            idx = "一二三四五六日天".index(m.group(1)) + 1        # 周一=1 ... 周日=7
-            days_back = (now.isoweekday() - idx) % 7
-            dt = (now - timedelta(days=days_back)).replace(
-                hour=int(tm.group(1)) if tm else 0,
-                minute=int(tm.group(2)) if tm else 0, second=0, microsecond=0)
-            if dt > now:
-                dt = dt - timedelta(days=7)
-            return dt.timestamp()
-        m = re.search(r"(\d{1,2})月(\d{1,2})日", label)
-        if m:
-            tm = re.search(r"(\d{1,2}):(\d{2})", label)
-            try:
-                dt = now.replace(month=int(m.group(1)), day=int(m.group(2)),
-                                 hour=int(tm.group(1)) if tm else 0,
-                                 minute=int(tm.group(2)) if tm else 0,
-                                 second=0, microsecond=0)
-            except ValueError:
-                return None
-            if dt > now + timedelta(days=1):
-                dt = dt.replace(year=dt.year - 1)   # 只写月日且落在未来 -> 去年
-            return dt.timestamp()
-        return None
+        return timelabel.label_epoch(time_label, now)
 
     def _xtc_usage(self) -> str:
         return self._XTC_USAGE
