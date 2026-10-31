@@ -215,7 +215,12 @@ def main() -> None:
         log.info(f"XTC-QQ-Bridge {__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
-        log.info(f"日志文件: {log.handlers[-1].baseFilename if log.handlers else '-'}")
+        # 只在真的有文件处理器时取文件名：日志文件打不开时 setup_logger 会退化成
+        # 只输出到控制台，此时 handlers[-1] 是 StreamHandler，取 baseFilename 会
+        # 直接抛 AttributeError —— "日志写不了不致命"反而变成启动崩溃。
+        _fh = next((h for h in reversed(log.handlers)
+                    if isinstance(h, logging.FileHandler)), None)
+        log.info(f"日志文件: {_fh.baseFilename if _fh else '（本次未能创建日志文件，仅输出到控制台）'}")
         log.info(f"速度档位: {_profile}（已应用 {len(_filled)} 项默认值；"
                  f"可通过 config.yaml -> performance.profile 修改，单独指定某项可覆盖档位设置）")
         if _pinned:
@@ -238,7 +243,9 @@ def main() -> None:
                         dump_retries=int(adb_cfg.get("dump_retries", 2) or 2),
                         dump_delay=float(adb_cfg.get("dump_delay", 0.8) or 0.8),
                         focus_ttl=float(adb_cfg.get("focus_cache_ttl", 1.5) or 0.0),
-                        dump_timeout=float(adb_cfg.get("dump_timeout", 60) or 60))
+                        dump_timeout=float(adb_cfg.get("dump_timeout", 60) or 60),
+                        # 原样传下去，由控制器做类型兜底（写错值不会让启动崩溃）
+                        dump_deadline=adb_cfg.get("dump_deadline", 0.0) or 0.0)
 
     if args.debug == "dump-ui":
         from tools import dump_ui

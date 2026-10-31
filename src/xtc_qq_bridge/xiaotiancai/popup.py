@@ -12,19 +12,54 @@ class PopupMixin:
         """公开别名：多轮清理所有可识别的弹窗/遮挡，直到界面干净。"""
         return self.settle()
 
-    def settle(self, max_passes: int = 6) -> bool:
+    def settle(self, max_passes: int = 0) -> bool:
         """多轮弹窗清理：权限/无响应/更新/网络/警告/通用对话框/BACK 兜底。
-        任何一轮处理了内容就继续下一轮，直到界面干净或达到轮数上限。"""
+        任何一轮处理了内容就继续下一轮，直到界面干净或达到轮数上限。
+
+        `max_passes` 默认取 `xiaotiancai.popup.max_passes`（6）。轮数上限之外还要
+        加一道"原地踏步"闸门：`_popup_tries` 计数只保护通用弹窗兜底那一个分支，其余
+        分支都是"点一下就返回 True"，于是同一个点不掉的弹窗（动画未结束/点击被吞/
+        点了"稍后再说"又弹回来）会把 6 轮全部用完 —— 实测每轮一次 dumpsys + 一次
+        ~3 秒的 dump，合计把操作锁占住约 20 秒，期间 QQ→手表的发送全部排队。
+        """
+        try:
+            max_passes = int(max_passes or self.popup.get("max_passes", 6) or 6)
+        except (TypeError, ValueError):
+            max_passes = 6
+        max_passes = max(1, min(max_passes, 20))
+        try:
+            delay = max(0.0, float(self.popup.get("pass_delay", 0.5)))
+        except (TypeError, ValueError):
+            delay = 0.5
         handled_any = False
+        last_sig: str | None = None
+        i = -1
         for i in range(max_passes):
             if self._dismiss_blockers():
                 handled_any = True
-                time.sleep(0.5)
+                # `_dismiss_blockers` 每轮都会 dump 一次，因此这里的快照是"本轮点击之前"
+                # 的界面：两轮完全一样 = 上一次点击毫无效果，再点也点不掉，直接收手。
+                sig = self._snapshot_signature()
+                if sig is not None and sig == last_sig:
+                    self.log("debug", "弹窗点了没有变化（同一个遮挡反复出现），停止重复点击")
+                    break
+                last_sig = sig
+                time.sleep(delay)
                 continue
             break
         if handled_any:
             self.log("debug", f"弹窗清理完成（共处理 {i + 1} 轮内的可识别遮挡）")
         return handled_any
+
+    def _snapshot_signature(self) -> str | None:
+        """当前界面快照的指纹（用于判断"点了没反应"）；拿不到快照返回 None。"""
+        try:
+            snap = getattr(self, "_snapshot", None)
+            if snap is None:
+                return None
+            return f"{len(ET.tostring(snap))}:{hash(ET.tostring(snap))}"
+        except Exception:  # noqa: BLE001 指纹算不出来就不做这道判断
+            return None
 
     def _dismiss_blockers(self) -> bool:
         """处理单轮可识别的弹窗/遮挡，返回是否处理过。
@@ -244,8 +279,13 @@ class PopupMixin:
     def _popup_blocked(self, node) -> bool:
         """这个控件是不是"危险按钮"（点了会真的下载/安装/更新/重启）。
 
-        判定顺序：id 末段是正向按钮 -> 禁点；文案带否定词（不/稍后/取消…）-> 安全；
-        文案命中禁点词 -> 禁点。
+        判定顺序：id 末段是正向按钮 -> 禁点；文案命中禁点词 -> 禁点；
+        文案带否定词（不/稍后/取消…）-> 安全。
+        **禁点词必须先于否定词**：`_POPUP_SAFE_WORDS` 里有单字 "不"/"暂"/"去"，
+        而危险按钮的文案经常同时含它们（"不同意并安装"、"暂不安装，去升级"）。
+        先判否定词就会把这类按钮当成安全按钮、真的点下去 —— 一旦触发安装/升级，
+        App 版本一变界面结构全废，整条桥接随之失效。宁可少点一次（不处理弹窗），
+        也不能点错一次。
         """
         if node is None:
             return True
@@ -254,9 +294,9 @@ class PopupMixin:
         text = (node.get("text") or "").strip()
         if not text:
             return False
-        if any(w in text for w in _POPUP_SAFE_WORDS):
-            return False
-        return any(w in text for w in self._popup_block_texts())
+        if any(w in text for w in self._popup_block_texts()):
+            return True
+        return False
 
     def _find_popup_negative(self, root: ET.Element):
         """找弹窗里"安全的负向按钮"（不更新/稍后/取消），找不到返回 None。

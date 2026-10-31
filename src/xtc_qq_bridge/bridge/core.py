@@ -46,7 +46,8 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             path=str(runtime_paths.data_path("msg_log.json")),
             cap=int(_ml.get("cap", 5000) or 0),                # 0 = 不限制
             shard_size=int(_ml.get("shard_size", 2000) or 0),  # 0 = 不分库（单文件）
-            read_shards=int(_ml.get("read_shards", 1) or 1))   # 默认只加载最新分库
+            read_shards=int(_ml.get("read_shards", 1) or 1),   # 默认只加载最新分库
+            logger=logger)                                     # 写盘失败要能看见
         self._poll_interval = float((cfg.get("xiaotiancai") or {}).get("check_interval", 2))
         self._heartbeat_interval = float((cfg.get("adb") or {}).get("heartbeat_interval", 10))
         self._login_check_interval = float(
@@ -460,7 +461,12 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                             continue
 
                 if not self._op_lock.acquire(blocking=False):
-                    continue  # 正在发送/导航，跳过本轮，避免 dump 冲突
+                    # 正在发送/导航，跳过本轮，避免 dump 冲突。
+                    # 必须小睡一下再 continue：否则会跳过循环末尾的 sleep，变成
+                    # "每秒 8 万次尝试加锁"的空转（实测 1.01 秒 86006 次），
+                    # 单核跑满并且和持锁的发送任务抢 GIL，反而把发送拖慢。
+                    time.sleep(0.2)
+                    continue
                 try:
                     # 恢复检测：安全验证完成后自动确认并通知（无需重启）
                     if self._pending_login_notify:
@@ -570,14 +576,31 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     # 事件身份 = 文本 + **绝对时间**（把 App 的"今天/昨天/星期X"标签统一成
                     # MM-DD HH:MM）。用 App 原始标签当身份会出事：同一条消息隔天标签从
                     # "16:18" 变成 "昨天 16:18"，于是一条旧消息会被当成新消息重复转发。
+                    # **类型一律以气泡本身为准**：实测手打了一条内容就是"表情"的文本，
+                    # 按前缀判成表情包后等了 10 分钟，最后发出一条没有图的"[表情]"（空气消息）。
+                    # 优先用 `latest_kind()`：它与上面那条 text 来自**同一次解析**；
+                    # 只有它无法取得（空）时才回退到拿界面再核对一遍。
+                    # 提前到去重判定之前：媒体消息的身份是内容哈希，不能按"文本 + 无标签"
+                    # 去撞消息库（见下面 is_media 的说明）。
+                    kind = ((self.xtc.latest_kind() if text else "") or
+                            (self.xtc.message_kind(root, text) if text else "text"))
+                    is_media = kind in ("sticker", "image")
                     raw_label = (time_label or "").strip()
                     label = self._abs_time_label(raw_label) or raw_label
                     key = ("xtc", contact or "", text, label)
                     dup = (self.history.seen(*key) or self.dedup.seen(key)
                            or self.echo.is_echo(text)
                            or self._forward_suppressed(contact, text, label))
-                    if not dup and not label:
-                        # 无法读取时间标签时只能按文本保守判定：宁可不重发，也不要反复刷同一条
+                    if not dup and not label and not is_media:
+                        # 无法读取时间标签时只能按文本保守判定：宁可不重发，也不要反复刷同一条。
+                        # **媒体消息不参与这条判定**：App 给所有照片的文本都是""、
+                        # 所有语音都是""，而它只在时间组的第一条消息上画时间标签 ——
+                        # 于是第二张照片的身份只剩 ("xtc", 联系人, "", "")，
+                        # 一撞消息库里上一条"图片"就被永久静默丢弃（用户实测：连发两张照片，
+                        # QQ 只收到第一张，日志里一行提示都没有）。
+                        # 媒体的去重交给下面取到原图后的内容哈希：同一张 -> 哈希相同 -> 跳过；
+                        # 不同张 -> 哈希不同 -> 正常转发；取不到图 -> 进 _pending_media 重试队列，
+                        # 不会每轮重复转发。
                         dup = self.msgs.seen(text, "xtc")
                     # 太旧的积压消息不再转发（用户实测："九点四十八分才发了个四点半的消息"）：
                     # 它必然排在已发过的更新消息后面 = 错位。记进历史，别每轮再翻出来。
@@ -600,13 +623,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     # 图片/表情：媒体（原图/贴纸）可能**还没下载完**（App 先画出占位图，
                     # 原图要过几秒~几分钟才落盘）。这时不能马上按"文字"转发 ——
                     # 否则 QQ 只会收到"图片"两个字（用户实测：22:12 检测到、22:19 原图才出现）。
-                    # **类型一律以气泡本身为准**：实测手打了一条内容就是"表情"的文本，
-                    # 按前缀判成表情包后等了 10 分钟，最后发出一条没有图的"[表情]"（空气消息）。
-                    # 优先用 `latest_kind()`：它与上面那条 text 来自**同一次解析**；
-                    # 只有它无法取得（空）时才回退到拿界面再核对一遍。
-                    kind = ((self.xtc.latest_kind() if text else "") or
-                            (self.xtc.message_kind(root, text) if text else "text"))
-                    is_media = kind in ("sticker", "image")
+                    # （kind/is_media 已在上面的去重判定之前算好，这里不重复计算）
                     mkey = self._fwd_key(contact, text, label)
                     if not dup and is_media and mkey in self._pending_media:
                         dup = True          # 本轮静默跳过：在等媒体/重试中，不转发也不重复输出日志

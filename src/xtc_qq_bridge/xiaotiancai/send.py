@@ -396,6 +396,18 @@ class SendMixin:
         base = self.recent_snapshot()
         if base is None:
             return False, "无可用界面快照（无法取得发送前基线）"
+        # 输入框里还留着东西就不能盲打：ADBKeyBoard 是**在光标处追加**，不会替换，
+        # 于是"上次失败的残留 + 这次的新内容"会被拼成一条发出去；而复核用的是
+        # `needle in 气泡文本`，拼接后的气泡**包含**新内容 -> 判成功 -> 桥接记"发送成功"，
+        # 手表收到的却是一条脏消息，且永远不会被纠正。
+        # 复用上面已经取到的快照做这道闸门，零额外 dump。
+        try:
+            _edit = self._find_input(base)
+            _left = self._input_text_of(_edit).strip() if _edit is not None else ""
+        except Exception:  # noqa: BLE001 判定失败就保守走稳妥流程
+            _left = ""
+        if _left:
+            return False, "输入框里还有上次没清掉的内容（改为走稳妥流程，会先清空）"
         self._blind = {
             "text": text,
             "base_fail": self._fail_signature(base),

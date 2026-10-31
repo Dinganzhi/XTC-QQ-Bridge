@@ -17,6 +17,10 @@
 首次开启分库时会把老的 `msg_log.json` 自动迁移成 `0001` 号分库）。
 
 效率：追加时只重写**当前分库**（≤ shard_size 条），不像单文件那样每次重写全量。
+
+内存：常驻进程最多在内存里保留 `cap` 条（分库轮换时按整个分库丢弃更老的，需要时由
+`_all_locked()` 惰性从磁盘补齐），因此内存占用有上界，不随运行时长无限增长；
+`cap=0`（不限制）时全部保留，与单文件模式一致。
 """
 from __future__ import annotations
 
@@ -32,22 +36,43 @@ _SHARD_DIGITS = 4
 
 class MessageLog:
     def __init__(self, path: str = "", cap: int = 1000, shard_size: int = 0,
-                 read_shards: int = 1):
+                 read_shards: int = 1, logger=None):
         # 默认放可写数据目录：Nuitka onefile 下是 exe 旁边，而不是退出即删的临时目录
         self.path = Path(path) if path else runtime_paths.data_path("msg_log.json")
         self.cap = max(0, int(cap))                 # 0 = 不限制
         self.shard_size = max(0, int(shard_size))   # 0 = 不分库
         self.read_shards = max(1, int(read_shards))
+        self.logger = logger
         self._lock = threading.Lock()
         # 已加载的分库内容（旧 -> 新）；默认只有最新 read_shards 个
         self._entries: list[dict] = []
-        # 当前分库在 _entries 里的起点（新写入只落在这个分库）
-        self._cur_start = 0
-        self._current: Path | None = None
-        # _entries 里最老的那个分库序号（用于惰性补齐更老的分库时不重复计数）
-        self._loaded_first_seq = 0
+        # 内存中各分库的边界：[(分库序号, 该分库在 _entries 里的起始下标)]，旧 -> 新。
+        # 序号 0 表示"不分库"时的 msg_log.json 本身。
+        # `_cur_start` / `_current` / `_loaded_first_seq` 都由它推导（唯一真相来源），
+        # 避免多份状态不同步 —— 曾经因为 `_cur_start` 写死为 0，在 read_shards>1 时
+        # 把更老分库的内容一并写进最新分库文件（历史消息出现重复，且每轮重启翻倍）。
+        self._mem_shards: list[tuple[int, int]] = [(0, 0)]
         self._older: list[dict] | None = None       # 更老的分库（惰性加载，用于历史查询）
+        self._save_warned = False                   # 写盘失败只告警一次
+        self.last_error = ""                        # 最近一次写盘失败原因（诊断用）
         self._load()
+
+    # ------------------------------------------------------------------ 内部状态
+    @property
+    def _cur_start(self) -> int:
+        """当前分库在 `_entries` 里的起始下标（写盘只写这一段）。"""
+        return self._mem_shards[-1][1]
+
+    @property
+    def _current(self) -> Path:
+        """当前分库文件（不分库时就是 msg_log.json）。"""
+        seq = self._mem_shards[-1][0]
+        return self.path if not seq else self._shard_path(seq)
+
+    @property
+    def _loaded_first_seq(self) -> int:
+        """内存里最老那个分库的序号（惰性补齐更老分库时的分界）。"""
+        return self._mem_shards[0][0]
 
     # ------------------------------------------------------------------ 分库文件
     def _shard_files(self) -> list[Path]:
@@ -87,54 +112,73 @@ class MessageLog:
             except Exception:  # noqa: BLE001 迁移失败就按现状继续
                 pass
         files = self._shard_files()
+        self._older = None
         if files:
             # 只要磁盘上已经有分库文件就按分库读（哪怕本实例没开分库）：
             # 否则只读工具（live_probe / 历史消息）会看到"库是空的"这种假象。
             loaded = files[-self.read_shards:]
             self._entries = []
+            self._mem_shards = []
             for p in loaded:
+                self._mem_shards.append((self._seq(p), len(self._entries)))
                 self._entries.extend(self._read_file(p))
-            self._current = loaded[-1]
-            self._loaded_first_seq = self._seq(loaded[0])
-            self._cur_start = 0
             return
         # 没有分库文件：按单文件处理
         self._entries = self._read_file(self.path) if self.path.exists() else []
-        self._current = self._shard_path(1) if self.shard_size else self.path
-        self._loaded_first_seq = 1 if self.shard_size else 0
-        self._cur_start = 0
+        self._mem_shards = [(1 if self.shard_size else 0, 0)]
         if not self.shard_size and self.cap:
             self._entries = self._entries[-self.cap:]
 
-    def _next_shard(self) -> Path:
-        seqs = []
-        for p in self._shard_files():
-            try:
-                seqs.append(int(p.stem.rsplit("-", 1)[1]))
-            except (IndexError, ValueError):
-                continue
-        return self._shard_path((max(seqs) + 1) if seqs else 1)
+    def _next_seq(self) -> int:
+        seqs = [self._seq(p) for p in self._shard_files()]
+        seqs = [s for s in seqs if s > 0]
+        return (max(seqs) + 1) if seqs else 1
 
     def _save(self) -> None:
         """只重写当前分库（这是分库带来的效率提升）。"""
-        target = self._current or self.path
+        target = self._current
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = Path(str(target) + ".tmp")
             tmp.write_text(json.dumps(self._entries[self._cur_start:], ensure_ascii=False),
                            encoding="utf-8")
             tmp.replace(target)
-        except Exception:  # noqa: BLE001 写盘失败不影响运行
-            pass
+            self.last_error = ""
+        except Exception as e:  # noqa: BLE001 写盘失败不影响运行，但要让用户知道
+            # 静默失败会让"历史消息/是否已处理"的判定库悄悄停止更新（磁盘满、
+            # 目录只读、被杀毒软件占用等），因此首次失败记一条告警。
+            self.last_error = f"{type(e).__name__}: {e}"
+            if not self._save_warned:
+                self._save_warned = True
+                if self.logger is not None:
+                    self.logger.warning(f"消息库写入失败（历史与判重将停留在内存中）: {self.last_error}")
 
     def _rotate_if_needed(self) -> None:
-        """当前分库写满 -> 换新分库。"""
+        """当前分库写满 -> 换新分库（并把更老的分库移出内存）。"""
         if not self.shard_size:
             return
         if len(self._entries) - self._cur_start < self.shard_size:
             return
-        self._current = self._next_shard()
-        self._cur_start = len(self._entries)
+        self._mem_shards.append((self._next_seq(), len(self._entries)))
+        self._trim_memory()
+
+    def _trim_memory(self) -> None:
+        """内存里最多保留 `cap` 条（按整个分库丢弃）；更老的由 `_all_locked()` 惰性读盘。
+
+        为什么要裁剪：常驻进程跑几周后 `_entries` 会积累到几万条，`seen()` 每次都要
+        倒序扫一遍，而磁盘上的老分库其实早已按 cap 删掉。
+        `cap=0`（不限制）时不裁剪 —— 与单文件模式的行为一致，"全部保留"是用户的显式选择。
+        """
+        if not (self.shard_size and self.cap):
+            return
+        while len(self._mem_shards) > 1 and len(self._entries) > self.cap:
+            start = self._mem_shards[1][1]
+            if start <= 0:
+                break
+            del self._entries[:start]
+            self._mem_shards.pop(0)
+            self._mem_shards = [(seq, st - start) for seq, st in self._mem_shards]
+            self._older = None          # 内存边界变了，缓存的"更老分库"要重算
 
     def _enforce_shard_cap(self) -> None:
         """按 cap 删掉最老的分库（分库粒度：最多保留 ceil(cap / shard_size) 个）。
@@ -149,6 +193,15 @@ class MessageLog:
                 p.unlink()
             except OSError:
                 pass
+        # 被删掉的分库若还在内存里，也要一并丢弃（否则 count()/recent() 会算进已删除的数据）
+        existing = {self._seq(p) for p in self._shard_files()}
+        while len(self._mem_shards) > 1 and self._mem_shards[0][0] not in existing:
+            start = self._mem_shards[1][1]
+            if start > 0:
+                del self._entries[:start]
+            self._mem_shards.pop(0)
+            self._mem_shards = [(seq, st - start) for seq, st in self._mem_shards]
+            self._older = None
 
     # ------------------------------------------------------------------ 写入 / 查询
     def append(self, kind: str, sender: str, text: str,
@@ -174,9 +227,7 @@ class MessageLog:
                 "source_id": str(source_id or "").strip(),
             })
             if not self.shard_size and self.cap and len(self._entries) > self.cap:
-                drop = len(self._entries) - self.cap
-                del self._entries[:drop]
-                self._cur_start = max(0, self._cur_start - drop)
+                del self._entries[:len(self._entries) - self.cap]
             self._save()
             self._enforce_shard_cap()
 
@@ -204,8 +255,9 @@ class MessageLog:
             return self._entries
         if self._older is None:
             older = []
+            first = self._loaded_first_seq
             for p in self._shard_files():
-                if self._seq(p) < self._loaded_first_seq:
+                if self._seq(p) < first:
                     older.extend(self._read_file(p))
             self._older = older
         return self._older + self._entries
@@ -235,3 +287,7 @@ class MessageLog:
     def shard_count(self) -> int:
         """分库文件数（诊断用）；单文件模式返回 1。"""
         return len(self._shard_files()) or (1 if self.path.exists() else 0)
+
+    def memory_entries(self) -> int:
+        """常驻内存里的条数（诊断用：应稳定在 read_shards 个分库以内）。"""
+        return len(self._entries)

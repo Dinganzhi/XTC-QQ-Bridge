@@ -42,13 +42,27 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
         self.package = cfg.get("package", "com.xtc.watch")
         self.main_activity = cfg.get("main_activity", ".MainActivity")
         self.ui = cfg.get("ui", {}) or {}
+        # 完整配置与各子段：弹窗/登录这些行为也要能调（此前只有 ui 段可配）
+        self.cfg = cfg
+        self.popup = cfg.get("popup", {}) or {}
+        self.login = cfg.get("login", {}) or {}
         self.logger = logger
         self._cache_path = cache_path or ""
         self._warned_not_login = False
         # 登录态缓存：is_logged_in() 需要 dump 界面（1~2s），轮询每 2s 调一次会明显变慢；
         # 这里按 login_state_ttl 秒缓存，登录动作/启动动作后主动失效。
         self._login_state: tuple[float, bool] | None = None
-        self._login_state_ttl = float(cfg.get("login_state_ttl", 5.0) or 0.0)
+        # 这一项也要兜底：写成 `5秒` 之类的字符串时，此前会直接抛 ValueError 让整个
+        # 桥接起不来，而且 traceback 指向这里、看不出是哪个配置键写错了。
+        try:
+            self._login_state_ttl = max(0.0, float(cfg.get("login_state_ttl", 5.0) or 0.0))
+        except (TypeError, ValueError):
+            self._login_state_ttl = 5.0
+            self._warned_not_login = False
+            try:
+                self.log("warning", "配置 xiaotiancai.login_state_ttl 不是数字，已按 5 秒处理")
+            except Exception:  # noqa: BLE001 初始化期日志失败不影响启动
+                pass
         # 交互路径的等待时间（秒）：默认偏短，可在 ui.interaction_delay 调整
         try:
             self._delay = max(0.1, float(self.ui.get("interaction_delay", 0.6)))

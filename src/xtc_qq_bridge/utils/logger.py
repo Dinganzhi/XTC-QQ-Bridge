@@ -28,7 +28,10 @@ def _resolve(name: str) -> Path:
     """相对路径按"可写数据目录"解析（Nuitka onefile 下日志写在 exe 旁边）。"""
     p = Path(name)
     try:
-        from . import runtime_paths
+        # 注意：本模块在 xtc_qq_bridge.utils 下，runtime_paths 在上一级包里，
+        # 写成 `from . import runtime_paths` 必然 ImportError，于是静默退化成
+        # "按当前工作目录解析"—— 从别的目录启动时日志就写到那里去了。
+        from .. import runtime_paths
         return runtime_paths.log_path(name)
     except Exception:  # noqa: BLE001 单独使用本模块时不强依赖
         return p if p.is_absolute() else Path.cwd() / p

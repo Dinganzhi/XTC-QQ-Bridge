@@ -32,6 +32,7 @@ UI 树解析等能力。
 import base64
 import os
 import re
+import shlex
 import struct
 import subprocess
 import threading
@@ -49,11 +50,16 @@ class ADBController:
                  serial: str = "", timeout: float = 30.0, logger=None,
                  extra_ports: list[int] | None = None,
                  input_retries: int = 2, dump_retries: int = 2, dump_delay: float = 0.8,
-                 focus_ttl: float = 1.5, dump_timeout: float = 60.0):
+                 focus_ttl: float = 1.5, dump_timeout: float = 60.0,
+                 dump_deadline: float = 0.0):
         self.adb_path = find_adb(adb_path)
         self.host = host
         self.port = port
         self.serial = serial
+        # 用户在 config.yaml -> adb.serial 里显式指定的序列号（**只读副本**）。
+        # `self.serial` 会在运行期被自动选设备改写，没有这份副本就再也回不到配置值：
+        # 一次 `get-state` 抖动（容器重启、刚唤醒）就会把桥接悄悄切到另一台设备上。
+        self._serial_cfg = (serial or "").strip()
         self.timeout = timeout
         self.logger = logger or _silent_logger()
         self.extra_ports = [int(p) for p in (extra_ports or []) if int(p) > 0]
@@ -78,6 +84,22 @@ class ADBController:
         self._throttle: dict[str, float] = {}
         # 上次成功的 dump 策略名（见 _dump_strategies）：注意后不再每次都先撞失败
         self._dump_strategy = ""
+        # **一次 dump_ui 调用的总时间上限**（所有策略 + 所有重试加起来）。
+        # 为什么必须有：5 个策略里"file"类每个目录各一次 `dump_timeout`（默认 60s），
+        # `_dump_via_file_combined` 还要 +30s；配 `dump_retries=2` 时单次 dump_ui 最坏
+        # 能耗掉 ~1110 秒（约 18 分钟），而它是在 `_dump_lock` + `_op_lock` 里跑的 ——
+        # 期间所有发送与轮询全部停摆，用户看到的就是"桥接没反应"。
+        # 0/None 表示按默认值 max(45, dump_timeout * 1.5) 计算。
+        try:
+            _dd = float(dump_deadline or 0.0)
+        except (TypeError, ValueError):
+            _dd = 0.0
+        self.dump_deadline = _dd if _dd > 0 else max(45.0, self.dump_timeout * 1.5)
+        self._dump_deadline_ts = float("inf")
+        # 压缩 dump 命中计数：`--compressed` 会把消息时间标签整片裁掉（时间退化成
+        # "当前时间"），所以即为了提速固定用它，也要周期性回头再试一次完整 dump。
+        self._dump_compressed_hits = 0
+        self._dump_compressed_reprobe = 20
         self._sdk: int | None = None
         self._clipboard_ok: bool | None = None
         self._adbkeyboard_ok: bool | None = None
@@ -324,6 +346,11 @@ class ADBController:
                 self._log_throttled(
                     f"state_{self.serial}",
                     f"设备 {self.serial} 状态为 {state or 'unknown'}，重新选择设备", interval=60)
+                if self._serial_cfg:
+                    # 用户显式配置过序列号：绝不把它丢掉换成自动挑选的设备
+                    # （多设备环境下会连到另一台，且此后再也回不到配置值）。
+                    self.serial = self._serial_cfg
+                    return False
                 self.serial = ""
             serials = self.devices()
             if serials:
@@ -342,6 +369,7 @@ class ADBController:
                 self.logger.info(f"尝试连接 (第 {i + 1}/{retries} 次)："
                                  f"候选端口 {self._port_candidates()}")
                 if self.connect():
+                    self.invalidate_probes()   # 设备刚（重）连上：能力探测全部重做
                     return True
             except AdbError as e:
                 self.logger.warning(f"连接失败: {e}")
@@ -383,12 +411,38 @@ class ADBController:
             return ""
 
     def android_sdk(self) -> int:
+        """设备 API 级别；**查询失败不缓存**（返回 0 但不写死）。
+
+        此前失败会被缓存成 `_sdk = 0`，而 0 < 29 让剪贴板注入通道永久关闭 ——
+        设备只是抖动几秒，中文注入却从此只剩 ASCII 的 `input text`，重启才恢复。
+        """
         if self._sdk is None:
+            raw = self.getprop("ro.build.version.sdk")
             try:
-                self._sdk = int(self.getprop("ro.build.version.sdk") or 0)
+                self._sdk = int(raw) if raw.strip() else 0
             except ValueError:
                 self._sdk = 0
+            if not raw.strip():
+                return 0                    # 没读到：本次按 0 处理，但不缓存
         return self._sdk
+
+    def invalidate_probes(self) -> None:
+        """丢弃所有"设备能力探测"的缓存（重连/换设备/设备恢复后调用）。
+
+        这些探测（SDK 级别、ADBKeyBoard 是否可用、剪贴板是否可用、当前输入法、
+        屏幕尺寸与旋转、注入校验是否可用）都是**一次性闩锁**：一旦在设备抖动时
+        探测失败，就会把"不可用"永久记下来，于是桥接在不重启的情况下持续降级
+        （中文发不出去 / 表情走不了剪贴板 / 注入失败被当成成功）。
+        """
+        self._sdk = None
+        self._adbkeyboard_ok = None
+        self._adbkeyboard_b64_ok = None
+        self._clipboard_ok = None
+        self._input_verify_supported = None
+        self._phys = None
+        self._rotation_ts = float("-inf")
+        self.invalidate_ime_state()
+        self.invalidate_focus()
 
     def android_version(self) -> str:
         return self.getprop("ro.build.version.release")
@@ -423,31 +477,48 @@ class ADBController:
         return " | ".join(parts)
 
     def _phys_size(self) -> tuple[int, int]:
-        """物理屏幕尺寸（wm size 报告值，如 1920x1080）。"""
+        """物理屏幕尺寸（wm size 报告值，如 1920x1080）。
+
+        `wm size` 在设置过显示覆盖时会输出两行：
+            Physical size: 1080x1920
+            Override size: 720x1280
+        此时 uiautomator 的 bounds 与 `input tap` 用的都是 **Override** 空间，
+        所以必须优先取 Override（此前取第一个匹配 = Physical，被 `wm size` 改过
+        分辨率的设备上所有坐标/滚动/截图裁剪都会算错）。
+        另外：查询失败时的兜底值**不写进缓存**，否则启动瞬间一次 ADB 抖动就会把
+        1920x1080 钉死到进程结束（且日志里只有启动那一行屏幕尺寸作为线索）。
+        """
         if self._phys is None:
             try:
                 out = self.shell("wm size")
-                m = re.search(r"(\d+)x(\d+)", out)
+                m = (re.search(r"Override size:\s*(\d+)x(\d+)", out)
+                     or re.search(r"Physical size:\s*(\d+)x(\d+)", out)
+                     or re.search(r"(\d+)x(\d+)", out))
                 if m:
                     self._phys = int(m.group(1)), int(m.group(2))
             except AdbError:
                 pass
-            if self._phys is None:
-                self._phys = 1920, 1080
-        return self._phys
+        return self._phys or (1920, 1080)     # 兜底值不缓存，下次仍会重新查询
 
     def _current_rotation(self) -> int:
-        """当前显示旋转：0/90/180/270（缓存 3 秒，dumpsys 查询较慢）。"""
+        """当前显示旋转：0/90/180/270（缓存 3 秒，dumpsys 查询较慢）。
+
+        查询失败时**不写缓存**：此前失败会把 0（横屏假设）缓存 3 秒，竖屏设备上
+        这 3 秒里的滚动距离、左右气泡判定、截图裁剪全部按横屏算。
+        """
         now = time.monotonic()
         if now - self._rotation_ts < 3.0:
             return self._rotation
         try:
             out = self.shell("dumpsys window displays", timeout=20)
-            m = re.search(r"mCurrentRotation=ROTATION_(\d+)", out)
-            self._rotation = int(m.group(1)) if m else 0
+            m = re.search(r"mCurrentRotation=(?:Surface\.)?ROTATION_(\d+)", out) \
+                or re.search(r"mCurrentRotation=(\d+)", out)
+            if m:
+                self._rotation = int(m.group(1))
+                self._rotation_ts = now
+            # 读到了输出但没有匹配：保留上一次已知值，也不刷新时间戳（下轮再试）
         except (AdbError, AttributeError, ValueError):
-            self._rotation = 0
-        self._rotation_ts = now
+            pass                               # 查询失败：沿用上一次的结果
         return self._rotation
 
     def get_screen_size(self) -> tuple[int, int]:
@@ -679,9 +750,26 @@ class ADBController:
                             ("settings put system screen_off_timeout 2147483647", 15),
                             ("settings put system screen_dim_timeout 2147483647", 15)):
             out = self.try_shell(cmd, timeout=timeout)
+            if out is None:                     # adb 命令本身失败（超时/断连）
+                continue
             low = (out or "").lower()
-            if out is not None and "exception" not in low and "error" not in low:
+            if "exception" not in low and "error" not in low:
                 ok = True
+        # `settings put` 在部分镜像上会"成功返回却什么都没写"（SELinux/权限不足），
+        # 而 try_shell 失败时返回的是 ""（不是 None），所以只看返回值的话 ok 恒为 True
+        # —— 桥接以为自己钉住了常亮，实际设备照样息屏，之后每次 dump 都要先唤醒
+        # （单次从 1s 变成 20~45s）。这里回读一次设置值，写不进去就如实报失败。
+        try:
+            v = (self.shell("settings get system screen_off_timeout", timeout=15) or "").strip()
+            if v.isdigit() and int(v) < 600000:      # 小于 10 分钟 => 没写进去
+                ok = False
+                self._log_throttled(
+                    "keep-awake-failed",
+                    f"保持常亮未生效（screen_off_timeout 仍为 {v} 毫秒），"
+                    "设备可能会自动息屏，读取界面将明显变慢；"
+                    "可尝试 root 模式或在容器设置里关闭自动息屏", interval=600)
+        except AdbError:
+            pass                                     # 回读失败不影响判定
         if self.screen_on() is not True:
             self.wake_up()
         # 粘性：一旦见过息屏，就永远"可疑"，之后每次 dump 前都会先确认+唤醒
@@ -895,10 +983,14 @@ class ADBController:
         用途：读小天才 App 可读数据目录里的表情原图（含动图 GIF）——比截图保真得多。
         无法读取（不存在/没权限）返回 b""，不抛异常。
         """
+        # 路径必须转义：设备上的目录名可能带空格或 shell 元字符（App 数据目录名随
+        # 版本变化），拼进 `cat` 会被设备端 shell 二次解释，读不到文件还看不出原因。
         try:
-            out, _ = self._run(["exec-out", f"cat {path}"], timeout=timeout, binary=True)
+            out, _ = self._run(["exec-out", f"cat {shlex.quote(path)}"],
+                               timeout=timeout, binary=True)
             return out or b""
-        except Exception:  # noqa: BLE001 调用方按"没有"处理
+        except Exception as e:  # noqa: BLE001 调用方按"没有"处理
+            self.logger.debug(f"读取设备文件失败 {path}: {e}")
             return b""
 
     # ------------------------------------------------------------------ UI 解析
@@ -954,11 +1046,23 @@ class ADBController:
         detail = (err or "").strip() or (alt or "").strip() or data.strip()
         return "", f"读取 {path} 失败: {self._short_reason(detail) or '文件不存在'}"
 
+    def _budget(self, want: float) -> float:
+        """本次子步骤可用的超时：绝不超过 `dump_deadline` 的剩余预算。
+
+        `_dump_deadline_ts` 由 `_dump_ui_locked` 在每次 dump 开始时重设，只有 dump 的
+        各个策略会用到它（`inf` 表示不限），所以这里不需要恢复状态。
+        """
+        left = self._dump_deadline_ts - time.monotonic()
+        if left <= 0:
+            return 0.5                  # 预算耗尽：让这次调用快速失败，别再拖
+        return max(0.5, min(float(want), left))
+
     def _dump_via_tty(self, compressed: bool = False) -> tuple[str, str]:
         """快路径：`uiautomator dump /dev/tty` 直接把 XML 打到 stdout（一次 shell 调用，不落盘）。"""
         flag = " --compressed" if compressed else ""
         try:
-            out = self.shell(f"uiautomator dump{flag} /dev/tty 2>&1", timeout=self.dump_timeout)
+            out = self.shell(f"uiautomator dump{flag} /dev/tty 2>&1",
+                             timeout=self._budget(self.dump_timeout))
         except AdbError as e:
             return "", f"/dev/tty{flag}: {self._short_reason(str(e))}"
         xml = self._extract_xml(out)
@@ -978,8 +1082,11 @@ class ADBController:
             path = f"{base}/xtc_dump_{os.getpid()}_{int(time.time() * 1000)}.xml"
             try:
                 out = self.shell(f"uiautomator dump{flag} {path} 2>&1; cat {path} 2>&1; rm -f {path}",
-                                 timeout=self.dump_timeout + 30)
+                                 timeout=self._budget(self.dump_timeout + 30))
             except AdbError as e:
+                # 超时/断连时这行 shell 可能停在 rm 之前，文件就留在 /sdcard 上了
+                # （`_dump_via_file` 的同名分支有清理，这里此前漏了）。
+                self.try_shell(f"rm -f {path}", timeout=15)
                 details.append(f"{base}: {self._short_reason(str(e))}")
                 continue
             xml = self._extract_xml(out)
@@ -1020,7 +1127,7 @@ class ADBController:
             try:
                 self.try_shell(f"rm -f {path}", timeout=15)
                 out = self.try_shell(f"uiautomator dump{flag} {path} 2>&1",
-                                     timeout=self.dump_timeout)
+                                     timeout=self._budget(self.dump_timeout))
                 data, why = self._read_dump_file(path)
                 self.try_shell(f"rm -f {path}", timeout=15)
                 if data:
@@ -1124,13 +1231,24 @@ class ADBController:
         details: list[str] = []
         woke = False
         thin: ET.Element | None = None
+        # 整次调用的时间预算：5 个策略 × 多个目录 × 多次重试，最坏能耗掉十几分钟，
+        # 而它全程持有 dump 锁与操作锁（表现为"桥接完全没反应"），必须设上限。
+        self._dump_deadline_ts = time.monotonic() + self.dump_deadline
+        timed_out = False
         # 已知这块屏会睡着：先确认/唤醒，别拿 uiautomator 去试错（省下好几秒）
         if self._screen_suspect and self.screen_on() is False:
             self._log_throttled("screen-off",
                                 "屏幕处于息屏状态，先唤醒再读取界面", interval=120)
             self.wake_up()
         for i in range(retries):
+            if timed_out:
+                break
             for name, fn in self._dump_strategies():
+                if time.monotonic() >= self._dump_deadline_ts:
+                    details.append(f"已达单次界面读取的时间上限 {self.dump_deadline:.0f} 秒"
+                                   f"（adb.dump_deadline 可调），停止继续尝试")
+                    timed_out = True
+                    break
                 xml, why = fn()
                 if xml:
                     root = self._parse_dump(xml)
@@ -1139,6 +1257,18 @@ class ADBController:
                         if self._dump_strategy != name:
                             self.logger.debug(f"UI dump 使用策略: {name}")
                         self._dump_strategy = name
+                        # 压缩 dump 会裁掉消息时间标签（tv_chat_msg_item_date），时间就
+                        # 退化成"桥接读到的时刻"。为了提速固定用它没问题，但每 20 次
+                        # 回头再试一次完整 dump：一旦可用就把时间标签找回来。
+                        if "compressed" in name:
+                            self._dump_compressed_hits += 1
+                            if self._dump_compressed_hits >= self._dump_compressed_reprobe:
+                                self._dump_compressed_hits = 0
+                                self._dump_strategy = ""
+                                self._log_throttled(
+                                    "dump-reprobe",
+                                    "已用压缩 dump 读取多次（消息时间标签会缺失），"
+                                    "本次重新尝试完整 dump", interval=600)
                         return root
                     # 只有 0~2 个节点的"空树"：多数是页面还在切换/刚登录完的过渡帧，
                     # 直接照着它判断会得出"不在聊天页/找不到联系人"的错结论（实机踩过）
@@ -1374,8 +1504,11 @@ class ADBController:
                     pkgs = self.try_shell(f"pm list packages {ADBKEYBOARD_PKG}")
                     self._adbkeyboard_ok = f"package:{ADBKEYBOARD_PKG}" in pkgs
             except AdbError:
-                self._adbkeyboard_ok = False
-        return self._adbkeyboard_ok
+                # 探测失败**不写缓存**：否则一次超时就把"输入法不可用"钉死，
+                # 此后中文注入永远直接返回 False，只有重启进程才能恢复。
+                self.logger.debug("探测 ADBKeyBoard 失败（本次按不可用处理，下次重新探测）")
+                return False
+        return bool(self._adbkeyboard_ok)
 
     def adbkeyboard_ready(self) -> bool:
         return self._adbkeyboard_ready()
@@ -1394,7 +1527,11 @@ class ADBController:
             ok = ADBKEYBOARD_IME in out or (ADBKEYBOARD_PKG in out
                                             and "adbkeyboard" in out.lower())
         except AdbError:
-            ok = False
+            # 探测失败只按很短的 TTL 记一次：按 60 秒缓存"不可用"会让这一分钟里
+            # 每条消息都白跑一次"切换输入法"（3 次 adb + 0.8 秒等待）。
+            self._ime_active_ok = False
+            self._ime_active_ts = now - max(0.0, ttl - 3.0)
+            return False
         self._ime_active_ok = ok
         self._ime_active_ts = now
         return ok
@@ -1449,7 +1586,8 @@ class ADBController:
             try:
                 root = self.dump_ui(retries=1, delay=0.0)
             except AdbError:
-                self._input_verify_supported = False
+                # 读不到界面 ≠ "这个设备不支持校验"：此前会永久置 False，
+                # 于是之后每次注入都直接判成功（发失败也报成功），只能重启恢复。
                 return True
             found_editable = False
             for n in root.iter("node"):
@@ -1460,7 +1598,7 @@ class ADBController:
                     if needle and needle in cur:
                         return True
             if not found_editable:
-                self._input_verify_supported = False
+                # 这一帧没有可编辑控件（语音模式/过渡帧）也只影响本次，不写死
                 return True
             return False
 
