@@ -85,8 +85,11 @@ jobs:
           - os: windows-11-arm
             artifact: windows-arm64
             mode: onefile
-          # macOS（可选，按需删除）
-          - os: macos-14
+          # macOS arm64：GitHub 已于 2026-11-02 退役 macOS 14 的 Arm64 镜像，
+          # 旧写法 `macos-14` 现在只会分到 x64，arm64 job 会立刻失败并报
+          # "configuration 'macos-14-arm64-us-default' is not supported"。
+          # arm64 用 macos-15 / macos-26 / macos-latest（这三者都是 arm64）。
+          - os: macos-15
             artifact: macos-arm64
             mode: onefile
           # macos-13（Intel）已被 GitHub 退役，改用 macos-15-intel

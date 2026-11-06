@@ -1973,7 +1973,7 @@ def test_sticker_media_retry_gives_up_fast() -> None:
                                       adb=None, xtc=None, forwarder=None, logger=None)
         br.msgs = MessageLog(path=str(_paths(root)["msgs"]))
         br._cmd_done_file = str(_paths(root)["done"])
-        key = ("xtc", "屑猹不喝茶", "表情", "10-25 16:25")
+        key = ("xtc", "小宝", "表情", "10-25 16:25")
         br._media_retry_failed(key, "张三", "表情", "10-25 16:25", "10-25 16:25",
                                "界面上是占位图", kind="sticker")
         st = br._pending_media[key]
@@ -1987,7 +1987,7 @@ def test_sticker_media_retry_gives_up_fast() -> None:
               str(br._pending_media[key]))
 
         # 照片不受影响：仍然走原来的长阶梯
-        pkey = ("xtc", "屑猹不喝茶", "图片", "10-25 16:30")
+        pkey = ("xtc", "小宝", "图片", "10-25 16:30")
         br._media_retry_failed(pkey, "张三", "图片", "10-25 16:30", "10-25 16:30", "还没落盘",
                                kind="image")
         st2 = br._pending_media[pkey]
