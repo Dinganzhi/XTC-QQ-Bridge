@@ -38,7 +38,7 @@ adb:
   path: ""                                       # adb 可执行文件路径；留空则自动探测
   host: "127.0.0.1"
   port: 5555                                     # ADB 连接端口（取决于运行环境）
-  extra_ports: []                                # 额外尝试的端口，例如 [58526]
+  extra_ports: []                                # 额外尝试的端口，例如 [16384, 62001]
   serial: ""                                     # 设备序列号；留空则自动选择唯一在线设备
   auto_launch_emulator: false                    # 无法连接时是否自动启动模拟器/容器
   heartbeat_interval: 10                         # 连接状态检查间隔（秒）
