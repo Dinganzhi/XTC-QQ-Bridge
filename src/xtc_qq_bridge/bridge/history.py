@@ -24,6 +24,112 @@ class HistoryMixin:
                              str(source or "")))
         return "queued"
 
+    # ------------------------------------------------------------------ 历史图片取回
+    def fetch_xtc_media(self, code: str, request_id: str = "") -> str:
+        """`/小天才 查看图片 <码>`：把历史里那张图**重新发回 QQ**。
+
+        分成两步（都在工作线程里做，避免和发送抢界面/顺序）：
+          1. 用引用码在消息库里找到对应条目，再从 media_store 读出原始字节；
+          2. 通过转发器把这张图发到配置的 QQ 目标（与当初转发时同一批目标）。
+        返回 'queued'；码无效时也回 'queued'（由工作线程回复"找不到"给用户）。
+        """
+        self._job_queue.put(("history_media", str(code or "").strip(), request_id or ""))
+        return "queued"
+
+    def _do_history_media_job(self, code: str, request_id: str = "") -> None:
+        """工作线程内：查出历史图片并回发 QQ / 写回小天才聊天。"""
+        reply = ""
+        entry = None
+        data = b""
+        try:
+            entry = self.msgs.find_media(code) if code else None
+            if entry is not None:
+                store = getattr(self, "media_store", None)
+                data = store.load(str(entry.get("media") or "")) if store else b""
+        except Exception as e:  # noqa: BLE001 查找失败按"找不到"处理
+            self._log("warning", f"[查看图片] 查找失败: {e}")
+        if entry is None or not data:
+            why = ("没有提供图片编码" if not code
+                   else ("历史里找不到这个编码（可能是编码抄错，或该图已被容量上限清理）"
+                         if entry is None else "图片文件已不在本地（可能已被清理）"))
+            reply = f"查看图片失败：{why}"
+            self._log("info", f"[查看图片] 未命中: code={code!r} {why}")
+            self._reply_history_media_result(reply, request_id)
+            return
+        # 复原当时的抬头信息（时间 / 昵称 / 类型），这样 QQ 里看起来和当初那条一致
+        try:
+            dt = datetime.fromtimestamp(float(entry.get("t") or 0))
+            when = f"{dt:%m-%d %H:%M}"
+        except (TypeError, ValueError, OSError):
+            when = ""
+        text = str(entry.get("text") or "")
+        kind = "image" if not text.startswith("表情") else "sticker"
+        body = self._typed_body(text, kind)
+        nickname = self._display_name(entry.get("sender") or "")
+        caption = f"[{when}] [{nickname}] {body}" if when else f"[{nickname}] {body}"
+        ok = self._resend_history_media(data, caption, kind)
+        if ok:
+            reply = f"已重新发送历史图片：{caption}（#{code}）"
+            self._log("info", f"[查看图片] 已重发 {caption}（{len(data)} 字节）")
+        else:
+            reply = f"查看图片失败：发送到 QQ 未成功（检查插件/NapCat 是否在线） #{code}"
+            self._log("error", f"[查看图片] 发送失败: {caption}")
+        self._reply_history_media_result(reply, request_id)
+
+    def _resend_history_media(self, data: bytes, caption: str, kind: str) -> bool:
+        """把历史图片发到配置的 QQ 目标（任一目标成功即算成功）。"""
+        targets = []
+        try:
+            targets = self._qq_targets()
+        except Exception as e:  # noqa: BLE001 目标解析失败
+            self._log("warning", f"[查看图片] 解析 QQ 目标失败: {e}")
+            return False
+        if not targets:
+            self._log("warning", "[查看图片] 未配置 QQ 目标，无法回发")
+            return False
+        try:
+            image_b64 = base64.b64encode(data).decode("ascii")
+        except Exception as e:  # noqa: BLE001
+            self._log("warning", f"[查看图片] 图片编码失败: {e}")
+            return False
+        any_ok = False
+        for target_type, target_id in targets:
+            try:
+                send_image = getattr(self.forwarder, "send_image", None)
+                if send_image is not None:
+                    ok, why = send_image(target_type, target_id, image_b64,
+                                         caption if self._emoji_caption else "")
+                else:
+                    ok, why = self._send_text(target_type, target_id, caption)
+                if ok:
+                    any_ok = True
+                    self._log("info", f"[查看图片] 已发送 {target_type}:{target_id}")
+                else:
+                    self._log("warning", f"[查看图片] {target_type}:{target_id} 发送失败: {why}")
+            except Exception as e:  # noqa: BLE001 单个目标失败不影响其它目标
+                self._log("warning", f"[查看图片] {target_type}:{target_id} 异常: {e}")
+        return any_ok
+
+    def _reply_history_media_result(self, reply: str, request_id: str) -> None:
+        """把"查看图片"的结果回给用户。
+
+        * 有 request_id（QQ 侧 `/小天才 查看图片`）-> 走插件回传，在原会话引用+@ 回复；
+        * 没有 request_id（**小天才聊天里**输入的命令）-> 写回小天才聊天。
+          成功也要回一句确认：图是发到 QQ 的，手表这边不给回执的话，
+          用户在小天才里输入命令后会觉得"什么都没发生"。
+        """
+        if not reply:
+            return
+        if request_id:
+            try:
+                ok = self.forwarder.reply_result(request_id, reply)
+                if not ok:
+                    self._log("error", f"[查看图片回传] 失败: {reply[:80]}")
+            except Exception as e:  # noqa: BLE001
+                self._log("warning", f"[查看图片回传] 异常: {e}")
+            return
+        self._reply_into_xtc(reply)
+
     def _match_source(self, entries: list[dict], source: str) -> list[dict]:
         """按来源过滤：支持「手表」「QQ私聊 <号>」「QQ群 <群号>」或裸的号
         （只写号码时，私聊/群聊都能命中）。"""
@@ -85,6 +191,8 @@ class HistoryMixin:
         - 跳过系统提示（发送成功/发送失败）与命令文本（防御性过滤）；
         - 图片/表情按类型渲染成 `[图片]`、`[表情] 名字`（消息库里存的是占位文本
           "图片"/"表情X"，直接输出会让人以为那是一条文本消息）；
+        - 归档过原文件的图片带上引用码 `[图片 #a1b2c3d4e5f6]`，可用
+          `/小天才 查看图片 <码>` 取回真图（`msg_log.media_show_code` 控制是否显示）；
         - 超长从最旧截断。"""
         sys_prefixes = self._system_msg_prefixes()
         lines: list[str] = []
@@ -122,6 +230,7 @@ class HistoryMixin:
             body = text
             if e.get("kind") == "xtc" and self._is_media_placeholder(text):
                 body = self._typed_body(text)
+                body = self._history_media_suffix(body, e)
             lines.append(f"[{dt:%m-%d} {dt:%H:%M}] [{short}] {sender}: {body}")
         if not lines:
             return "小天才历史消息：暂无本地消息记录"
@@ -135,7 +244,34 @@ class HistoryMixin:
         header += "）："
         summary = "来源统计：" + "、".join(
             f"{k} {v} 条" for k, v in sorted(tally.items(), key=lambda x: -x[1]))
-        return header + "\n" + "\n".join(lines) + "\n" + summary
+        tail = ""
+        if any(self._history_media_code(e) for e in entries):
+            tail = "\n看图：/小天才 查看图片 <#后面的编码>"
+        return header + "\n" + "\n".join(lines) + "\n" + summary + tail
+
+    def _history_media_code(self, entry: dict) -> str:
+        """条目对应的图片引用码（没有/取不到返回空串）。"""
+        code = str(entry.get("media") or "").strip()
+        if not code:
+            return ""
+        store = getattr(self, "media_store", None)
+        if store is None:
+            return ""
+        # 文件已被容量淘汰时不再显示编码（否则用户照着码去看会一直失败）
+        try:
+            return code if store.path_of(code) is not None else ""
+        except Exception:  # noqa: BLE001 判断失败就当没有
+            return ""
+
+    def _history_media_suffix(self, body: str, entry: dict) -> str:
+        """给图片/表情那行补上引用码（配置可关，见 msg_log.media_show_code）。"""
+        if not self._history_show_media_code():
+            return body
+        code = self._history_media_code(entry)
+        return f"{body} #{code}" if code else body
+
+    def _history_show_media_code(self) -> bool:
+        return bool((self.cfg.get("msg_log") or {}).get("media_show_code", True))
 
     @staticmethod
     def _short_source(source: str) -> str:

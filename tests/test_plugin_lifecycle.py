@@ -413,7 +413,13 @@ class AboutTests(unittest.TestCase):
         lines = [ln for ln in text.splitlines() if ln.strip()]
         self.assertLessEqual(len(lines), 6, text)
         self.assertLessEqual(len(text), 240, text)
-        self.assertEqual(f"XTC-QQ-Bridge {bridge_version.__version__}", lines[0])
+        # 首行允许带括注（如「（功能冻结）」），但必须以"展示名 + 版本"开头
+        self.assertTrue(
+            lines[0].startswith(f"XTC-QQ-Bridge {bridge_version.__version__}"), text)
+        # 功能冻结提示：两个标志位必须一致，且真的出现在文案里（用户要求"明显标出"）
+        self.assertEqual(bridge_version.FEATURE_FROZEN, PLUGIN._PLUGIN_FEATURE_FROZEN)
+        if PLUGIN._PLUGIN_FEATURE_FROZEN:
+            self.assertIn("功能冻结", lines[0], text)
         self.assertNotIn("v" + bridge_version.__version__, text)
         self.assertIn(bridge_version.AUTHOR, text)
         self.assertIn(bridge_version.REPO_URL, text)

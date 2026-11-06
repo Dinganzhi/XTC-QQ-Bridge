@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Nuitka 编译驱动：把桥接主程序与 容器 守护编译成**机器码单文件**（Windows / Linux / macOS）。
+"""Nuitka 编译驱动：把桥接主程序编译成**机器码单文件**（Windows / Linux / macOS）。
 
 为什么用一个 Python 驱动而不是一堆命令行
 ----------------------------------------
@@ -90,6 +90,7 @@ INCLUDE_MODULES = {
         "xtc_qq_bridge.adb_controller", "xtc_qq_bridge.bridge", "xtc_qq_bridge.xiaotiancai",
         "xtc_qq_bridge.plugin_client", "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log",
         "xtc_qq_bridge.runtime_paths", "xtc_qq_bridge.version", "xtc_qq_bridge.config",
+        "xtc_qq_bridge.media_store",
         "xtc_qq_bridge.speed_profile", "xtc_qq_bridge.cli.main",
         "xtc_qq_bridge.utils.logger", "xtc_qq_bridge.utils.deduplicate",
         "xtc_qq_bridge.utils.imgtool", "xtc_qq_bridge.utils.pngtool", "xtc_qq_bridge.emoji_store",
@@ -103,6 +104,34 @@ EXCLUDE_MODULES = {
         "tests.test_paths", "packaging.nuitka.build", "tools.selftest",
     ],
 }
+# ---- 瘦身：标准库"顺带打包"的模块 ----
+# Nuitka 会把标准库目录整片当作"非排除部分"跟进来（本机实测报告：417 个模块里
+# 有 smtplib/ftplib/imaplib/poplib、tarfile/zipfile/bz2/lzma、tomllib、pickletools、
+# statistics/fractions/decimal 等本程序一次都不用的东西）。它们的导入点都在标准库的
+# try/except 或函数体内部，排除后运行时**只走 ImportError 分支**：
+#   * smtplib/imaplib/poplib/ftplib/nntplib/telnetlib —— 只有 logging.handlers 的邮件/
+#     远程 Handler 才会 import；本程序只用 StreamHandler/FileHandler。
+#   * tarfile/zipfile/bz2/lzma/gzip —— shutil 在函数体内按需 import（打包解包才用）。
+#   * statistics/fractions/decimal —— random 的 stdev() 内部按需导入，本程序不用。
+#   * tomllib/pickletools/html.parser —— 编译时被当成"启动依赖"顺带带入，运行用不到
+#     （配置是 YAML，界面解析用 ElementTree）。
+# **故意不排除** ssl/_ssl：`urllib.request` 用 try/except 包着它，排掉不会崩，但会让
+# 任何 https:// 请求在运行期变成"unknown url type"——插件地址未来若改成 https，
+# 用户只会看到一句莫名其妙的报错。这点体积（约 700 KB 解压后）不值得省。
+SLIM_NOFOLLOW_MODULES = (
+    # PyYAML 的 libyaml C 加速（**2.6 MB**，占产物近三成）：
+    # yaml/__init__.py 里是 `try: from .cyaml import * except ImportError:`，
+    # 纯 Python 解析器行为完全一致，只是慢一点 —— 配置只在启动时读一次。
+    "_yaml", "yaml.cyaml",
+    "smtplib", "imaplib", "poplib", "ftplib", "nntplib", "telnetlib",
+    "tarfile", "zipfile", "bz2", "lzma", "gzip",
+    "tomllib", "pickletools", "html.parser",
+    "statistics", "fractions", "decimal", "_decimal",
+    "unittest", "pydoc", "doctest", "pdb", "curses", "pydoc_data",
+    "distutils", "setuptools", "pkg_resources", "pip", "wheel",
+    "sqlite3", "dbm", "shelve", "multiprocessing", "xmlrpc", "wsgiref", "cgi", "cgitb",
+    "tkinter", "turtle",
+)
 PRODUCT = "XTC QQ Bridge"
 COMPANY = "xtc-bridge"
 
@@ -343,6 +372,11 @@ def build_command(info: NuitkaInfo, target: str, mode: str, out_dir: Path,
     cmd += [f"--output-filename={final}.exe" if os.name == "nt" else f"--output-filename={final}"]
     cmd += ["--assume-yes-for-downloads", "--remove-output"]
     cmd += ["--nofollow-import-to=" + m for m in EXCLUDE_MODULES.get(target, [])]
+    # ---- 瘦身：剔掉标准库/第三方里"从没用过"的模块（详见 SLIM_NOFOLLOW_MODULES）----
+    # --slim=no 可关闭（排查"某个功能突然说 ImportError"时先用它构建对比）
+    if getattr(args, "slim", "yes") == "yes":
+        cmd += ["--nofollow-import-to=" + m for m in SLIM_NOFOLLOW_MODULES
+                if info.supports("--nofollow-import-to")]
     # 整包包含：包在 src/ 下，逐条列模块容易漏（CI 曾报 failed to locate module）
     if info.supports("--include-package"):
         cmd += ["--include-package=xtc_qq_bridge"]
@@ -350,10 +384,14 @@ def build_command(info: NuitkaInfo, target: str, mode: str, out_dir: Path,
         cmd += ["--include-module=tools.dump_ui"]
     else:
         cmd += ["--include-module=" + m for m in INCLUDE_MODULES.get(target, [])]
-    # pyyaml 在 try/except 里 import，显式带上整个包（含 C 扩展）
+    # pyyaml 在 try/except 里 import，显式带上整个包
     if info.supports("--include-package"):
         cmd += ["--include-package=yaml"]
-    if _has_module("_yaml"):                       # PyYAML 的 libyaml 加速模块（可选）
+    # PyYAML 的 libyaml C 加速（2.6 MB）只在瘦身关闭时才带：
+    # yaml/__init__.py 是 `try: from .cyaml import * except ImportError:`，
+    # 纯 Python 解析器行为一致，只是配置解析慢几十毫秒（启动时只读一次）。
+    _slim = getattr(args, "slim", "yes") == "yes"
+    if _has_module("_yaml") and not _slim:
         cmd += ["--include-module=_yaml"]
     for src, dst in DATA_FILES.get(target, []):
         if (ROOT / src).is_file():
@@ -604,6 +642,9 @@ def main(argv=None) -> int:
     ap.add_argument("--upx", action="store_true",
                     help="用 UPX 压缩外层可执行文件（需系统已装 upx；Windows 可能被杀软误报，"
                          "macOS 会破坏签名，一般只建议 Linux 用）")
+    ap.add_argument("--slim", choices=["yes", "no"], default="yes",
+                    help="瘦身（默认 yes）：剔除从没用到的标准库模块（邮件/归档/统计等）"
+                         "与 PyYAML 的 libyaml C 加速，可减小产物体积；出问题用 --slim=no 对照")
     ap.add_argument("--quiet", action="store_true", help="只输出关键信息")
     ap.add_argument("--check-env", action="store_true", help="只做前置检查后退出")
     ap.add_argument("--strict", action="store_true",

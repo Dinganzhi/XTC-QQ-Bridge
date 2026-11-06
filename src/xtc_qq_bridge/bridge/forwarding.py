@@ -47,12 +47,12 @@ class ForwardingMixin:
         return False
 
     def _forward_suppressed(self, contact, text: str, label: str) -> bool:
+        """这条消息现在要不要跳过：正在补投 / 刚转发过同一内容。"""
         if self._is_media_placeholder(text):
             # 图片/表情的文本都是"图片""表情X"，按文本护栏会把**另一张**图片也挡掉
             # （实测：两张不同的照片，五分钟内第二张被判成"刚转发过"而漏发）。
             # 这类消息的重复判定交给内容哈希（见 _media_hash）。
             return False
-        """这条消息现在要不要跳过：正在补投 / 刚转发过同一内容。"""
         if self._has_active_plan(contact, text):
             return True
         return self._recent_fwd_seen(contact, text)
@@ -109,7 +109,7 @@ class ForwardingMixin:
         """当前允许补发的最大年龄（秒）：0 = 不限。
 
         规则：取 `catchup_max_age` 与"距上次成功读界面已过去的时间 + 60 秒"的较大者 ——
-        桥接中断（窗口失去焦点、容器休眠）期间错过的消息都在这个窗口内，不会被当成
+        桥接中断（窗口失去焦点、设备休眠）期间错过的消息都在这个窗口内，不会被当成
         "旧消息"丢弃；而连续运行时仍然只补 `catchup_max_age` 以内的。
         """
         if self._catchup_max_age <= 0:
@@ -158,15 +158,40 @@ class ForwardingMixin:
         except Exception:  # noqa: BLE001
             return ""
 
+    def _archive_media(self, sticker: dict | None) -> str:
+        """把这条消息的图片/表情原文件存进历史媒体仓库，返回短引用码（无图返回空串）。
+
+        为什么要在这里做：转发成功后消息库才追加条目，而图片本体只在这一刻还在手里
+        （sticker["data"] 是刚抠出来的原图/截图）。不存的话，`/小天才 历史消息`
+        里只能看到"图片"两个字，用户根本看不了当时发的是什么（反馈的核心问题）。
+
+        失败一律不影响转发：存不下就返回空串，历史里退回纯文字标记。
+        """
+        if not sticker or not sticker.get("data"):
+            return ""
+        store = getattr(self, "media_store", None)
+        if store is None:
+            return ""
+        try:
+            return store.save(sticker["data"], hint=str(sticker.get("kind") or ""))
+        except Exception as e:  # noqa: BLE001 存图失败不能影响消息本身
+            self._log("debug", f"[历史媒体] 归档失败（历史里看不到这张图）: {e}")
+            return ""
+
     def _mark_forwarded(self, contact, text: str, label: str, disp: str,
-                        media_hash: str = "") -> None:
-        """记入长期历史 + 本地消息库（此后轮询不会再把它当成"库里没有"的消息）。"""
+                        media_hash: str = "", sticker: dict | None = None) -> None:
+        """记入长期历史 + 本地消息库（此后轮询不会再把它当成"库里没有"的消息）。
+
+        sticker 给了就把图片原文件一并存进历史媒体仓库，消息库条目带上引用码，
+        历史消息据此可以显示 `[图片 #code]` 并支持 `/小天才 查看图片 <code>` 取回。
+        """
         self.history.mark("xtc", contact or "", text, label or "")
         if media_hash:
             # 同一张图片/表情无论标签怎么变，都不再重复转发
             self.history.mark("xtc", contact or "", text, media_hash)
         self._remember_fwd_clock(contact, text, label)
         epoch = self._label_epoch(disp)
+        media_code = self._archive_media(sticker)
         # 消息库去重必须按**这条消息的身份**（文本 + 时间），不能只按文本：
         # 所有照片的文本都是"图片"、同一个表情的名字也一样 —— 只按文本去重的话，
         # 第一条之后的所有图片/表情都会被当成"重复"而不入库，
@@ -174,7 +199,8 @@ class ForwardingMixin:
         if self._msg_stored(text, epoch):
             return
         self.msgs.append("xtc", contact or "", text, t=epoch,
-                         source=self._xtc_source(contact), source_id=contact or "")
+                         source=self._xtc_source(contact), source_id=contact or "",
+                         media=media_code)
 
     def _msg_stored(self, text: str, epoch: float | None, window: float = 5.0) -> bool:
         """消息库里是否已经有"同文本 + 时间几乎相同"的这条（挡住同一条被标记两次）。
@@ -279,7 +305,8 @@ class ForwardingMixin:
             with self._fwd_plan_lock:
                 self._fwd_plan.pop(key, None)
             self._mark_forwarded(snapshot.get("contact", ""), text, snapshot.get("label", ""),
-                                 snapshot.get("disp", ""))
+                                 snapshot.get("disp", ""),
+                                 sticker=snapshot.get("sticker"))
             self._log("info", f"[转发] 补投成功（第 {tries} 次）: {text[:24]!r}")
             return
         with self._fwd_plan_lock:
@@ -324,11 +351,13 @@ class ForwardingMixin:
             self._log("warning", f"转发异常: {e}")
             ok, sent, failed = False, [], []
         if ok:
-            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash)
+            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash,
+                                 sticker=sticker)
             return
         if sent:
             # 部分成功：**立刻**记历史（否则标签一变就会被当成新消息，重发一遍私聊）
-            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash)
+            self._mark_forwarded(contact, text, label, disp, media_hash=media_hash,
+                                 sticker=sticker)
         self._schedule_fwd_plan(contact, text, label, disp, sticker, failed, kind=kind)
 
     def _warm_emoji_store(self) -> None:

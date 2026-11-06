@@ -68,14 +68,14 @@ class ChatMixin:
             return False
         if self.is_in_chat():
             return True
-        # 0) App 不在前台（例如 容器 停在主屏/别的窗口）-> 先把它拉到前台，
-        #    否则会在 容器 主屏上找联系人，然后报"找不到联系人"（实机测试发现的坑）。
+        # 0) App 不在前台（例如停在桌面/别的窗口）-> 先把它拉到前台，
+        #    否则会在桌面上找联系人，然后报"找不到联系人"（实机测试发现的坑）。
         if not self.adb.is_in_foreground(self.package):
-            # 0.1) 先排除"只是息屏/窗口没焦点"：容器 睡过去时 App 同样看起来不在前台，
+            # 0.1) 先排除"只是息屏/窗口没焦点"：虚拟屏睡过去时 App 同样看起来不在前台，
             #      但窗口还在、Activity 还是 resumed 的 —— 叫醒即可，不必重新拉起 App
             #      （实测"重新拉起"要 20 秒，唤醒只要 ~1.5 秒）。
             if self.adb.wake_if_asleep() and self.adb.is_in_foreground(self.package):
-                self.log("info", "容器息屏导致 App 不在前台，唤醒后已回到前台（无需重启 App）")
+                self.log("info", "设备息屏导致 App 不在前台，唤醒后已回到前台（无需重启 App）")
                 self._dismiss_blockers()
                 if self.is_in_chat():
                     return True

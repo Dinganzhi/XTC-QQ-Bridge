@@ -95,6 +95,8 @@ class CommandMixin:
         try:
             if sub in ("历史消息", "history"):
                 reply = self._cmd_history(args)      # None = 已同步执行并写回聊天
+            elif sub in ("查看图片", "看图", "image"):
+                reply = self._cmd_view_image(args)
             elif sub in ("搜索", "search"):
                 reply = self._cmd_search(args)
             elif sub in ("在线人数", "online"):
@@ -129,6 +131,20 @@ class CommandMixin:
                 source = " ".join(parts).strip()
         # 已处于工作线程：直接同步执行历史读取任务（结果写入小天才聊天）
         self._do_history_job(n, "", into_chat=True, source=source)
+        return None
+
+    def _cmd_view_image(self, args: str):
+        """参数：<编码>。返回 None=已执行（图直接发回 QQ）；str=帮助/错误提示。
+
+        编码就是 `/小天才 历史消息` 里图片行尾的 `#xxxxxxxx`（去掉 # 输入）。
+        允许只写前几位（唯一命中即可），也接受带 # 的写法。
+        """
+        code = (args or "").strip().lstrip("#").strip()
+        if not code:
+            return ("用法：/小天才 查看图片 <编码>\n"
+                    "编码在 /小天才 历史消息 的图片行尾（#xxxxxxxx），可直接复制。")
+        # 已处于工作线程：直接同步执行（图通过转发器发回 QQ）
+        self._do_history_media_job(code, "")
         return None
 
     def _cmd_search(self, args: str) -> str:

@@ -96,7 +96,7 @@ def main() -> int:
     except AdbError as e:
         check("UI dump", False, f"{e}")
     check("ADBKeyBoard", adb.adbkeyboard_ready(), f"ime={adb.current_ime() or '(未知)'}")
-    # 容器 与宿主共享剪贴板，clipboard_ok=False 是**预期**（中文输入靠 ADBKeyBoard 广播），
+    # 与宿主共享剪贴板的环境里 clipboard_ok=False 是**预期**（中文输入靠 ADBKeyBoard 广播），
     # 所以这里只作信息展示，不算失败。
     print(f"[INFO] 剪贴板通道 clipboard_ok={adb.probe_clipboard()}"
           f"（设备上通常为 False，属预期；不影响中文输入）")

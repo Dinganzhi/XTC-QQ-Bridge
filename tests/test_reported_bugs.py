@@ -391,14 +391,20 @@ def test_history_source_from_plugin_payload() -> None:
 def test_about_command_both_sides() -> None:
     """「关于」命令：文案精简且信息完整，手表侧可直接回复，帮助列表里可见。"""
     from xtc_qq_bridge.version import (AUTHOR, LICENSE_NAME, REPO_URL,
-                                       __version__, about_text)
+                                       FEATURE_FROZEN, __version__, about_text)
 
     text = about_text()
     lines = [ln for ln in text.splitlines() if ln.strip()]
     check("关于文案不冗长", len(lines) <= 6 and len(text) <= 240,
           f"{len(lines)} 行 / {len(text)} 字符")
+    # 首行 = 展示名 + 版本，可带一个括注（1.0.0-rc.1 起附「（功能冻结）」）。
+    # 用 startswith 而不是相等：括注只影响首行尾部，不增加行数（手表窄屏只有几行可见）。
     check("关于首行为展示名+版本",
-          lines and lines[0] == f"XTC-QQ-Bridge {__version__}", lines[0] if lines else "")
+          lines and lines[0].startswith(f"XTC-QQ-Bridge {__version__}"),
+          lines[0] if lines else "")
+    check("关于标注功能冻结（1.0.0-rc.1 起）",
+          FEATURE_FROZEN is False or "功能冻结" in lines[0],
+          lines[0] if lines else "")
     check("关于含版本号", __version__ in text, __version__)
     check("关于含作者/仓库/许可证/反馈",
           all(x in text for x in (AUTHOR, REPO_URL, LICENSE_NAME, REPO_URL + "/issues")),
@@ -662,7 +668,7 @@ def test_send_speed_fast_path() -> None:
 
     # ④ 布局变了：**只有高度变了**（键盘顶起输入框 / 多行文字）-> 按相对偏移换算发送按钮
     #    坐标，快路径照走（实测多行消息就是这种，以前会白白退回两次 dump 的稳妥流程）；
-    #    **宽度也变了**（容器窗口被缩放）-> 不许猜，退回稳妥流程。
+    #    **宽度也变了**（模拟器窗口被缩放）-> 不许猜，退回稳妥流程。
     adb3 = FastChatAdb()
     xtc4 = Xiaotiancai(adb3, {"ui": {"interaction_delay": 0.05, "send_retries": 1}},
                        logger=None)
@@ -776,7 +782,7 @@ def test_ime_check_is_cached() -> None:
 def test_launch_app_skips_hard_failures_fast() -> None:
     """启动策略"硬失败"（not exported / SecurityException）要立刻换下一套。
 
-    实机 容器 实测：`am start -a MAIN/LAUNCHER` 根本起不来（12 秒都到不了前台），
+    实机实测：`am start -a MAIN/LAUNCHER` 根本起不来（12 秒都到不了前台），
     而旧实现给每个策略 25 秒前台等待 —— 撞上它就白等 25 秒，这正是
     "发一条要十几秒"里的一段。现在单策略最多等 6 秒，且命令自己报错就立刻换。
     """
@@ -2699,7 +2705,7 @@ def test_blind_send_fast_typing() -> None:
 def test_wake_before_relaunch() -> None:
     """用户报"隔三差五就息屏/被判不在前台，其实我什么都没动"。
 
-    容器 的虚拟屏会随**宿主窗口状态**睡过去（`screen_off_timeout` 拉到极大值、
+    虚拟屏会随**宿主窗口状态**睡过去（`screen_off_timeout` 拉到极大值、
     `svc power stayon true` 都挡不住 —— 实测设置都在、屏照样睡）。屏一睡：
       * App 看起来"不在前台"（前台变成 com.microsoft.windows.homeapp/PlaceholderActivity）；
       * uiautomator 报 null root node。
@@ -2707,7 +2713,7 @@ def test_wake_before_relaunch() -> None:
     Activity 还是 resumed —— 叫醒屏幕就回来了。这条用例盯住这个行为。
     """
     # ① 息屏导致"不在前台" -> 先唤醒，不重启 App
-    #  （息屏时 dump 出来的是 容器 主屏的空壳，不是聊天页——所以要按"睡着就换 XML"来模拟）
+    #  （息屏时 dump 出来的是桌面的空壳，不是聊天页——所以要按"睡着就换 XML"来模拟）
     adb = FakeAdb("",
                   focus="com.microsoft.windows.homeapp/com.microsoft.windows.placeholder.PlaceholderActivity")
     adb.asleep = True
@@ -2734,7 +2740,7 @@ def test_wake_before_relaunch() -> None:
     check("没有白白重新拉起 App", not any("am start" in c or "monkey" in c for c in adb.calls),
           str(adb.calls))
 
-    # ② 屏幕亮着、App 是真的不在前台（例如 容器 停在主屏）-> 才启动 App
+    # ② 屏幕亮着、App 是真的不在前台（例如停在桌面）-> 才启动 App
     adb2 = FakeAdb(node_xml(n(cls="android.widget.TextView", text="桌面")),
                    focus="com.android.launcher/.Launcher")
     xtc2 = Xiaotiancai(adb2, {"ui": {}}, logger=None)
@@ -3486,7 +3492,7 @@ def test_check_uses_configured_adb() -> None:
 def test_offline_device_is_recovered_not_faked() -> None:
     """ADB 设备卡成 `offline` 时要真的救回来，不能"假装重连成功"。
 
-    实机踩过（容器 `127.0.0.1:58526`）：`adb devices` 一直显示 offline，`adb connect`
+    实机踩过（网络调试设备 `127.0.0.1:5555`）：`adb devices` 一直显示 offline，`adb connect`
     只回一句 "already connected to ..." —— 旧实现看到 "connected" 就认为重连成功，
     于是桥接每 10 秒"断连->重连->已重连"循环，界面一条都读不到；更糟的是 `pm list packages`
     失败被当成"设备上没有安装 com.xtc.watch"，排障方向完全被带偏。
@@ -4780,7 +4786,7 @@ def test_screen_off_detection_and_wake() -> None:
 
 
 def test_window_recovery_and_compact_dump_error() -> None:
-    """容器窗口被最小化/关闭 -> mCurrentFocus=null -> 必须自愈，且报错要短而可行动。"""
+    """宿主窗口被最小化/关闭 -> mCurrentFocus=null -> 必须自愈，且报错要短而可行动。"""
     adb = FakeAdb("", focus="")        # 没有任何获得焦点的窗口
     xtc = Xiaotiancai(adb, {"ui": {"interaction_delay": 0.1}}, logger=None)
     acted = xtc._recover_window()
@@ -4795,20 +4801,20 @@ def test_window_recovery_and_compact_dump_error() -> None:
         ["/dev/tty: ERROR: null root node returned by UiTestAutomationBridge."] * 3)
     check("报错简短（单条日志不再上千字符）", len(msg) < 300, f"len={len(msg)}")
     check("指出根因（窗口/根节点）", ("根节点" in msg) or ("窗口" in msg), msg[:100])
-    check("给出可行动建议（保持容器窗口打开）", "容器窗口" in msg, msg[:220])
+    check("给出可行动建议（保持窗口打开）", "窗口保持打开" in msg, msg[:220])
     check("完整细节另存 last_dump_detail（供 --debug adb-info）",
           "null root node" in ctl._last_dump_detail)
 
 
 def test_open_chat_launches_app_when_not_foreground() -> None:
-    """实机发现的坑：容器 停在主屏时，open_chat 必须先拉起 App，而不是在主屏上找联系人。"""
+    """实机发现的坑：停在桌面时，open_chat 必须先拉起 App，而不是在桌面上找联系人。"""
     list_xml = message_list_xml([("李四", "早"), ("小宝", "晚上吃啥")])
 
     class HomeThenApp(FakeAdb):
-        """一开始前台是 容器 主屏（launcher），launch_app 后才变成 App 的列表页。"""
+        """一开始前台是桌面（launcher），launch_app 后才变成 App 的列表页。"""
 
         def __init__(self):
-            super().__init__(node_xml(n(text="容器 主屏")),
+            super().__init__(node_xml(n(text="桌面主屏")),
                              focus="com.microsoft.windows.homeapp/PlaceholderActivity")
             self.launched = 0
 
@@ -4859,8 +4865,8 @@ def test_foreground_logic_two_layers() -> None:
     """前台判定要同时看 Activity 与窗口（实机两个坑）：
 
     * 输入法抢焦点 -> 仍算在前台（否则键盘一弹就误判未登录）；
-    * 别的 App（如 容器 主屏 com.microsoft.windows.homeapp）抢到窗口 -> **不算**在前台
-      （否则不会把它拉回前台，uiautomator 只能 dump 到 容器 主屏，然后报"找不到联系人"）。
+    * 别的 App（如桌面 launcher）抢到窗口 -> **不算**在前台
+      （否则不会把它拉回前台，uiautomator 只能 dump 到桌面，然后报"找不到联系人"）。
     """
     def ctl(activity: str, window: str):
         c = object.__new__(ADBController)
@@ -4876,7 +4882,7 @@ def test_foreground_logic_two_layers() -> None:
     check("窗口是系统弹窗 -> 仍算在前台（弹窗清理需要）",
           ctl(app, "com.android.permissioncontroller/.GrantPermissionsActivity")
           .is_in_foreground("com.xtc.watch"))
-    check("窗口是别的 App（容器 主屏）-> 不算在前台（实机日志场景）",
+    check("窗口是别的 App（桌面）-> 不算在前台（实机日志场景）",
           ctl(app, "com.microsoft.windows.homeapp/com.microsoft.windows.home.Home")
           .is_in_foreground("com.xtc.watch") is False)
     check("App 的 Activity 都不是 -> 不算在前台",
@@ -5257,7 +5263,7 @@ def test_logger_tolerant_stream() -> None:
 def test_find_send_ignores_message_state_icon() -> None:
     """输入框为空时，"发送"不能命中消息状态图标（发送中/发送失败）。
 
-    实机（容器）实测：输入框为空时没有 tv_send_view，但每条消息右侧有
+    实机实测：输入框为空时没有 tv_send_view，但每条消息右侧有
     iv_chat_msg_item_state（content-desc="发送失败"）。旧的 content-desc 子串匹配
     "发送"会命中它，于是"没输入内容也以为发送按钮存在"——注入其实没成功也继续走，
     点击还落到状态图标上，表现为"莫名其妙发送失败"。
@@ -5818,7 +5824,7 @@ def test_nuitka_version_args_are_numeric() -> None:
 
 
 def test_build_driver_has_single_target() -> None:
-    """编译驱动现在只有主程序一个目标（容器 网络守护已移除）。"""
+    """编译驱动现在只有主程序一个目标（旧版曾有独立的网络守护产物，已移除）。"""
     import sys as _sys
     _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
     import build as b
@@ -5833,6 +5839,47 @@ def test_build_driver_has_single_target() -> None:
     check("产物名只有一种前缀",
           b.product_name("bridge", "1.0.0").startswith("xtc-qq-bridge-"),
           b.product_name("bridge", "1.0.0"))
+
+
+def test_build_slimming_keeps_runtime() -> None:
+    """瘦身必须只掐"从没用过"的模块，**运行时与 pyyaml 一律保留**。
+
+    用户明确要求：可以压体积，但运行时不能删、功能不能少。
+    这里逐条校验名单：危险项（内置运行时模块）绝不能被排除；
+    该省的项（没用到的标准库、libyaml 加速）必须在名单里。
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
+    import build as b
+
+    slim = set(b.SLIM_NOFOLLOW_MODULES)
+    # 1) Python 运行时/编解码/导入机制：绝不能进排除名单
+    fatal = {"encodings", "codecs", "importlib", "io", "os", "sys", "json", "re",
+             "threading", "socket", "http", "http.server", "urllib", "urllib.request",
+             "xml", "xml.etree.ElementTree", "base64", "hashlib", "logging",
+             "collections", "datetime", "argparse", "subprocess", "shutil", "pathlib",
+             "queue", "struct", "zlib", "ssl", "email", "yaml"}
+    bad = sorted(slim & fatal)
+    check("瘦身不动 Python 运行时与必需模块", not bad, f"误排除: {bad}")
+
+    # 2) 该省的必须在名单里
+    for m in ("_yaml", "smtplib", "imaplib", "poplib", "ftplib", "tarfile", "zipfile",
+              "tomllib", "pickletools", "statistics", "fractions", "decimal"):
+        check(f"瘦身剔除未使用的 {m}", m in slim)
+
+    # 3) pyyaml 包本身必须仍被包含（只是不带 libyaml 加速）
+    src = (Path.cwd() / "packaging" / "nuitka" / "build.py").read_text(encoding="utf-8")
+    check("仍显式包含 pyyaml 包", '"--include-package=yaml"' in src)
+    check("libyaml 加速只在非瘦身模式才带", '_has_module("_yaml") and not _slim' in src)
+
+    # 4) 运行时真正用到的扩展模块不能出现在排除名单里
+    used = {"xml.etree.ElementTree", "http.server", "base64", "hashlib", "asyncio"}
+    check("运行时用到的模块没被排除", not (slim & used), str(sorted(slim & used)))
+
+    # 5) 新增模块要被显式包含（否则 --verify 与产物都可能漏）
+    check("media_store 在 INCLUDE_MODULES 里",
+          "xtc_qq_bridge.media_store" in b.INCLUDE_MODULES["bridge"],
+          str(b.INCLUDE_MODULES["bridge"][:4]))
 
 
 def _backlog_bridge(root: Path, fwd, bubbles: list, known: list | None = None,
@@ -6308,6 +6355,7 @@ def main() -> int:
                test_poll_loop_dismisses_popup_without_cooldown,
                test_monotonic_sentinels_survive_fresh_boot,
                test_nuitka_version_args_are_numeric, test_build_driver_has_single_target,
+               test_build_slimming_keeps_runtime,
                test_backlog_walk_until_known,
                test_repeated_message_is_forwarded_again, test_backlog_runs_without_contact,
                test_msg_log_sharding_and_cap,

@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import logging
 import argparse
 import shutil
 import sys
@@ -25,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from .. import runtime_paths              # noqa: E402
-from ..version import __version__         # noqa: E402
+from ..version import __version__, FEATURE_FROZEN as _FEATURE_FROZEN  # noqa: E402
 
 try:                                      # 非 UTF-8 控制台（Windows cp1252）下 print 中文不崩
     from ..utils.logger import make_console_tolerant
@@ -89,7 +90,10 @@ def verify_bundle() -> int:
         print(f"  pyyaml      : FAIL {e}（配置是 YAML 时必须；编译时需 --include-package=yaml）")
     for mod in ("xtc_qq_bridge.adb_controller", "xtc_qq_bridge.bridge",
                 "xtc_qq_bridge.xiaotiancai", "xtc_qq_bridge.plugin_client",
-                "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log"):
+                "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log",
+                # 历史图片仓库：编进产物失败时，`/小天才 历史消息` 会看不到图，
+                # 但主流程照跑 —— 不在这里显式检查就没人会发现。
+                "xtc_qq_bridge.media_store"):
         try:
             __import__(mod)
             print(f"  {mod:<30}: OK")
@@ -215,6 +219,9 @@ def main() -> None:
         log.info(f"XTC-QQ-Bridge {__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
+        if _FEATURE_FROZEN:
+            # 本版本起功能冻结：在启动横幅里就讲清楚，避免用户等待不会到来的新功能。
+            log.info("提示: 本版本起功能冻结，后续版本只修复问题、不新增功能")
         # 只在真的有文件处理器时取文件名：日志文件打不开时 setup_logger 会退化成
         # 只输出到控制台，此时 handlers[-1] 是 StreamHandler，取 baseFilename 会
         # 直接抛 AttributeError —— "日志写不了不致命"反而变成启动崩溃。
@@ -273,11 +280,11 @@ def main() -> None:
                 pass
         log.info("已关闭系统动画（uiautomator dump 稳定性）")
 
-    # 保持容器屏幕常亮：设备的虚拟屏闲置后会 Asleep，之后 uiautomator 一直报
+    # 保持屏幕常亮：设备的虚拟屏闲置后会 Asleep，之后 uiautomator 一直报
     # "null root node"，每次读界面都要先唤醒（实机单次 dump 从 1s 变 20~45s）。
     if adb_cfg.get("keep_awake", True):
         if adb.keep_awake():
-            log.info("已请求容器保持常亮（避免息屏后 uiautomator 无法读取界面）")
+            log.info("已请求设备保持常亮（避免息屏后 uiautomator 无法读取界面）")
         else:
             log.warning("保持常亮设置未生效（镜像可能不允许写设置）；息屏时桥接会自动唤醒屏幕")
 
@@ -331,7 +338,7 @@ def main() -> None:
 
     if args.catchup is not None:
         # 一次性补发：不启动轮询/webhook，只把"库里没有"的消息按原顺序补发出去。
-        # 用途：桥接停过一段时间（ADB 掉线、容器休眠）后，把积压的图片/文字补齐。
+        # 用途：桥接停过一段时间（ADB 掉线、设备休眠）后，把积压的图片/文字补齐。
         n = bridge.catchup_now(screens=int(args.catchup or 0))
         log.info(f"一次性补发结束：本次共转发 {n} 条")
         return

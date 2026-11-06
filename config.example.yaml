@@ -40,7 +40,7 @@ adb:
   port: 5555                                     # ADB 连接端口（取决于运行环境）
   extra_ports: []                                # 额外尝试的端口，例如 [58526]
   serial: ""                                     # 设备序列号；留空则自动选择唯一在线设备
-  auto_launch_emulator: false                    # 无法连接时是否自动启动 Android 容器
+  auto_launch_emulator: false                    # 无法连接时是否自动启动模拟器/容器
   heartbeat_interval: 10                         # 连接状态检查间隔（秒）
   disable_animations: true                       # 关闭系统动画；界面动画会导致 uiautomator dump 失败
   keep_awake: true                               # 保持设备常亮；息屏后界面读取会返回空根节点
@@ -102,6 +102,15 @@ msg_log:
   cap: 5000                                      # 最多保留条数；0 表示不限制
   shard_size: 2000                               # 每个分库文件的条数；0 表示不分库
   read_shards: 1                                 # 启动时加载的最新分库数量（判定只需最新分库）
+  # ---- 历史媒体（图片/表情能不能在 /小天才 历史消息 里看到）----
+  # 转发成功的图片/表情会把**原文件**存到 data/history_media/，消息库只记一个短编码，
+  # 历史里显示成 `[图片] #a1b2c3d4e5f6`，再用 `/小天才 查看图片 a1b2c3d4e5f6` 把图取回。
+  # 关掉之后历史里只剩 `[图片]`/`[表情] 名字` 这类文字标记（旧版本就是这个行为）。
+  media: true                                    # 总开关：是否把历史图片存到本地
+  media_dir: ""                                  # 存放目录；留空=data/history_media
+  media_max_files: 500                           # 最多保留多少个图片文件（0=不限制，按最久未使用淘汰）
+  media_max_kb: 4096                             # 单张图大小上限（KB）；超过只留文字标记（0=不限制）
+  media_show_code: true                          # 历史里是否显示 #编码（关掉则只显示 [图片]）
 
 # ---------------------------------------------------------------------
 #  桥接目标与显示格式
