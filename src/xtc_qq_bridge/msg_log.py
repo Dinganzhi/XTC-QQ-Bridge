@@ -206,26 +206,32 @@ class MessageLog:
     # ------------------------------------------------------------------ 写入 / 查询
     def append(self, kind: str, sender: str, text: str,
                t: float | None = None, source: str = "",
-               source_id: str = "") -> None:
+               source_id: str = "", media: str = "") -> None:
         """追加一条消息。
 
         kind:      'xtc'（手表侧）/ 'qq'（QQ 发入小天才）
         source:    人类可读来源标签，如「手表」「QQ私聊 10001」「QQ群 123456」
         source_id: 来源标识（QQ 号 / 群号 / 联系人名），便于按来源过滤
+        media:     图片/表情在 `media_store` 里的短引用码（没有图时为空）。
+                   只存这个十几字节的码，图片本体在 data/history_media/ 下，
+                   历史消息据此可以显示 `[图片 #code]` 并用 `/小天才 查看图片 code` 取回。
         """
         text = (text or "").strip()
         if not text:
             return
+        entry = {
+            "t": t if t is not None else time.time(),
+            "kind": kind,
+            "sender": (sender or "").strip(),
+            "text": text,
+            "source": (source or "").strip(),
+            "source_id": str(source_id or "").strip(),
+        }
+        if media:
+            entry["media"] = str(media)
         with self._lock:
             self._rotate_if_needed()
-            self._entries.append({
-                "t": t if t is not None else time.time(),
-                "kind": kind,
-                "sender": (sender or "").strip(),
-                "text": text,
-                "source": (source or "").strip(),
-                "source_id": str(source_id or "").strip(),
-            })
+            self._entries.append(entry)
             if not self.shard_size and self.cap and len(self._entries) > self.cap:
                 del self._entries[:len(self._entries) - self.cap]
             self._save()
@@ -268,6 +274,37 @@ class MessageLog:
         with self._lock:
             items = self._all_locked()
             return list(items[-n:])
+
+    def find_media(self, code: str) -> dict | None:
+        """按图片引用码找那条消息（`/小天才 查看图片 <code>` 用）。
+
+        除了精确命中，还接受"码的前缀"：用户从历史里抄码容易少几位，
+        只要前缀在全部记录里**唯一**就认定。多个命中返回 None（宁可让用户重抄，
+        也不要发错图 —— 与表情取图"重名不猜"的原则一致）。
+        """
+        want = (code or "").strip().lower()
+        if not want:
+            return None
+        with self._lock:
+            items = list(self._all_locked())
+        hits = [e for e in items
+                if (e.get("media") or "").lower() == want]
+        if len(hits) == 1:
+            return hits[0]
+        if len(want) >= 4:
+            pref = [e for e in items
+                    if (e.get("media") or "").lower().startswith(want)]
+            if len(pref) == 1:
+                return pref[0]
+            if len(pref) > 1:
+                return None
+        return None
+
+    def media_codes(self) -> list[str]:
+        """出现过的图片引用码（诊断用）。"""
+        with self._lock:
+            items = list(self._all_locked())
+        return [str(e["media"]) for e in items if e.get("media")]
 
     def sources(self) -> list[str]:
         """出现过的来源标签（按首次出现顺序）。"""

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import threading
@@ -38,18 +39,25 @@ _FALLBACK_LOGGER = logging.getLogger("xtc_qq_bridge")
 
 # 项目元信息：与 src/xtc_qq_bridge/version.py 保持一致（tests 会校验，避免两处漂移）。
 # 插件作为独立目录安装到 AstrBot，无法 import 主程序包，因此这里保留一份。
-_PLUGIN_VERSION = "1.0.0-beta.3"
+_PLUGIN_VERSION = "1.0.0-rc.1"
 _PLUGIN_TITLE = "XTC-QQ-Bridge"
 _PLUGIN_AUTHOR = "Dinganzhi"
 _PLUGIN_REPO = "https://github.com/Dinganzhi/xtc-qq-bridge"
 _PLUGIN_ISSUES = _PLUGIN_REPO + "/issues"
 _PLUGIN_LICENSE = "Apache-2.0"
 _PLUGIN_COPYRIGHT = "Copyright 2026 Dinganzhi"
+# 与主程序 version.py 的 FEATURE_FROZEN 对应：1.0.0-rc.1 起不再新增功能。
+_PLUGIN_FEATURE_FROZEN = True
 
 
 def _about_text() -> str:
-    """「关于」命令文案（精简，避免在 QQ/手表上刷屏）。"""
-    return (f"{_PLUGIN_TITLE} {_PLUGIN_VERSION}\n"
+    """「关于」命令文案（精简，避免在 QQ/手表上刷屏）。
+
+    行数上限 6 行（与主程序一致，tests 有守卫），所以"功能冻结"附在首行版本号后面。
+    """
+    head = (f"{_PLUGIN_TITLE} {_PLUGIN_VERSION}"
+            + ("（功能冻结）" if _PLUGIN_FEATURE_FROZEN else ""))
+    return (f"{head}\n"
             f"作者：{_PLUGIN_AUTHOR}\n"
             f"许可：{_PLUGIN_LICENSE}\n"
             f"仓库：{_PLUGIN_REPO}\n"
@@ -63,8 +71,24 @@ _USAGE = ("用法：\n"
           "/小天才 自动登录      开启/关闭十分钟自动登录检测\n"
           "/小天才 初始化        检测并恢复界面状态（登录/聊天/输入框）\n"
           "/小天才 历史消息 [条数] [来源]  查看历史记录（默认20条，可只看 手表/QQ群/QQ私聊）\n"
+          "/小天才 查看图片 <编码>  把历史里那张图重新发回来（编码见历史里的 #xxx）\n"
           "/小天才 关于          查看版本、作者、仓库、许可证信息\n"
           "/小天才 命令模式      切换命令模式（开=仅命令转发；关=所有新消息都转发）")
+
+
+def _as_int(value, default: int) -> int:
+    """把请求体里的值安全地转成 int。
+
+    直接用 `int(body.get("limit") or 30)` 时，一个 `"limit": "abc"`（或 `[1,2]`）
+    就会抛 ValueError/TypeError —— 那是在 HTTP 处理线程里，异常会直接变成
+    连接被重置（桥接侧只看到"连不上插件"，很难查）。
+    """
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _consume_future_exception(future: Future) -> None:
@@ -87,7 +111,10 @@ class Main(star.Star):
         self._httpd: ThreadingHTTPServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: list[tuple[str, str, str, str]] = []  # (target_type, target_id, text, image_b64)
-        self._platform_ids: set[str] = set()  # 最近收到过消息的平台 ID
+        # 最近收到过消息的平台 ID。用 list 保存**到达顺序**并去重：
+        # 旧实现是 set + next(iter(...))，多平台（如同时接了 aiocqhttp 与其它适配器）
+        # 时取到哪个是**随机**的 —— 于是转发会随机落到错的平台、报"未找到平台"。
+        self._platform_ids: list[str] = []
         # 待回传结果：request_id -> Future；/api/result 到达后由原事件引用+@ 回复发送人
         self._pending_replies: dict[str, asyncio.Future] = {}
         self._pending_posts: dict[str, asyncio.Task] = {}
@@ -157,7 +184,7 @@ class Main(star.Star):
     async def on_xtc_command(self, event: AstrMessageEvent, args: GreedyStr) -> None:
         """子命令：发送 / 登录 / 自动登录 / 初始化 / 命令模式。"""
         try:
-            self._platform_ids.add(event.session.platform_id)
+            self._remember_platform(event)
             if not self._is_sender_allowed(event):
                 event.set_result(event.plain_result("无权限执行此命令（不在白名单）"))
                 return
@@ -180,6 +207,8 @@ class Main(star.Star):
                 await self._toggle_flow(event, "init")
             elif sub in ("历史消息", "history"):
                 await self._history_flow(event, rest)
+            elif sub in ("查看图片", "看图", "image"):
+                await self._view_image_flow(event, rest)
             elif sub in ("关于", "about", "版本", "version"):
                 event.set_result(event.plain_result(_about_text()))
             elif sub == "命令模式":
@@ -198,7 +227,7 @@ class Main(star.Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_all_message(self, event: AstrMessageEvent) -> None:
         try:
-            self._platform_ids.add(event.session.platform_id)
+            self._remember_platform(event)
             # 机器人自己发出去的消息（NapCat 可能回环）不处理：不转发、不记录活动
             if self._is_self_message(event):
                 return
@@ -219,6 +248,19 @@ class Main(star.Star):
             await self._forward_to_python(self._base_payload(event, message=message))
         except Exception as e:  # noqa: BLE001
             self._lg().exception(f"[xtc_qq_bridge] 全量转发异常: {e}")
+
+    def _remember_platform(self, event: AstrMessageEvent) -> None:
+        """记下这条事件来自哪个平台，**最近用过的排最前**（作为未配置 platform_id 时的兜底）。"""
+        try:
+            pid = str(event.session.platform_id or "")
+        except Exception:  # noqa: BLE001 取不到就跳过
+            return
+        if not pid:
+            return
+        if pid in self._platform_ids:
+            self._platform_ids.remove(pid)
+        self._platform_ids.insert(0, pid)
+        del self._platform_ids[8:]          # 只留最近 8 个，避免无限增长
 
     def _is_self_message(self, event: AstrMessageEvent) -> bool:
         """消息是否机器人自己发出（部分平台会回环自己发过的消息）。"""
@@ -241,7 +283,7 @@ class Main(star.Star):
         if not parts or parts[0] != "小天才":
             return False
         subs = {"发送", "登录", "自动登录", "初始化", "命令模式", "历史消息",
-                "搜索", "在线人数", "提醒", "帮助", "关于", "版本",
+                "查看图片", "看图", "搜索", "在线人数", "提醒", "帮助", "关于", "版本",
                 "小天才登录", "help", "about", "version", "发送登录"}
         if len(parts) == 1:
             return True  # 单独"小天才"= 帮助
@@ -321,6 +363,28 @@ class Main(star.Star):
             await self._send_plain_chunks(event, result)
         else:
             event.set_result(event.plain_result(result))
+
+    async def _view_image_flow(self, event: AstrMessageEvent, args: str) -> None:
+        """/小天才 查看图片 <编码>：让桥接把历史里归档的那张图重新发到 QQ。
+
+        图片由桥接侧直接通过转发器发到配置的 QQ 目标（不经过插件回传），
+        这里只负责把"成功/失败"告诉用户，避免用户不知道图到底发没发。
+        """
+        code = (args or "").strip().lstrip("#").strip()
+        if not code:
+            event.set_result(event.plain_result(
+                "用法：/小天才 查看图片 <编码>\n"
+                "编码在 /小天才 历史消息 的图片行尾（#xxxxxxxx），可直接复制。"))
+            return
+        result = await self._post_and_wait(
+            event, action="history_media", extra={"media_code": code}, timeout=90)
+        if result:
+            event.set_result(event.plain_result(result))
+        else:
+            # 桥接已把图直接发到 QQ；没有文本回传时也要给一句确认，别让用户干等
+            await self._send_plain_to_session(
+                event, f"已请求重新发送历史图片 #{code}（若几秒内没看到，"
+                       "请检查桥接日志与 QQ 目标配置）")
 
     async def _send_plain_chunks(self, event: AstrMessageEvent, text: str,
                                  chunk: int = 1100) -> None:
@@ -561,7 +625,7 @@ class Main(star.Star):
         """
         platform = self.config.get("platform_id") or ""
         if not platform and self._platform_ids:
-            platform = next(iter(self._platform_ids))
+            platform = self._platform_ids[0]      # 最近活跃的平台（不再是 set 的随机项）
         if not platform:
             err = ("无法确定平台 ID：请先让 QQ 给机器人发一条消息，"
                    "或在插件配置里填写 platform_id（可让机器人执行 /sid 查看）")
@@ -597,7 +661,7 @@ class Main(star.Star):
     def _pick_platform_id(self) -> str:
         pid = (self.config.get("platform_id") or "").strip()
         if not pid and self._platform_ids:
-            pid = next(iter(self._platform_ids))
+            pid = self._platform_ids[0]           # 最近活跃的平台（不再是 set 的随机项）
         return pid
 
     def _get_bot(self):
@@ -794,13 +858,38 @@ class _HttpHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "not found"}, 404)
 
     def _auth(self) -> bool:
+        """校验共享 token。用 `compare_digest` 比较：`==` 在长度不同的前缀上会提前返回，
+        属于可测量的时序侧信道（本机回环风险低，但这是免费的加固）。
+        未配置 token 时保持旧行为（不校验），只是在日志里提示一次。"""
         expected = self.plugin.config.get("token", "") if self.plugin else ""
-        return not expected or self.headers.get("X-Bridge-Token", "") == expected
+        if not expected:
+            if self.plugin is not None and not getattr(self.plugin, "_token_warned", False):
+                self.plugin._token_warned = True
+                self.plugin._lg().warning(
+                    "[xtc_qq_bridge] 插件未配置 token：本地 HTTP 端点不做鉴权"
+                    "（建议把桥接 forward.plugin.token 与插件 token 配成同一个随机串）")
+            return True
+        got = self.headers.get("X-Bridge-Token", "") or ""
+        try:
+            return hmac.compare_digest(str(got), str(expected))
+        except Exception:  # noqa: BLE001 比较失败一律当不通过
+            return False
+
+    # 允许的最大请求体（字节）。转发图片是 base64，2 MB 图约 2.7 MB，给到 16 MB 足够；
+    # 旧实现直接按 Content-Length 读入内存，一个畸形/恶意请求就能把插件内存吃光。
+    _MAX_BODY = 16 * 1024 * 1024
 
     def _read_json(self) -> dict | None:
         try:
-            n = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(n) or b"{}")
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if n < 0 or n > self._MAX_BODY:
+            return None
+        try:
+            raw = self.rfile.read(n) if n else b"{}"
+            obj = json.loads(raw or b"{}")
+            return obj if isinstance(obj, dict) else None
         except Exception:  # noqa: BLE001
             return None
 
@@ -839,12 +928,12 @@ class _HttpHandler(BaseHTTPRequestHandler):
                 str(body.get("keyword", "")),
                 body.get("allow_from") or [],
                 body.get("allow_groups") or [],
-                int(body.get("limit") or 30))
+                _as_int(body.get("limit"), 30))
             self._json(result)
             return
         if path == "/api/qq_online":
             result = self.plugin.qq_online_request(
-                int(body.get("minutes") or 10),
+                _as_int(body.get("minutes"), 10),
                 body.get("allow_from") or [],
                 body.get("allow_groups") or [])
             self._json(result)

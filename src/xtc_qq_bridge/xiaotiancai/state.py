@@ -128,7 +128,7 @@ class StateMixin:
     def _recover_window(self) -> bool:
         """把"窗口"找回来：先收键盘，再（必要时）唤醒屏幕 + 重新拉起 App。
 
-        返回是否执行了恢复动作。没有焦点窗口时（容器窗口被最小化/关闭、息屏），
+        返回是否执行了恢复动作。没有焦点窗口时（窗口被最小化/关闭、息屏），
         `launch()` 因为 Activity 仍是 resumed 会直接跳过，所以这里直接调 adb 拉起。
         """
         acted = False
@@ -139,15 +139,15 @@ class StateMixin:
         try:
             # 两种情况都要把窗口找回来：
             #   ① 没有任何窗口有焦点（mCurrentFocus=null，见实时日志）
-            #   ② 前台是**别的 App**（例如 容器 主屏 com.microsoft.windows.homeapp，
-            #      用户日志里就是这个场景）——此时 dump 同样会失败
+            #   ② 前台是**别的 App**（例如系统桌面，或模拟器/容器自己的主屏）
+            #      ——此时 dump 同样会失败
             foreign = False
             if self.adb.has_focus_window():
                 foreign = not self.adb.is_in_foreground(self.package)
             needs = (not self.adb.has_focus_window()) or foreign
             if needs:
                 why = "前台是其它窗口" if foreign else "没有任何窗口获得焦点"
-                self.log("info", f"{why}（可能是 容器窗口被最小化/关闭、屏幕未点亮，"
+                self.log("info", f"{why}（可能是窗口被最小化/关闭、屏幕未点亮，"
                                  f"或 App 没在前台），正在唤醒屏幕并重新拉起小天才 App ...")
                 if self.adb.screen_on() is not True:
                     self.adb.wake_up()
@@ -311,7 +311,7 @@ class StateMixin:
         if state == self.NOT_LOGGED_IN:
             if not self._warned_not_login:
                 self.log("warning", "小天才 App 未登录家长账号：请在目标 Android 环境"
-                                    "（模拟器/容器/Waydroid/真机）里完成登录（登录前无法读取/发送消息）")
+                                    "（模拟器 / Waydroid / 真机）里完成登录（登录前无法读取/发送消息）")
                 self._warned_not_login = True
             return False
         if state == self.LOGIN_UNKNOWN:

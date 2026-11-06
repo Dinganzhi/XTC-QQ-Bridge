@@ -16,10 +16,22 @@ NapCat 直报配置（可选，与插件转发二选一）：
 """
 from __future__ import annotations
 
+import hmac
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+# 请求体上限（字节）：转发一张 2 MB 的图，base64 后约 2.7 MB，16 MB 足够宽松。
+_MAX_BODY = 16 * 1024 * 1024
+
+
+def _token_ok(got: str, expected: str) -> bool:
+    """常量时间比较 token（长度不同也走 compare_digest，不会因前缀相同而早退）。"""
+    try:
+        return hmac.compare_digest(str(got or ""), str(expected or ""))
+    except Exception:  # noqa: BLE001 非常规类型（如 surrogate）一律当不通过
+        return False
 
 # 每个动作的中文名（日志用）
 _ACTION_NAMES = {
@@ -27,6 +39,7 @@ _ACTION_NAMES = {
     "auto_login": "自动登录开关",
     "init": "初始化",
     "history": "历史消息",
+    "history_media": "查看历史图片",
 }
 
 
@@ -49,6 +62,25 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                           path: str = "/qq_callback", token: str = "",
                           logger=None) -> ThreadingHTTPServer:
     route = path.rstrip("/") or "/"
+    # 同时在跑的回调后台线程上限。旧实现是"每来一个回调就起一个 daemon 线程"，
+    # 一次刷屏/被重试风暴打中就会起几百个线程抢 ADB，界面直接乱。
+    # 超限时明确回 503（NapCat 会重投），而不是把任务悄悄丢掉。
+    _slots = threading.BoundedSemaphore(8)
+
+    def _spawn(target, args: tuple, name: str) -> bool:
+        if not _slots.acquire(blocking=False):
+            return False
+
+        def run():
+            try:
+                target(*args)
+            except Exception as e:  # noqa: BLE001 后台线程异常只记日志
+                _log(logger, "warning", f"[QQ回调] {name} 执行异常: {e}")
+            finally:
+                _slots.release()
+
+        threading.Thread(target=run, daemon=True, name=name).start()
+        return True
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # 静默访问日志（我们有自己的业务日志）
@@ -78,16 +110,31 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                 return
             got = (self.headers.get("X-Bridge-Token", "")
                    or parse_qs(parsed.query).get("access_token", [""])[0])
-            if token and got != token:
+            # token 一律用 compare_digest 比较：`!=` 在第一个不同字节就返回，
+            # 是可以被测出长度的时序侧信道（本机回环风险低，但这是零成本的加固）。
+            if token and not _token_ok(got, token):
                 _log(logger, "warning", "[QQ回调] token 不匹配，已拒绝（检查 "
                                        "webhook.token 与插件 python_callback_token 是否一致）")
                 self._send(401, b"unauthorized")
                 return
             try:
-                n = int(self.headers.get("Content-Length", 0))
+                n = int(self.headers.get("Content-Length", 0) or 0)
+            except (TypeError, ValueError):
+                n = -1
+            # 上限保护：旧实现按 Content-Length 无限制读入内存，一个畸形请求
+            # （或者误配的大 body）就能把常驻进程的 RSS 顶上去。
+            if n < 0 or n > _MAX_BODY:
+                _log(logger, "warning", f"[QQ回调] 请求体过大或长度非法（{n} 字节），已拒绝")
+                self._send(413, b"payload too large")
+                return
+            try:
                 data = json.loads(self.rfile.read(n) or b"{}")
             except Exception:  # noqa: BLE001
                 _log(logger, "warning", "[QQ回调] 请求体不是合法 JSON，已忽略")
+                self._send(400, b"bad json")
+                return
+            if not isinstance(data, dict):
+                _log(logger, "warning", "[QQ回调] 请求体不是 JSON 对象，已忽略")
                 self._send(400, b"bad json")
                 return
 
@@ -108,11 +155,12 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
             if message:
                 # 白名单已在校验与 extract_message 里做过（拒绝时已写日志）
                 _log(logger, "info", f"[QQ回调] 放行 -> 转发到小天才（来源={_where(user, group)}）")
-                threading.Thread(
-                    target=bridge.forward_to_xiaotiancai,
-                    args=(message, user, group, request_id),
-                    daemon=True, name="qq-to-xtc",
-                ).start()
+                if not _spawn(bridge.forward_to_xiaotiancai,
+                              (message, user, group, request_id), "qq-to-xtc"):
+                    _log(logger, "warning",
+                         "[QQ回调] 转发任务已满（同时最多 8 个），本次回 503 让上游重投")
+                    self._send(503, b"busy")
+                    return
                 self._send(200, b"OK")
                 return
 
@@ -129,19 +177,13 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                     self._send(200, b"IGNORED")
                     return
                 if action == "login":
-                    threading.Thread(
-                        target=bridge.login_xiaotiancai, args=(request_id,),
-                        daemon=True, name="xtc-login",
-                    ).start()
+                    _spawn(bridge.login_xiaotiancai, (request_id,), "xtc-login")
                     self._send(200, b"OK")
                 elif action == "auto_login":
                     bridge.toggle_auto_login(request_id)
                     self._send(200, b"OK")
                 elif action == "init":
-                    threading.Thread(
-                        target=bridge.init_xiaotiancai, args=(request_id,),
-                        daemon=True, name="xtc-init",
-                    ).start()
+                    _spawn(bridge.init_xiaotiancai, (request_id,), "xtc-init")
                     self._send(200, b"OK")
                 elif action == "history":
                     try:
@@ -149,11 +191,14 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                     except (TypeError, ValueError):
                         count = 20
                     src = str(data.get("history_source") or "").strip()
-                    threading.Thread(
-                        target=bridge.fetch_xtc_history,
-                        args=(count, request_id, False, src),
-                        daemon=True, name="xtc-history",
-                    ).start()
+                    _spawn(bridge.fetch_xtc_history,
+                           (count, request_id, False, src), "xtc-history")
+                    self._send(200, b"OK")
+                elif action == "history_media":
+                    # `/小天才 查看图片 <码>`：把历史里归档的那张图重新发到 QQ
+                    code = str(data.get("media_code") or "").strip()
+                    _spawn(bridge.fetch_xtc_media, (code, request_id),
+                           "xtc-history-media")
                     self._send(200, b"OK")
                 else:
                     _log(logger, "warning", f"[QQ回调] 未知动作: {action}（已忽略）")

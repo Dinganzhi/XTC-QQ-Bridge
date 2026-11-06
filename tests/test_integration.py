@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """集成测试：用"假 ADB 命令执行器"替换 subprocess，跑通 ADBController 的真实逻辑链，
-不需要设备/模拟器/容器，也不依赖文件系统。
+不需要真机/模拟器，也不依赖文件系统。
 
 覆盖：
-  - 连接：没有在线设备时自动 connect 容器 端口（58526）；已有设备优先，不去抢端口
+  - 连接：没有在线设备时自动 connect 候选端口；已有设备优先，不去抢端口
   - 启动：resolve-activity 输出带警告行时仍能解析；`am start -n` 失败后 monkey 兜底；
           前台判定兼容 Android 13 的 topResumedActivity
   - 文本注入：以输入框真实内容校验；明文被吞 -> base64 救回；全失败 -> 老实返回 False
-  - 剪贴板：回读不一致（容器 把宿主剪贴板内容读回来）时绝不按 KEYCODE_PASTE
+  - 剪贴板：回读不一致（把宿主剪贴板内容读回来）时绝不按 KEYCODE_PASTE
 
 用法：python tests/test_integration.py
 """
@@ -86,7 +86,7 @@ class FakeAdb:
                 return "", "adb: device offline\n"
             return "device\n", ""
         if cmd == "devices":
-            # listed=False：设备尚未注册到 adb server（容器刚开机/重启后的真实情形）
+            # listed=False：设备尚未注册到 adb server（模拟器刚开机/重启后的真实情形）
             visible = self.connected and self.listed
             return ("List of devices attached\n127.0.0.1:58526\tdevice\n"
                     if visible else "List of devices attached\n"), ""

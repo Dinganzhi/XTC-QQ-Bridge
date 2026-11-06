@@ -128,9 +128,12 @@ class MediaMixin:
         绝不能把"补发一条 21:30 的消息"写成"转发时的 07:31"。
 
         规则：
-          1. 标签距今 <= `label_now_window`（默认 300 秒）= 这条就是"刚刚发生"的 ——
-             App 的分组标签只画在组首，组内后续消息会**早 1~2 分钟**（实测），
-             所以这里用**当前时间**（轮询间隔只有 2~4 秒，误差远小于标签的偏差）；
+          1. 标签距今 <= `label_recent_window`（默认 600 秒）= 用**观测到的当前时间**。
+             其中 `label_now_window`（默认 300 秒）以内属于"刚刚发生"；
+             而 300~600 秒这一段，是因为 App 的分组标签只画在组首、组内后续消息的标签
+             会**早 1~2 分钟**（实测 08:19~08:23 的 5 条标签全是 08:19），设备侧又拿不到
+             逐条时间，所以同样用观测时间，避免整组都写成组首时间。
+             两者结论相同，代码里合并为同一个分支（`label_now_window` 只影响语义说明）；
           2. 更早的标签 = 补发/积压消息 -> 用**原始标签**（绝对化成 `MM-DD HH:MM`），
              不再替换成当前时间；
           3. 完全没有标签 -> 用"上一条已入库消息的时间"（见 `_estimate_time_label`）。
@@ -140,14 +143,15 @@ class MediaMixin:
         now = time.time()
         ident = self._abs_time_label(label) or (label or "")
         age = self._label_age(ident)
-        if age is not None and age <= self._label_now_window:
-            return datetime.fromtimestamp(now).strftime("%m-%d %H:%M")
         if age is not None and age <= self._label_recent_window:
-            # App 只给一组消息的第一条画时间标签，同组后续消息共用组首时间（实测
-            # 08:19~08:23 的 5 条消息标签全是 08:19）。设备侧没有逐条时间可用
-            # （节点、dumpsys window、notification、应用数据库都查过），
-            # 因此这段时间内用"观测时间"显示，避免整组都写成组首时间；
+            # 分两种情况，结论相同（都显示"观测时间"），但注释要能说清为什么：
+            #   * <= label_now_window：这条就是刚刚发生的 -> 用当前时间；
+            #   * 落在 now_window ~ recent_window 之间：App 只给一组消息的第一条画时间标签，
+            #     同组后续共用组首时间（实测 08:19~08:23 的 5 条标签全是 08:19），
+            #     设备侧没有逐条时间可用，因此也用"观测时间"，避免整组都写成组首时间。
             # 更早的消息仍用原始标签（补发旧消息绝不打上转发时刻）。
+            # 旧实现把这两个窗口写成两个**完全一样**的分支，`label_now_window` 实际
+            # 不起作用（两个窗口的语义区别只体现在日志/可读性上），这里合并成一个。
             return datetime.fromtimestamp(now).strftime("%m-%d %H:%M")
         if ident:
             return ident                       # 原始时间（绝对化），不改成"现在"
@@ -194,15 +198,15 @@ class MediaMixin:
         return True
 
     def _hint_reconnect(self) -> None:
-        """Android 容器 反复断网时的提示（只提示一次）。"""
+        """设备 ADB 反复断连时的提示（只提示一次）。"""
         if self._reconnect_hinted:
             return
         self._reconnect_hinted = True
         if os.name != "nt":
             return
         self._log("warning",
-                  "若使用 Android 容器 且经常断网，可先在 容器 设置里重启容器"
-                  "请在容器的系统设置里执行修复后重连，桥接会自动重新连接 ADB 并继续")
+                  "若设备经常掉线，先重启模拟器/容器本体（或重连 ADB）"
+                  "恢复后桥接会自动重新连接 ADB 并继续，无需重启桥接")
 
     def _typed_body(self, text: str, kind: str = "") -> str:
         """给转发内容加上**类型标记**，让表情和照片一眼分得开（用户要求）。

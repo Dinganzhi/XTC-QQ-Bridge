@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ADB 探测与平台适配：adb 路径查找、常见端口、容器/模拟器启动、输入法与剪贴板。
+"""ADB 探测与平台适配：adb 路径查找、常见端口、模拟器启动、输入法与剪贴板。
 
 支持环境（Windows / Linux / macOS 均可）：
 - Windows：雷电（LDPlayer）、MuMu 等模拟器
@@ -69,10 +69,10 @@ _UNIX_ADB_CANDIDATES = [
     "/snap/bin/adb",
 ]
 
-# 模拟器/容器常见的 adb 端口
+# 模拟器常见的 adb 端口
 #   5555   = 通用 TCP/IP 调试（Genymotion、Android-x86、真机网络调试、雷电/MuMu）
 #   16384  = MuMu；7555 = 部分雷电实例；21503 = 逍遥；62001/62025 = 夜神
-#   5556   = Waydroid 多实例；6520 = Android 容器常见端口
+#   5556   = Waydroid 多实例；6520 = 部分镜像（含无线调试）常用端口
 _EMULATOR_COMMON_PORTS = [5555, 16384, 7555, 21503, 62001, 62025, 5556, 6520]
 
 # uiautomator dump 的落盘目录候选（按可写性排序）。
@@ -178,7 +178,7 @@ def platform_tag() -> str:
 
 def _unauthorized_tip(serial: str) -> str:
     if serial.startswith(("emulator-", "127.0.0.1", "localhost")):
-        return "请在该模拟器/容器窗口里点击『允许 USB 调试』"
+        return "请在该模拟器/容器窗口（或真机屏幕）上点击『允许 USB 调试』"
     if IS_WINDOWS:
         return "请在手机上允许 USB 调试（或 adb kill-server 后重试）"
     return ("请在手机上允许 USB 调试；若列表里根本无法看到设备，"
@@ -217,8 +217,8 @@ def _environment_hints() -> list[str]:
                  "GROUP=\"plugdev\"' | sudo tee /etc/udev/rules.d/51-android.rules`，"
                  "再 `sudo udevadm control --reload-rules && sudo udevadm trigger`；"
                  "用户需在 plugdev 组（sudo usermod -aG plugdev $USER 后重新登录）")
-    hints.append("若通过 SSH/容器运行，注意 X11/Wayland 显示与 /dev/kvm 权限"
-                 "（容器内运行模拟器需要 --device /dev/kvm）")
+    hints.append("若通过 SSH / 无桌面环境运行，注意 X11/Wayland 显示与 /dev/kvm 权限"
+                 "（Docker 里跑模拟器需要 --device /dev/kvm）")
     return hints
 
 

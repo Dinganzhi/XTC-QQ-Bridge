@@ -29,15 +29,23 @@ def normalize(text: str) -> str:
 
 
 class Deduplicator:
-    """容量上限 + TTL 的 LRU 去重。seen() 只查不记，mark() 记录。"""
+    """容量上限 + TTL 的 LRU 去重。seen() 只查不记，mark() 记录。
+
+    **线程安全**：轮询线程会 seen()/mark()，webhook 线程与工作线程也会 mark()。
+    早期版本没有锁，"先 seen 再 mark"之间可能被另一线程插入，同一条消息会被
+    两个线程同时判成新消息；这里补上与 EchoFilter / HistoryFilter 一致的锁。
+    """
 
     def __init__(self, capacity: int = 200, ttl: float = 120.0):
         self.capacity = capacity
         self.ttl = ttl
         self._data: OrderedDict[str, float] = OrderedDict()
+        self._lock = threading.Lock()
 
     def _purge(self, now: float) -> None:
-        expired = [k for k, ts in self._data.items() if now - ts > self.ttl]
+        # 过期的两种情况：超过 TTL，或时间戳落在未来（时钟回拨 / 旧 monotonic 数据）。
+        expired = [k for k, ts in self._data.items()
+                   if now - ts > self.ttl or now - ts < -_FUTURE_TOLERANCE]
         for k in expired:
             del self._data[k]
         while len(self._data) > self.capacity:
@@ -45,19 +53,27 @@ class Deduplicator:
 
     def seen(self, *parts) -> bool:
         now = time.monotonic()
-        self._purge(now)
         key = _hash(*[normalize(p) for p in parts])
-        return key in self._data
+        with self._lock:
+            self._purge(now)
+            return key in self._data
 
     def mark(self, *parts) -> None:
         now = time.monotonic()
         key = _hash(*[normalize(p) for p in parts])
-        self._data[key] = now
-        self._data.move_to_end(key)
-        self._purge(now)
+        with self._lock:
+            self._data[key] = now
+            self._data.move_to_end(key)
+            self._purge(now)
 
     def clear(self) -> None:
-        self._data.clear()
+        with self._lock:
+            self._data.clear()
+
+
+# 允许的时间戳"超前"容差（秒）：同一台机器上落盘与读回之间会差几十毫秒，
+# 秒级校时（NTP 微调）也可能让 ts 略微大于 now，这些都不算"未来"。
+_FUTURE_TOLERANCE = 5.0
 
 
 class EchoFilter:
@@ -82,9 +98,21 @@ class EchoFilter:
                 return
             with open(self._store_path, "r", encoding="utf-8") as f:
                 items = json.load(f)
-            now = time.monotonic()
-            for text, ts in items:
-                if now - ts <= self.ttl:
+            # 时间戳必须用**墙钟**（time.time()），与落盘内容一致。
+            # 早期版本写入 time.monotonic()、读回也用 monotonic 比较：monotonic 每次启动
+            # 都从新基准开始（Windows 上是开机时长），重启后 now-ts 可能是**负数** ->
+            # 条目永不失效 -> 被记过的文本会被永久当成"回声"而不再转发（实机表现为
+            # "重启后同样的消息再也不转发了"）。HistoryFilter 的注释已记录过同一个坑。
+            now = time.time()
+            for item in items:
+                try:
+                    text, ts = item[0], float(item[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                # 时间戳在**未来**（时钟被回拨，或读到了早期版本写的 monotonic 值）
+                # 时不能当"新鲜"：那会让 now-ts 恒为负数、条目永不过期 ——
+                # 表现为"重启/校时之后，同样的消息再也不转发了"。
+                if -_FUTURE_TOLERANCE <= now - ts <= self.ttl:
                     self._data[text] = ts
         except Exception:  # noqa: BLE001 读取失败不致命
             self._data.clear()
@@ -102,7 +130,9 @@ class EchoFilter:
             pass
 
     def _purge(self, now: float) -> None:
-        expired = [k for k, ts in self._data.items() if now - ts > self.ttl]
+        # 过期：超过 TTL，或时间戳在未来（时钟回拨 / 旧 monotonic 数据）
+        expired = [k for k, ts in self._data.items()
+                   if now - ts > self.ttl or now - ts < -_FUTURE_TOLERANCE]
         for k in expired:
             del self._data[k]
         while len(self._data) > self.capacity:
@@ -112,7 +142,7 @@ class EchoFilter:
         text = normalize(text)
         if not text:
             return
-        now = time.monotonic()
+        now = time.time()                     # 墙钟：与落盘格式一致（见 _load）
         with self._lock:
             self._data[text] = now
             self._data.move_to_end(text)
@@ -120,7 +150,7 @@ class EchoFilter:
             self._save()
 
     def is_echo(self, text: str) -> bool:
-        now = time.monotonic()
+        now = time.time()                     # 墙钟：与落盘格式一致（见 _load）
         with self._lock:
             self._purge(now)
             return normalize(text) in self._data
@@ -168,7 +198,9 @@ class HistoryFilter:
                     key, ts = item[0], float(item[1])
                 except (TypeError, ValueError, IndexError):
                     continue
-                if now - ts <= self.ttl:
+                # 未来时间戳（时钟回拨 / 旧 monotonic 数据）同样要丢弃：
+                # 否则 now-ts 恒为负，条目永不过期，消息会被永久判成"已处理"。
+                if -_FUTURE_TOLERANCE <= now - ts <= self.ttl:
                     self._data[key] = ts
         except Exception:  # noqa: BLE001
             self._data.clear()

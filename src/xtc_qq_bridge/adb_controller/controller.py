@@ -6,7 +6,7 @@ from __future__ import annotations
 UI 树解析等能力。
 
 支持环境（Windows / Linux / macOS 均可）：
-- Windows：雷电（LDPlayer）、MuMu 模拟器、或其它 Android 容器
+- Windows：雷电（LDPlayer）、MuMu、或其它带 ADB 端口的模拟器
 - Linux：Waydroid、Genymotion、Android-x86 / 夜神 / 逍遥等提供 adb 端口的模拟器
 - macOS：Genymotion、Android Studio 模拟器、真机
 - 任何能通过 `adb connect` 接入的 Android 实例（含真机 USB / 网络调试）
@@ -58,7 +58,7 @@ class ADBController:
         self.serial = serial
         # 用户在 config.yaml -> adb.serial 里显式指定的序列号（**只读副本**）。
         # `self.serial` 会在运行期被自动选设备改写，没有这份副本就再也回不到配置值：
-        # 一次 `get-state` 抖动（容器重启、刚唤醒）就会把桥接悄悄切到另一台设备上。
+        # 一次 `get-state` 抖动（模拟器重启、刚唤醒）就会把桥接悄悄切到另一台设备上。
         self._serial_cfg = (serial or "").strip()
         self.timeout = timeout
         self.logger = logger or _silent_logger()
@@ -173,7 +173,7 @@ class ADBController:
         return states
 
     def _port_candidates(self) -> list[int]:
-        """连接候选端口：配置端口 -> 配置端口 -> 容器 常见端口 -> 模拟器常见端口。"""
+        """连接候选端口：配置端口 -> 额外端口 -> 常见模拟器端口（见 _EMULATOR_COMMON_PORTS）。"""
         cands: list[int] = []
         for p in [self.port] + self.extra_ports + _EMULATOR_COMMON_PORTS:
             p = int(p or 0)
@@ -184,7 +184,8 @@ class ADBController:
     def connect(self, ports: list[int] | None = None, timeout: float = 8.0) -> bool:
         """依次尝试候选端口连接；**已有的在线设备永远优先**（不会被覆盖）。
 
-        设备的 ADB 无线调试端口默认 58526（容器Builds 同），雷电/MuMu 为 5555/16384。
+        雷电/MuMu 为 5555/16384，夜神 62001、逍遥 21503，Waydroid 5555/5556；
+        真机的无线调试端口由系统随机分配，用 adb.port 或 adb.serial 指定。
         """
         if self.is_connected():
             return True
@@ -238,7 +239,7 @@ class ADBController:
         return False
 
     def _adopt_serial(self, prefer: str = "") -> bool:
-        """从**在线**设备里挑一个（容器/已有设备优先），成功后写入 self.serial。
+        """从**在线**设备里挑一个（已有在线设备优先），成功后写入 self.serial。
 
         注意：不能只凭 `adb connect` 回的那句 "connected" 就认账 —— 设备 offline 时它
         也会回 "already connected to ..."，照单全收就会一直"重连成功"却什么都无法读取。
@@ -291,7 +292,7 @@ class ADBController:
     def _recover_offline(self, target: str, timeout: float = 8.0) -> bool:
         """设备处于 offline（transport 卡死）时的分级恢复：disconnect+connect -> 重启 adb server。
 
-        实机（容器 `127.0.0.1:58526`）踩过：`adb devices` 一直显示 offline，`adb connect`
+        实机（网络调试设备 `127.0.0.1:5555`）踩过：`adb devices` 一直显示 offline，`adb connect`
         只回 "already connected to ..."，桥接于是每 10 秒"重连"一次却始终连不上，
         日志刷"ADB 断连，尝试重连... / ADB 已重连"；手动 `adb disconnect` + `connect`
         立刻恢复。这里把这一步自动化，避免"重连了个寂寞"。
@@ -318,17 +319,17 @@ class ADBController:
             self.serial = target
             self.logger.info(f"设备 {target} 已恢复在线（重启 adb server 后）")
             return True
-        self.logger.warning(f"设备 {target} 仍是 offline：通常为容器侧网络异常或容器无响应，"
-                            "可在 容器 设置里点击「修复」或重启容器")
+        self.logger.warning(f"设备 {target} 仍是 offline：通常是设备/模拟器侧无响应，"
+                            "请重启模拟器或容器本体，再确认 ADB 调试仍开启")
         return False
 
     def _pick_serial(self, serials: list[str] | None = None) -> str:
         serials = list(serials if serials is not None else self.devices())
         if not serials:
-            raise AdbError("没有在线设备：请先启动模拟器 / 容器（并确认 ADB 调试已开启）")
+            raise AdbError("没有在线设备：请先启动模拟器 / 容器 / 接通真机（并确认 ADB 调试已开启）")
         if len(serials) == 1:
             return serials[0]
-        # 多设备：优先 容器（127.0.0.1:<非模拟器端口>），其次 adb 原生 emulator-XXXX
+        # 多设备：优先 adb 原生 emulator-XXXX；其余情况要求用户显式指定 adb.serial
         for s in serials:
             if s.startswith("emulator-"):
                 return s
@@ -341,7 +342,7 @@ class ADBController:
                 state = out.strip().lower()
                 if state == "device":
                     return True
-                # serial 失效（容器 重启后端口会变）：清掉重新选。
+                # serial 失效（模拟器重启后端口会变）：清掉重新选。
                 # 这条会随 10 秒心跳反复出现，所以节流成 60 秒一次，避免重复输出。
                 self._log_throttled(
                     f"state_{self.serial}",
@@ -457,7 +458,7 @@ class ADBController:
 
 
     def runtime_tag(self) -> str:
-        """运行环境标签：容器 / Waydroid / 模拟器 / 真机（仅用于日志与提示）。"""
+        """运行环境标签：Waydroid / 模拟器 / 真机（仅用于日志与提示）。"""
         blob = self._device_blob()
         if "waydroid" in blob:
             return "Waydroid"
@@ -560,7 +561,7 @@ class ADBController:
         App 是否在前台请用 get_current_activity()（只看 Activity 级信息）。
 
         - Android 12-：`mCurrentFocus=Window{... u0 com.pkg/com.pkg.Act}`
-        - Android 13+ / 容器：`topResumedActivity=ActivityRecord{... u0 com.pkg/.Act t123}`
+        - Android 13+：`topResumedActivity=ActivityRecord{... u0 com.pkg/.Act t123}`
           （此时 mCurrentFocus 可能为空或是输入法/弹窗窗口）
         """
         if not dump:
@@ -629,9 +630,9 @@ class ADBController:
 
         这里要同时看**两层信息**，缺一不可（两个坑都是实机踩出来的）：
         * 只看窗口焦点（mCurrentFocus）：输入法一弹出就抢走焦点，会误判"App 不在前台/未登录"；
-        * 只看 Activity：容器 主屏（com.microsoft.windows.homeapp）抢到窗口时，
-          Activity 仍是小天才的，于是误判"已在前台"，不去把它拉到前台——
-          结果 uiautomator 只能 dump 到 容器 主屏（4 个节点），随后报"找不到联系人"。
+        * 只看 Activity：桌面/别的窗口抢到窗口时，Activity 仍是小天才的，
+          于是误判"已在前台"，不去把它拉到前台——结果 uiautomator 只能 dump 到
+          桌面（寥寥几个节点），随后报"找不到联系人"。
 
         规则：Activity 必须是目标包；窗口要么也是目标包、要么是**输入法/系统弹窗**这类
         叠加层（此时仍算在前台，弹窗清理也正需要读到它）；窗口是**别的 App** 则不算。
@@ -652,7 +653,7 @@ class ADBController:
                        level: str = "info") -> None:
         """同类提示限频：同一个 key 在 `interval` 秒内只打一次日志。
 
-        为什么要它：容器 息屏/窗口失焦时每轮读取都会走到"先唤醒屏幕"这条路径，
+        为什么要它：设备息屏/窗口失焦时每轮读取都会走到"先唤醒屏幕"这条路径，
         旧实现每轮都打一遍（轮询 2~5 秒一次），日志被同一行刷满，真正的异常反而看不见。
         日志文件里出现过一小时两百多行重复的息屏提示。
         """
@@ -688,7 +689,7 @@ class ADBController:
         self._awake_until = time.monotonic() + self._awake_ttl
 
     def wake_up(self) -> bool:
-        """唤醒屏幕并解除锁屏（容器/模拟器息屏后 dump 会一直失败）。返回是否已亮屏。"""
+        """唤醒屏幕并解除锁屏（息屏后 dump 会一直失败）。返回是否已亮屏。"""
         try:
             self.shell("input keyevent 224", timeout=15)      # KEYCODE_WAKEUP
             time.sleep(0.8)
@@ -703,7 +704,7 @@ class ADBController:
     def wake_if_asleep(self) -> bool:
         """**息屏才唤醒**，返回是否真的做了唤醒。
 
-        容器会随宿主窗口状态（窗口失去焦点/被别的窗口盖住）让虚拟屏睡过去：
+        宿主窗口状态（失去焦点/被别的窗口盖住）会让虚拟屏睡过去：
         `screen_off_timeout` 拉到极大值、`svc power stayon true` 都挡不住（实测设置都还在，
         屏照样睡）。所以每次判断"App 是不是在前台"之前先花 ~0.3 秒问一次电源状态，
         睡着就叫醒 —— 唤醒后 App 通常立刻回到前台（它本来就是 resumed 的 Activity），
@@ -736,12 +737,12 @@ class ADBController:
             return False
 
     def keep_awake(self) -> bool:
-        """让容器**保持常亮**（桥接运行期间）。
+        """让设备**保持常亮**（桥接运行期间）。
 
-        实机（容器）测到：虚拟屏会在闲置后进入 Asleep，随后 `uiautomator` 一直返回
+        实机测到：虚拟屏会在闲置后进入 Asleep，随后 `uiautomator` 一直返回
         "null root node"，每次读取都要先唤醒（单次 dump 从 1s 变成 20~45s）。
         这里用两条最通用的设置把屏幕钉住：
-          * `svc power stayon true` —— 充电/连接时常亮（容器 恒为"已连接"）
+          * `svc power stayon true` —— 充电/连接时常亮（模拟器恒为"已连接"）
           * `settings put system screen_off_timeout` 设成极大值 —— 永不自动息屏
         并用一次 WAKEUP 立即点亮。
         """
@@ -767,7 +768,7 @@ class ADBController:
                     "keep-awake-failed",
                     f"保持常亮未生效（screen_off_timeout 仍为 {v} 毫秒），"
                     "设备可能会自动息屏，读取界面将明显变慢；"
-                    "可尝试 root 模式或在容器设置里关闭自动息屏", interval=600)
+                    "可尝试 root 模式或在系统设置里关闭自动息屏", interval=600)
         except AdbError:
             pass                                     # 回读失败不影响判定
         if self.screen_on() is not True:
@@ -877,7 +878,7 @@ class ADBController:
         每次启动后轮询前台确认；未到前台则退避重试整轮。
         返回值为 activity 名或命中的策略名（调用方只需判断非空）。
 
-        速度（实机 容器 实测）：`am start -n` 0.46s 到前台、`monkey` 0.97s 到前台，
+        速度（实机实测）：`am start -n` 0.46s 到前台、`monkey` 0.97s 到前台，
         而 `am start -a MAIN/LAUNCHER` 在有的镜像上**根本起不来**——旧实现给每个策略
         25 秒的前台等待，撞上这种策略就空等 25 秒（用户报"发一条要十几秒"里就有它）。
         现在：① 单策略等待 6 秒、0.4 秒轮询一次；② 输出里一旦出现
@@ -885,7 +886,7 @@ class ADBController:
         不再傻等。
         """
         if not self.package_installed(package):
-            raise AdbError(f"设备上没有安装 {package}（请先在模拟器/容器里安装并登录小天才 App）")
+            raise AdbError(f"设备上没有安装 {package}（请先在模拟器/容器/真机上安装并登录小天才 App）")
         if self.is_in_foreground(package):
             return activity or "already-foreground"
 
@@ -914,7 +915,7 @@ class ADBController:
                 if self.wait_for_activity(package, timeout=wait, interval=0.4):
                     return resolved or name
                 last_err = f"{name}: 命令已执行但未检测到 {package} 前台"
-            # 三套策略都没成功：等一下再来（容器 冷启动/上一个进程未完全退出时常见）
+            # 三套策略都没成功：等一下再来（模拟器冷启动/上一个进程未完全退出时常见）
             time.sleep(2.0 + i * 2.0)
         self.logger.warning(f"启动 {package} 失败：{last_err}")
         return ""
@@ -943,7 +944,7 @@ class ADBController:
         为什么无需 `-p`（PNG）：抠图要按像素裁，而解码 PNG 需要额外依赖（Pillow）。
         `screencap` 不带 `-p` 直接给原始像素，裁剪 + 自己编码 PNG 只用标准库（见 utils/pngtool.py）。
 
-        头部长度：12 字节（w,h,format）或 16 字节（多一个 colorspace，Android 9+ 实测 容器 就是
+        头部长度：12 字节（w,h,format）或 16 字节（多一个 colorspace，Android 9+ 实测就是
         16：第 12~15 字节 = 1）。**按"总长度减去头部后正好等于 w*h*4"来判定**——
         实机实测 len=4196368、w*h*4=4196352：12 字节读法会多出 4 字节（会把像素整体错位一个像素），
         16 字节读法刚好吻合。
@@ -1098,7 +1099,7 @@ class ADBController:
     def _dump_strategies(self) -> list:
         """按"上次成功的先试"的顺序返回 dump 策略。
 
-        为什么**优先完整 dump**（实机 容器 实测）：`--compressed` 会把消息时间标签
+        为什么**优先完整 dump**（实机实测）：`--compressed` 会把消息时间标签
         节点（tv_chat_msg_item_date）整片裁掉——同一屏压缩版 19 个节点 / 0 个时间标签，
         完整版 46 个节点 / 3 个时间标签；时间标签一丢，每条消息的时间就退化成
         "当前时间"（用户报的"消息时间还是不对"就是这么来的）。
@@ -1145,7 +1146,7 @@ class ADBController:
         """是否像"息屏/锁屏/安全窗口"导致的 dump 失败。
 
         实测报错：`ERROR: null root node returned by UiTestAutomationBridge.`
-        （容器 息屏后必然出现；也可能出现在 FLAG_SECURE 窗口上）。
+        （息屏后必然出现；也可能出现在 FLAG_SECURE 窗口上）。
         """
         joined = " ".join(details).lower()
         return ("null root node" in joined or "screen is off" in joined
@@ -1162,7 +1163,7 @@ class ADBController:
         """当前是否有**任何**获得焦点的窗口。
 
         `mCurrentFocus=null`（没有任何窗口有焦点）是 设备上的典型状态：
-        容器窗口被最小化/关闭、或虚拟显示未点亮时，uiautomator 会一直返回
+        宿主窗口被最小化/关闭、或虚拟显示未点亮时，uiautomator 会一直返回
         "ERROR: null root node returned by UiTestAutomationBridge."。
         调用方据此决定"唤醒屏幕 / 重新拉起 App"来把窗口找回来。
         """
@@ -1194,11 +1195,11 @@ class ADBController:
         key_detail = next((d for d in details if self._short_reason(d)), "")
         if "null root node" in low or "no root node" in low:
             reason = "uiautomator 无法取得根节点（屏幕未点亮 / 窗口被最小化或关闭）"
-            hint = ("请让 容器窗口保持打开（最小化或关闭 容器窗口时 Android 侧没有窗口焦点，"
+            hint = ("请让模拟器/容器窗口保持打开（窗口最小化或关闭时 Android 侧没有窗口焦点，"
                     "任何界面读取都会失败）；桥接会自动尝试唤醒屏幕并重新拉起 App")
         elif not focus:
             reason = "没有任何窗口获得焦点（前台为空）"
-            hint = "让 容器窗口保持打开，或等窗口恢复后桥接会自动继续"
+            hint = "让模拟器/容器窗口保持打开，或等窗口恢复后桥接会自动继续"
         elif "idle" in low:
             reason = "界面一直不空闲（转场/加载动画、弹窗或键盘光标）"
             hint = "可调大 adb.dump_retries / adb.dump_delay，或用 /小天才 初始化 清理界面"
@@ -1483,7 +1484,7 @@ class ADBController:
         if not self.probe_clipboard():
             return False
         if not set_clipboard(self, text):
-            self.logger.warning("剪贴板写入失败/回读不一致（容器 常见），跳过剪贴板注入，"
+            self.logger.warning("剪贴板写入失败/回读不一致（与宿主共享剪贴板的环境常见），跳过剪贴板注入，"
                                 "避免粘出宿主剪贴板里的旧内容")
             return False
         try:
