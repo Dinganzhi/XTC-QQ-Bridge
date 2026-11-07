@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from .. import runtime_paths              # noqa: E402
-from ..version import __version__, FEATURE_FROZEN as _FEATURE_FROZEN  # noqa: E402
+from ..version import __version__         # noqa: E402
 
 try:                                      # 非 UTF-8 控制台（Windows cp1252）下 print 中文不崩
     from ..utils.logger import make_console_tolerant
@@ -219,9 +219,6 @@ def main() -> None:
         log.info(f"XTC-QQ-Bridge {__version__}（小天才 <-> QQ 桥接）| 配置: {cfg_path}")
         log.info(f"数据目录: {runtime_paths.APP_DIR}（{'冻结' if runtime_paths.IS_FROZEN else '源码'}运行）"
                  f"{'' if runtime_paths.IS_FROZEN else ''}")
-        if _FEATURE_FROZEN:
-            # 本版本起功能冻结：在启动横幅里就讲清楚，避免用户等待不会到来的新功能。
-            log.info("提示: 本版本起功能冻结，后续版本只修复问题、不新增功能")
         # 只在真的有文件处理器时取文件名：日志文件打不开时 setup_logger 会退化成
         # 只输出到控制台，此时 handlers[-1] 是 StreamHandler，取 baseFilename 会
         # 直接抛 AttributeError —— "日志写不了不致命"反而变成启动崩溃。

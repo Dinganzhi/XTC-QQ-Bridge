@@ -391,19 +391,14 @@ def test_history_source_from_plugin_payload() -> None:
 def test_about_command_both_sides() -> None:
     """「关于」命令：文案精简且信息完整，手表侧可直接回复，帮助列表里可见。"""
     from xtc_qq_bridge.version import (AUTHOR, LICENSE_NAME, REPO_URL,
-                                       FEATURE_FROZEN, __version__, about_text)
+                                       __version__, about_text)
 
     text = about_text()
     lines = [ln for ln in text.splitlines() if ln.strip()]
     check("关于文案不冗长", len(lines) <= 6 and len(text) <= 240,
           f"{len(lines)} 行 / {len(text)} 字符")
-    # 首行 = 展示名 + 版本，可带一个括注（1.0.0-rc.1 起附「（功能冻结）」）。
-    # 用 startswith 而不是相等：括注只影响首行尾部，不增加行数（手表窄屏只有几行可见）。
     check("关于首行为展示名+版本",
-          lines and lines[0].startswith(f"XTC-QQ-Bridge {__version__}"),
-          lines[0] if lines else "")
-    check("关于标注功能冻结（1.0.0-rc.1 起）",
-          FEATURE_FROZEN is False or "功能冻结" in lines[0],
+          lines and lines[0] == f"XTC-QQ-Bridge {__version__}",
           lines[0] if lines else "")
     check("关于含版本号", __version__ in text, __version__)
     check("关于含作者/仓库/许可证/反馈",
