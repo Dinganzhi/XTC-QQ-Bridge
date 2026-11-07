@@ -46,18 +46,11 @@ _PLUGIN_REPO = "https://github.com/Dinganzhi/xtc-qq-bridge"
 _PLUGIN_ISSUES = _PLUGIN_REPO + "/issues"
 _PLUGIN_LICENSE = "Apache-2.0"
 _PLUGIN_COPYRIGHT = "Copyright 2026 Dinganzhi"
-# 与主程序 version.py 的 FEATURE_FROZEN 对应：1.0.0-rc.1 起不再新增功能。
-_PLUGIN_FEATURE_FROZEN = True
 
 
 def _about_text() -> str:
-    """「关于」命令文案（精简，避免在 QQ/手表上刷屏）。
-
-    行数上限 6 行（与主程序一致，tests 有守卫），所以"功能冻结"附在首行版本号后面。
-    """
-    head = (f"{_PLUGIN_TITLE} {_PLUGIN_VERSION}"
-            + ("（功能冻结）" if _PLUGIN_FEATURE_FROZEN else ""))
-    return (f"{head}\n"
+    """「关于」命令文案（精简，避免在 QQ/手表上刷屏）。"""
+    return (f"{_PLUGIN_TITLE} {_PLUGIN_VERSION}\n"
             f"作者：{_PLUGIN_AUTHOR}\n"
             f"许可：{_PLUGIN_LICENSE}\n"
             f"仓库：{_PLUGIN_REPO}\n"

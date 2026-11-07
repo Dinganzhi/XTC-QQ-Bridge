@@ -11,19 +11,13 @@ ISSUES_URL = REPO_URL + "/issues"
 LICENSE_NAME = "Apache-2.0"
 COPYRIGHT = "Copyright 2026 Dinganzhi"
 
-# 功能冻结开关：1.0.0-rc.1 起不再新增功能，只做缺陷修复与稳定性改进。
-# 置为 True 时，「关于」文案与启动横幅都会多打一行提示，避免使用者期待新功能。
-FEATURE_FROZEN = True
-
 
 def about_text() -> str:
     """「关于」命令文案（QQ 侧与手表侧共用；保持精简，便于手表窄屏显示）。
 
-    行数上限是 6 行（手表窄屏只有寥寥几行可见，tests 有守卫）。功能冻结的提示因此
-    附在**首行版本号后面**，不额外占用一行：`XTC-QQ-Bridge 1.0.0-rc.1（功能冻结）`。
+    行数上限 6 行（手表窄屏只有寥寥几行可见，tests 有守卫）。
     """
-    head = f"{PROJECT_TITLE} {__version__}" + ("（功能冻结）" if FEATURE_FROZEN else "")
-    return (f"{head}\n"
+    return (f"{PROJECT_TITLE} {__version__}\n"
             f"作者：{AUTHOR}\n"
             f"许可：{LICENSE_NAME}\n"
             f"仓库：{REPO_URL}\n"
