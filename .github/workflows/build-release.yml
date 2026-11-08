@@ -1,17 +1,22 @@
 name: build-release
 
 # 触发方式：
-#   - 推送到 main / dev      -> 只跑测试（不编译，省时间）
+#   - 推送到 main / dev / rc/*  -> 只跑测试（不编译，省时间）
 #   - 打 tag（v* 或 1.0.0 这类裸版本号）-> 只编译 + 上传 Actions 产物，**不会**自动发 Release
 #   - 手动 workflow_dispatch -> 编译 + 上传 Actions 产物；必须显式勾选 publish 才创建 Release
 #
-# 分支约定：日常开发推 dev；**预发布版本（alpha/beta/rc）的 tag 与 Release 都打在 dev 上，
-# 不合并进 main**；只有正式版（1.0.0 及之后）才把 dev 合并进 main。
+# 分支约定：
+#   * dev        日常开发；下一个版本的功能都做在这里。
+#   * rc/<版本>  从 dev 分出的发布分支（如 rc/1.0.0），**只修 bug、不加功能**。
+#                修 bug 先提交到 dev，再 cherry-pick 到 rc/<版本>，保证两边一致。
+#   * main       只保留正式版本；正式版发布时才把 rc/<版本> 合并进来。
+#   预发布（alpha/beta/rc）的 tag 与 Release 打在 rc/<版本> 上，不进 main。
 # 本项目约定“没有明确指示就不发布正式版”，所以发布这一步只能由人在
 # Actions 页面手动勾选 publish 触发，打 tag 不会自动发布。
 on:
   push:
-    branches: [main, dev]
+    # rc/* 也要跑测试：发布分支上的修复同样需要 CI 把关
+    branches: [main, dev, "rc/*"]
     # 同时支持 v1.2.0 与裸版本号 1.0.0-alpha.1（本项目 tag 不带 v）
     tags: ["v*", "*.*.*"]
   workflow_dispatch:
