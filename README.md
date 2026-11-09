@@ -53,7 +53,7 @@
 | 理解实现细节、调策略 | [四、原理与实现](#四原理与实现进阶) |
 | 编译成单文件分发 | [五、编译成单文件可执行程序](#五编译成单文件可执行程序nuitka) |
 | 看某个版本改了什么 | [`dev` 分支提交记录](../../commits/dev) 与 `.github/release-notes/` |
-| 了解小天才云端 API（实验性） | [`docs/imoo-api-list.md`](docs/imoo-api-list.md)（地址清单）<br>[`docs/imoo-api.md`](docs/imoo-api.md)（调研记录与结论） |
+| 了解小天才云端 API（实验性） | [`docs/imoo-api-summary.md`](docs/imoo-api-summary.md)（结论速览）<br>[`docs/imoo-api-list.md`](docs/imoo-api-list.md)（地址清单）<br>[`docs/imoo-api.md`](docs/imoo-api.md)（完整记录） |
 
 ## 分支与发布约定
 

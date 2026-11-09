@@ -322,6 +322,27 @@ EncryptKey = base64(RSA-1024-PKCS1(aesKey))               // aesKey = 16 随机 
 - **发文本消息** —— 走私有协议，无 HTTP 接口
 - 绕过登录拿 token —— 需要短信验证码或密码
 
+### 💡 一个可用的折中：`/findWatch/setLeaveMessage`
+
+如果只需要"从手机给手表推一句话"，`/findWatch/setLeaveMessage` 是
+**唯一不需要 IM 协议**的途径。它的语义是"设置留言"——手表会在
+特定界面（找手表/留言板）显示这段文字。
+
+| 项 | 值 |
+|---|---|
+| 方法 | `POST /findWatch/setLeaveMessage` |
+| Host | `watch.okii.com` |
+| 鉴权 | 需 `token` + `authId` |
+| 限制 | 不是聊天消息，手表端不会以"微聊"气泡形式出现；字数通常有限制 |
+
+`/findWatch/getLeaveMessage` 是对应的读取接口。
+
+这条路径的实用价值取决于你的场景：
+* 若只是"通知手表一句话"——够用；
+* 若要像聊天一样双向对话——不够，还得走 IM 协议或 ADB。
+
+**现有 ADB 方案在聊天语义上是完整的**，这也是它目前仍是主路径的原因。
+
 ### 🔑 需要的凭据
 
 | 值 | 从哪来 |
