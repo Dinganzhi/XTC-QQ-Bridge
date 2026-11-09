@@ -301,3 +301,37 @@ emoji:
   # lock_timeout: 8                              # 取表情原图时等待操作锁的最长秒数：锁被发送/导航
                                                  # 占用时最多等这么久，超时本轮跳过、下轮再取。
                                                  # 设备很慢又经常"表情只剩文字"时可调大
+
+# ---------------------------------------------------------------------
+#  小天才云端 API（实验性，默认关闭）
+#
+#  用途：绕过 ADB 界面自动化，直接调用小天才云端 HTTP 接口。
+#        当前仅实现了协议层（签名信封 + AES-ECB），**尚未确认消息接口路径**，
+#        因此本功能默认关闭，不影响现有 ADB 链路。
+#
+#  协议来源：参考 GitHub 公开项目 imoo-client（MIT 许可）
+#            https://github.com/HIbingai/imoo-client
+#  详细调研结论见 docs/imoo-api.md（含"为什么可能没有 HTTP 发消息接口"）
+#
+#  ⚠ 开启前请先读 docs/imoo-api.md：本次抓包未能证实存在可用的发消息 HTTP 接口。
+#    手机与手表的消息通道走 im3.okii.com:8002 的私有 TCP 协议，非 HTTP。
+#
+#  凭据获取方式：需从 App 内部或登录响应中取得，无 root 时通常无法自动提取。
+#  安全提示：下列字段等同于账号凭据，请勿提交到版本库、勿粘贴到公开渠道。
+# ---------------------------------------------------------------------
+api:
+  enabled: false                                 # 总开关；false 时任何调用立即返回"未启用"，不发网络请求
+  base: "https://api.watch.okii.com"             # API 网关
+  timeout: 10                                    # 单次请求超时（秒）
+
+  # 设备与账号凭据（开启后必填，缺任一项会拒绝调用并说明原因）
+  bind_number: ""                                # 手表绑定号，对应 deviceId
+  chip_id: ""                                    # 对应 token
+  account_id: ""                                 # 账号 ID
+  regist_id: 0                                   # 注册 ID（整数）
+  inner_model: ""                                # 机型，如 XTC_Z10，对应 model 请求头
+  soft_version: ""                               # 固件版本，对应 Version: W_<版本>
+  encrypt_key: ""                                # 形如 "keyId:0123456789abcdef:eebbkKey"
+                                                 # 留空表示明文模式（v0，早期固件）
+  grey: "0"                                      # Grey 请求头，真机默认 "0"
+  data_center: "CN_BJ"                           # dataCenterCode 请求头
