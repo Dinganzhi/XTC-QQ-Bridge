@@ -6268,8 +6268,94 @@ def test_media_bubble_label_match_does_not_crash() -> None:
           at > 0 and "timelabel.abs_label" in src[at:at + 900], src[at:at + 200])
 
 
+
+def test_history_filter_keeps_per_entry_timestamps() -> None:
+    """HistoryFilter 落盘时必须写每条**自己的**时间戳。
+
+    早期 `_save()` 写的是 `time.time()`：每转发一条消息就把全表年龄清零，
+    TTL 永远不到期 —— 表只会涨到 capacity 上限，旧记录还会挤掉新记录的名额。
+    """
+    import json as _json
+    import tempfile
+    from xtc_qq_bridge.utils.deduplicate import HistoryFilter
+
+    root = Path(tempfile.mkdtemp())
+    path = str(root / "hist.json")
+    hf = HistoryFilter(store_path=path, ttl=10, capacity=100)
+    hf.mark("msg", "A")
+    first = _json.loads(Path(path).read_text(encoding="utf-8"))
+    check("首次落盘有一条记录", len(first) == 1, str(first))
+    ts_a = first[0][1]
+
+    time.sleep(1.2)
+    hf.mark("msg", "B")
+    second = _json.loads(Path(path).read_text(encoding="utf-8"))
+    check("第二次落盘有两条记录", len(second) == 2, str(len(second)))
+    ts_a2 = [ts for key, ts in second if key == first[0][0]]
+    check("A 的记录仍在", len(ts_a2) == 1)
+    if ts_a2:
+        check("A 的时间戳未被刷新（否则 TTL 失效）",
+              abs(ts_a2[0] - ts_a) < 1e-6,
+              f"{ts_a} -> {ts_a2[0]}，差 {ts_a2[0] - ts_a:.3f}s")
+
+
+def test_history_filter_expires_per_entry() -> None:
+    """各条目按自己的时间独立过期，不被后来的 mark 续命。"""
+    import tempfile
+    from xtc_qq_bridge.utils.deduplicate import HistoryFilter
+
+    root = Path(tempfile.mkdtemp())
+    hf = HistoryFilter(store_path=str(root / "h.json"), ttl=2.0, capacity=100)
+    hf.mark("old")
+    time.sleep(1.2)
+    hf.mark("new")                      # 不应给 old 续命
+    check("old 尚在有效期内", hf.seen("old") is True)
+    time.sleep(1.2)                     # old 共 2.4s > ttl 2s；new 才 1.2s
+    check("old 已按自己的时间过期", hf.seen("old") is False)
+    check("new 仍在有效期内", hf.seen("new") is True)
+
+
+def test_history_filter_purges_future_timestamps() -> None:
+    """时钟回拨写入的未来时间戳必须被清理，否则永不过期、白占名额。"""
+    import tempfile
+    from xtc_qq_bridge.utils.deduplicate import HistoryFilter
+
+    root = Path(tempfile.mkdtemp())
+    hf = HistoryFilter(store_path=str(root / "h.json"), ttl=5.0, capacity=10)
+    hf._data["future"] = time.time() + 3600
+    hf._data["normal"] = time.time()
+    hf._purge(time.time())
+    check("未来时间戳的条目被清理", "future" not in hf._data)
+    check("正常条目保留", "normal" in hf._data)
+
+
+def test_time_label_rejects_out_of_range() -> None:
+    """界面文本被截断/误读会得到 `25:99` 这类标签；解析器必须返回 None，
+    不能抛 ValueError —— 调用点全在转发/定位关键路径上。"""
+    from datetime import datetime as _dt
+    from xtc_qq_bridge.utils.timelabel import abs_label, label_epoch
+
+    now = _dt(2026, 11, 9, 20, 0)
+    for bad in ("25:99", "99:99", "24:00", "60:00", "今天 25:99",
+                "昨天 99:99", "星期一 25:99"):
+        try:
+            got = label_epoch(bad, now)
+            check(f"label_epoch({bad!r}) 返回 None 而不抛异常", got is None, repr(got))
+        except Exception as e:  # noqa: BLE001
+            check(f"label_epoch({bad!r}) 返回 None 而不抛异常", False,
+                  f"{type(e).__name__}: {e}")
+        check(f"abs_label({bad!r}) 返回空串", abs_label(bad, now) == "")
+    # 合法标签不受影响
+    check("合法 23:59 仍可解析", label_epoch("23:59", now) is not None)
+    check("合法 昨天 09:41 仍可解析", label_epoch("昨天 09:41", now) is not None)
+
+
 def main() -> int:
-    for fn in (test_history_source_tags, test_history_source_from_plugin_payload,
+    for fn in (test_history_filter_keeps_per_entry_timestamps,
+               test_history_filter_expires_per_entry,
+               test_history_filter_purges_future_timestamps,
+               test_time_label_rejects_out_of_range,
+               test_history_source_tags, test_history_source_from_plugin_payload,
                test_media_bubble_label_match_does_not_crash,
                test_about_command_both_sides,
                test_command_not_repeated, test_login_detection,

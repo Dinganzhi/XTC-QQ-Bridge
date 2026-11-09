@@ -211,15 +211,21 @@ class HistoryFilter:
         try:
             os.makedirs(os.path.dirname(self._store_path) or ".", exist_ok=True)
             tmp = self._store_path + ".tmp"
-            now = time.time()
+            # 必须写每个条目**自己的**时间戳（self._data 里存的就是它被 mark 的时刻）。
+            # 早期版本这里写的是 time.time()，等于每次落盘都把全表年龄清零 ——
+            # TTL 永远不会到期，表只会涨到 capacity 上限，旧记录还会挤掉新记录的名额。
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump([[k, now] for k in self._data], f, ensure_ascii=False)
+                json.dump([[k, ts] for k, ts in self._data.items()], f, ensure_ascii=False)
             os.replace(tmp, self._store_path)
         except Exception:  # noqa: BLE001
             pass
 
     def _purge(self, now: float) -> None:
-        expired = [k for k, ts in self._data.items() if now - ts > self.ttl]
+        # 与 Deduplicator / EchoFilter 保持一致：时间戳落在未来（时钟回拨、
+        # 或从旧版本读到的 monotonic 值）也要清掉 —— 否则 now-ts 恒为负，
+        # 这些条目永不过期，会一直占着 capacity 的名额。
+        expired = [k for k, ts in self._data.items()
+                   if now - ts > self.ttl or now - ts < -_FUTURE_TOLERANCE]
         for k in expired:
             del self._data[k]
         while len(self._data) > self.capacity:
