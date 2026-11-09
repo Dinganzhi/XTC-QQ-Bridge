@@ -32,6 +32,7 @@ import base64
 import json
 import struct
 import time
+from collections import OrderedDict
 
 from .utils import imgtool
 
@@ -91,8 +92,12 @@ class EmojiStore:
         self.photo_window = max(10.0, float(photo_window))
         self._index: dict[str, list[str]] = {}            # desc 名字 -> [big/<code> ...]
         self._index_ts = float("-inf")
-        # path -> (mtime, info, [网格...])：核对过的候选不必重复解码
-        self._grids: dict[str, tuple] = {}
+        # path -> (mtime, info, [网格...])：核对过的候选不必重复解码。
+        # 必须设上限：表情包文件数可达数百，每个条目含多帧网格（每帧 100 个 float），
+        # 无上限时长期运行只增不减（`_index` 有 10 分钟 TTL，这里原先没有任何清理）。
+        # 用 OrderedDict 做 LRU：命中时 move_to_end，超限时淘汰最久未用的。
+        self._grids: "OrderedDict[str, tuple]" = OrderedDict()
+        self._grids_max = 200
 
     # ------------------------------------------------------------------ 对外
     @property
@@ -422,6 +427,7 @@ class EmojiStore:
         """候选图片每帧的网格（带缓存）；解不出来的格式返回 []。"""
         ent = self._grids.get(path)
         if ent and mtime is not None and ent[0] == mtime:
+            self._grids.move_to_end(path)          # LRU：刚用过的排到末尾
             return ent[2]
         if data is None:
             data = self._read(path)
@@ -433,6 +439,9 @@ class EmojiStore:
         grids = [imgtool.frame_grid(f) for f in frames]
         info = self.sniff(data)
         self._grids[path] = (mtime, info, grids)
+        self._grids.move_to_end(path)
+        while len(self._grids) > self._grids_max:   # 只留最近用过的若干个
+            self._grids.popitem(last=False)
         return grids
 
     def _from_cache(self, near_epoch: float | None = None, aspect: float | None = None,
