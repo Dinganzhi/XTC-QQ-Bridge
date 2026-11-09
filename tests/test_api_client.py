@@ -386,6 +386,35 @@ def test_api_error_carries_context() -> None:
     check("ApiError 消息含 kind", "[business]" in str(e), str(e))
 
 
+def test_example_config_base_matches_default() -> None:
+    """示例配置里的 base 必须与代码里的 DEFAULT_BASE 一致。
+
+    这两个值曾经漂移过：代码改成了 watch.okii.com，配置模板还留着
+    api.watch.okii.com。用户照模板填就会打到备用域名上，症状是
+    "接口全部 404"，很难联想到是配置模板没跟上。
+    """
+    import os
+    from xtc_qq_bridge.api.client import DEFAULT_BASE
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "config.example.yaml")
+    if not os.path.exists(path):
+        check("config.example.yaml 存在", False, path)
+        return
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        check("（跳过）未安装 PyYAML", True)
+        return
+    with open(path, encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+    base = ((cfg.get("api") or {}).get("base") or "").strip()
+    check("示例配置的 api.base 与 DEFAULT_BASE 一致",
+          base == DEFAULT_BASE, f"配置={base!r} 代码={DEFAULT_BASE!r}")
+    check("示例配置默认关闭 api.enabled",
+          (cfg.get("api") or {}).get("enabled") is False)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:
