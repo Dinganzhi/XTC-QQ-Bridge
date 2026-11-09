@@ -281,8 +281,10 @@ class MessageLog:
         除了精确命中，还接受"码的前缀"：用户从历史里抄码容易少几位，
         只要前缀在全部记录里**唯一**就认定。多个命中返回 None（宁可让用户重抄，
         也不要发错图 —— 与表情取图"重名不猜"的原则一致）。
+
+        先转 str：码可能来自 HTTP 请求体，JSON 里的数字会让 .strip() 抛 AttributeError。
         """
-        want = (code or "").strip().lower()
+        want = str(code or "").strip().lower()
         if not want:
             return None
         with self._lock:

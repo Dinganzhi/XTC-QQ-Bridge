@@ -75,12 +75,18 @@ def _as_int(value, default: int) -> int:
     直接用 `int(body.get("limit") or 30)` 时，一个 `"limit": "abc"`（或 `[1,2]`）
     就会抛 ValueError/TypeError —— 那是在 HTTP 处理线程里，异常会直接变成
     连接被重置（桥接侧只看到"连不上插件"，很难查）。
+
+    必须连 OverflowError 一起接住：JSON 里的 `1e400` 会被解析成 `inf`，
+    而 `int(inf)` 抛的是 OverflowError，不是 ValueError —— 漏掉它等于这个防线有洞。
     """
     try:
         if value is None or value == "":
             return default
+        # bool 是 int 的子类，但 True/False 当数字用没意义，按缺省处理
+        if isinstance(value, bool):
+            return default
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
