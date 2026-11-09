@@ -14,9 +14,15 @@ class CommandMixin:
         try:
             data = json.loads(Path(self._cmd_done_file).read_text(encoding="utf-8"))
             if isinstance(data, list):
-                self._cmd_done = {tuple(x) for x in data if isinstance(x, list) and len(x) == 3}
+                # 用 dict 保存并保持插入顺序（旧版是 set）：修剪时要淘汰**最旧**的记录，
+                # 而 set 的顺序是任意哈希序，`list(set)[-N:]` 会随机丢掉记录，
+                # 包括刚加进去的那条 —— 表现为"已执行过的命令又被执行一遍/重复回复"。
+                self._cmd_done = {
+                    tuple(x): None for x in data
+                    if isinstance(x, list) and len(x) == 3
+                }
         except Exception:  # noqa: BLE001 文件缺失/损坏不致命
-            self._cmd_done = set()
+            self._cmd_done = {}
 
     def _cmd_done_has(self, side: str, text: str, label: str) -> bool:
         with self._cmd_lock:
@@ -24,9 +30,13 @@ class CommandMixin:
 
     def _cmd_done_add(self, side: str, text: str, label: str) -> None:
         with self._cmd_lock:
-            self._cmd_done.add((side, text, label))
-            if len(self._cmd_done) > 300:  # 修剪上限
-                self._cmd_done = set(list(self._cmd_done)[-300:])
+            key = (side, text, label)
+            # 先删再插：让"刚执行过"的记录排到最新位置，修剪时不会优先淘汰它
+            self._cmd_done.pop(key, None)
+            self._cmd_done[key] = None
+            # 修剪：按插入顺序淘汰**最旧**的（不能用 set，见 _load_cmd_done 的注释）
+            while len(self._cmd_done) > 300:
+                self._cmd_done.pop(next(iter(self._cmd_done)))
             try:
                 Path(self._cmd_done_file).parent.mkdir(parents=True, exist_ok=True)
                 tmp = self._cmd_done_file + ".tmp"
