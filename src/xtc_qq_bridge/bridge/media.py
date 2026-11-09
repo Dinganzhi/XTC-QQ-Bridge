@@ -30,10 +30,14 @@ class MediaMixin:
 
     @staticmethod
     def _is_sticker_media(kind: str | None, text: str | None) -> bool:
-        """这条待取图的消息是不是表情贴纸（贴纸不需要等缓存原图）。"""
-        if (kind or "").strip().lower() == "sticker":
+        """这条待取图的消息是不是表情贴纸（贴纸不需要等缓存原图）。
+
+        先转 str：kind/text 可能来自 HTTP 请求体，JSON 里的数字/列表
+        对非字符串调 .strip() 会抛 AttributeError。
+        """
+        if str(kind or "").strip().lower() == "sticker":
             return True
-        return (text or "").strip().startswith("表情")
+        return str(text or "").strip().startswith("表情")
 
     def _media_retry_failed(self, key: tuple, contact, text: str, label: str,
                             disp: str, reason: str = "", kind: str = "") -> None:

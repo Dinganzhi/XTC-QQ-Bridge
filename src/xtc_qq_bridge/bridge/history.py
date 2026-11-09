@@ -133,7 +133,7 @@ class HistoryMixin:
     def _match_source(self, entries: list[dict], source: str) -> list[dict]:
         """按来源过滤：支持「手表」「QQ私聊 <号>」「QQ群 <群号>」或裸的号
         （只写号码时，私聊/群聊都能命中）。"""
-        want = (source or "").strip()
+        want = str(source or "").strip()
         if not want:
             return entries
         if want in ("手表", "xtc", "watch", "家长", "宝贝"):
@@ -276,7 +276,7 @@ class HistoryMixin:
     @staticmethod
     def _short_source(source: str) -> str:
         """来源标签里的「手表-昵称」简化为「手表」，避免每行过长（手表上打字慢）。"""
-        s = (source or "").strip()
+        s = str(source or "").strip()
         if s.startswith("手表"):
             return "手表"
         return s

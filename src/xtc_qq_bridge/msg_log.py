@@ -216,15 +216,15 @@ class MessageLog:
                    只存这个十几字节的码，图片本体在 data/history_media/ 下，
                    历史消息据此可以显示 `[图片 #code]` 并用 `/小天才 查看图片 code` 取回。
         """
-        text = (text or "").strip()
+        text = str(text or "").strip()
         if not text:
             return
         entry = {
             "t": t if t is not None else time.time(),
             "kind": kind,
-            "sender": (sender or "").strip(),
+            "sender": str(sender or "").strip(),
             "text": text,
-            "source": (source or "").strip(),
+            "source": str(source or "").strip(),
             "source_id": str(source_id or "").strip(),
         }
         if media:
@@ -242,7 +242,7 @@ class MessageLog:
 
         这是"从最新往回走、撞库即停"的判定入口：命中说明这条已经处理过。
         """
-        needle = (text or "").strip()
+        needle = str(text or "").strip()
         if not needle:
             return False
         with self._lock:
