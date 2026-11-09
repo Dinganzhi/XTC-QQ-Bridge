@@ -21,6 +21,7 @@ import json
 import re
 import struct
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -6390,8 +6391,86 @@ def test_config_top_level_must_be_mapping() -> None:
         check(f"{name} 视为空配置", isinstance(cfg, dict) and len(cfg) == 0, repr(cfg))
 
 
+
+def test_cmd_done_evicts_oldest_not_random() -> None:
+    """命令去重记录修剪时必须淘汰**最旧**的。
+
+    旧实现用 set + `list(set)[-300:]`：set 是任意哈希序，截断会随机丢记录，
+    包括刚加进去的那条 —— 表现为"已执行过的命令又被执行一遍 / 重复回复"。
+    """
+    root = Path(tempfile.mkdtemp())
+    cfg = {"target": {"xtc_contact": "张三"}, "xiaotiancai": {}, "webhook": {}}
+    br = bridge_mod.MessageBridge(cfg, adb=None, xtc=None, forwarder=None, logger=None)
+    br._cmd_done_file = str(root / "done.json")
+    br._load_cmd_done()
+
+    # 连续加入超过上限
+    total = 400
+    for i in range(total):
+        br._cmd_done_add("xtc", f"cmd{i}", "10:00")
+
+    check("修剪后不超过上限", len(br._cmd_done) <= 300, str(len(br._cmd_done)))
+    # 最后 20 条必须都还在（有序淘汰不会误伤最近的）
+    missing = [i for i in range(total - 20, total)
+               if not br._cmd_done_has("xtc", f"cmd{i}", "10:00")]
+    check("最近 20 条全部保留（有序淘汰）", not missing, f"缺失: {missing[:5]}")
+    check("最旧的已被淘汰", not br._cmd_done_has("xtc", "cmd0", "10:00"))
+
+    # 重启后仍能读回（持久化格式未变）
+    br2 = bridge_mod.MessageBridge(cfg, adb=None, xtc=None, forwarder=None, logger=None)
+    br2._cmd_done_file = str(root / "done.json")
+    br2._load_cmd_done()
+    check("重启后最近记录仍在", br2._cmd_done_has("xtc", f"cmd{total - 1}", "10:00"))
+    check("重启后数量仍受上限约束", len(br2._cmd_done) <= 300, str(len(br2._cmd_done)))
+
+
+def test_emoji_grid_cache_has_upper_bound() -> None:
+    """表情网格缓存必须有上限：表情包文件数可达数百，无上限时长期运行只增不减。"""
+    import struct as _struct
+    import zlib as _zlib
+    from xtc_qq_bridge.emoji_store import EmojiStore
+    from xtc_qq_bridge.utils.imgtool import image_grid
+
+    class _Adb:
+        def shell(self, *a, **k):
+            return ""
+
+        def pull(self, *a, **k):
+            return b""
+
+    def _png(w: int, h: int, color: tuple) -> bytes:
+        raw = b"".join(b"\x00" + bytes(color) * w for _ in range(h))
+
+        def chunk(tag, data):
+            c = tag + data
+            return (_struct.pack(">I", len(data)) + c
+                    + _struct.pack(">I", _zlib.crc32(c) & 0xFFFFFFFF))
+
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", _struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", _zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    root = Path(tempfile.mkdtemp())
+    es = EmojiStore(_Adb())
+    cap = getattr(es, "_grids_max", None)
+    check("EmojiStore 声明了网格缓存上限", isinstance(cap, int) and cap > 0, str(cap))
+
+    ref = image_grid(_png(60, 60, (1, 2, 3)))
+    n = (cap or 200) + 50
+    for i in range(n):
+        f = root / f"{i}.png"
+        f.write_bytes(_png(60, 60, (i % 255, 50, 50)))
+        es._score(ref, f.read_bytes(), str(f), f.stat().st_mtime)
+
+    check(f"塞入 {n} 个后缓存不超上限", len(es._grids) <= (cap or 200), str(len(es._grids)))
+    check("最新加入的仍在缓存里", str(root / f"{n - 1}.png") in es._grids)
+    check("最旧的已被淘汰", str(root / "0.png") not in es._grids)
+
+
 def main() -> int:
-    for fn in (test_config_top_level_must_be_mapping,
+    for fn in (test_cmd_done_evicts_oldest_not_random,
+               test_emoji_grid_cache_has_upper_bound,
+               test_config_top_level_must_be_mapping,
                test_history_filter_keeps_per_entry_timestamps,
                test_history_filter_expires_per_entry,
                test_history_filter_purges_future_timestamps,
