@@ -161,3 +161,55 @@ TLV tag=12 len=3    01 00 01（指数 65537）
 
 `api.watch.okii.com` 的 `/health` 与 `watch.okii.com` 的 `/rsa`、
 `/server/domain/list` 是公开端点，不含用户数据。
+
+---
+
+## 附：本次遇到的一个环境问题
+
+调试过程中发现一个**与 API 无关、但会影响部署**的问题，记录在此以免重复排查。
+
+### 现象
+
+尝试向手表发中文时，注入失败。排查发现：
+
+| 检查项 | 结果 |
+|---|---|
+| 设备上是否装了 ADBKeyboard | ❌ 没有 |
+| 当前输入法 | 讯飞（`com.iflytek.inputmethod`） |
+| `cmd clipboard` 是否可用 | ❌ `No shell command implementation` |
+| `service call clipboard` | ❌ 用法不支持 |
+
+也就是说：**这台机器上，中文注入只有 ADBKeyboard 一条路，而它没装。**
+
+### 为什么没装上
+
+项目自带 `assets/keyboardservice-debug.apk`（包名 `com.android.adbkeyboard`），
+但荣耀 MagicOS 的安装流程有两道拦截：
+
+1. 「来历不明的应用」→ 点「继续」
+2. 「未经荣耀安全审核」安全页 → 点「安装」
+
+第二步的「安装」按钮**点击无效**（ADB tap 到坐标正确，但页面不响应）。
+多次尝试均停在原页，`adb install` 最终以
+`INSTALL_FAILED_ABORTED: User rejected permissions` 结束。
+
+这是系统的安全策略，属于**需要用户手动确认**的决策，ADB 无法绕过。
+
+> 顺带澄清：设备上原本就有一个 `com.didjdk.adbhelper`（装于 2026-11-02），
+> 那是另一个工具，不是 ADBKeyboard，不能替代。
+
+### 影响与建议
+
+| 影响 | 说明 |
+|---|---|
+| 中文发送 | 不可用（无 ADBKeyboard、无剪贴板通道） |
+| 英文/数字发送 | 可用（`input text` 直接注入） |
+| 读取与转发 | 不受影响 |
+
+**建议**：在手机上手动完成一次 ADBKeyboard 安装（设置 → 安全 → 允许安装未知来源，
+或临时关闭「纯净模式」）。装好后 `ime enable` + `ime set` 即可，
+之后 ADB 中文注入就通了。
+
+现有代码对此的处理是正确的：`_adbkeyboard_ready()` 探测不到就返回 False，
+`input_text()` 会依次尝试 ADBKeyboard → 剪贴板 → keyevent，
+全部失败时**如实上报**而不是假装成功。
