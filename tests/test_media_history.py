@@ -457,12 +457,62 @@ def test_plugin_as_int_and_int_guard() -> None:
     check("插件 USAGE 提到查看图片", "查看图片" in src)
 
 
+def test_media_lookup_rejects_non_string() -> None:
+    """引用码可能来自 HTTP 请求体：JSON 里的数字/None 传进来时，
+    查码与取路径都必须返回"查不到"，不能抛 AttributeError。"""
+    import tempfile
+    root = Path(tempfile.mkdtemp())
+    try:
+        store = MediaStore(directory=root / "m")
+        log = MessageLog(path=str(root / "msg.json"), cap=100, shard_size=0)
+        for bad in (None, 123, 12.5, [], {}, True):
+            check(f"path_of({bad!r}) 不抛异常且返回 None",
+                  store.path_of(bad) is None)
+            check(f"load({bad!r}) 返回空字节", store.load(bad) == b"")
+            check(f"find_media({bad!r}) 返回 None", log.find_media(bad) is None)
+        # 正常码仍然可用
+        code = store.save(b"\x89PNG\r\n\x1a\nhello")
+        check("正常码仍能取到路径", store.path_of(code) is not None)
+        log.append("xtc", "小明", "图片", t=time.time(), source="手表",
+                   source_id="小明", media=code)
+        check("正常码仍能检索到条目", log.find_media(code) is not None)
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_as_int_survives_overflow() -> None:
+    """`int(float('inf'))` 抛的是 OverflowError，不是 ValueError ——
+    只捕 ValueError/TypeError 会让这道防线漏掉 JSON 里的 1e400。"""
+    import re
+    src = (Path(__file__).resolve().parent.parent
+           / "astrbot_plugin_xtc_bridge" / "main.py").read_text(encoding="utf-8")
+    m = re.search(r"(def _as_int\(.*?\n)(?=\n\ndef )", src, re.S)
+    check("能抽出 _as_int 源码", m is not None)
+    if m:
+        ns = {}
+        exec(m.group(1), ns)
+        f = ns["_as_int"]
+        for bad in (float("inf"), float("-inf"), float("nan")):
+            try:
+                got = f(bad, 30)
+                check(f"_as_int({bad}) 不抛异常", True, repr(got))
+                check(f"_as_int({bad}) 回落默认值", got == 30, repr(got))
+            except Exception as e:  # noqa: BLE001
+                check(f"_as_int({bad}) 不抛异常", False, f"{type(e).__name__}: {e}")
+        check("_as_int 捕 OverflowError", "OverflowError" in m.group(1))
+        check("_as_int('50') 正常解析", f("50", 30) == 50)
+        check("_as_int('abc') 回落", f("abc", 30) == 30)
+
+
 def main() -> int:
     for fn in (test_media_store_basics, test_msg_log_media_field,
                test_history_shows_viewable_media, test_view_image_command,
                test_webhook_hardening, test_echo_filter_wall_clock,
                test_catchup_signature_matches_queue_forward,
-               test_plugin_as_int_and_int_guard):
+               test_plugin_as_int_and_int_guard,
+               test_media_lookup_rejects_non_string,
+               test_as_int_survives_overflow):
         print(f"--- {fn.__name__} ---")
         try:
             fn()
