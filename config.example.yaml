@@ -321,7 +321,8 @@ emoji:
 # ---------------------------------------------------------------------
 api:
   enabled: false                                 # 总开关；false 时任何调用立即返回"未启用"，不发网络请求
-  base: "https://api.watch.okii.com"             # API 网关
+  base: "https://watch.okii.com"                 # API 网关（与代码里的 DEFAULT_BASE 一致；
+                                                 # 注意不是 api.watch.okii.com，那个只是备用域名）
   timeout: 10                                    # 单次请求超时（秒）
 
   # 设备与账号凭据（开启后必填，缺任一项会拒绝调用并说明原因）
