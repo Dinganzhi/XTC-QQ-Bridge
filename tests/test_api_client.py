@@ -351,6 +351,41 @@ def test_default_base_is_watch_host() -> None:
     check("默认 base 为 watch.okii.com", DEFAULT_BASE == "https://watch.okii.com", DEFAULT_BASE)
 
 
+# ---------------------------------------------------------------- 行为契约
+def test_disabled_never_touches_network() -> None:
+    """关闭状态下连 DNS 都不该查：把 base 指向一个必然失败的主机，
+    如果实现真的发请求，耗时会明显变长或抛异常。"""
+    from xtc_qq_bridge.api.client import ImooApiClient
+    c = ImooApiClient(_acct(), base="http://127.0.0.1:1", enabled=False, timeout=1)
+    import time
+    t0 = time.monotonic()
+    r = c.get("/anything")
+    cost = time.monotonic() - t0
+    check("关闭时不发请求（结果 disabled）", r.kind == "disabled", r.kind)
+    check("关闭时立即返回（<0.1s）", cost < 0.1, f"{cost:.3f}s")
+
+
+def test_error_kinds_are_distinct() -> None:
+    """失败层级要能区分，否则排错时分不清是网络、签名还是业务问题。"""
+    from xtc_qq_bridge.api.client import ImooApiClient
+    # 未启用
+    r1 = ImooApiClient(_acct(), enabled=False).get("/x")
+    # 网络不可达（端口 1 通常拒绝连接）
+    r2 = ImooApiClient(_acct(), base="http://127.0.0.1:1", enabled=True, timeout=2).get("/x")
+    check("未启用 -> kind=disabled", r1.kind == "disabled", r1.kind)
+    check("不可达 -> kind=network", r2.kind == "network", f"{r2.kind}: {r2.error[:60]}")
+    check("两者 kind 不同", r1.kind != r2.kind)
+
+
+def test_api_error_carries_context() -> None:
+    from xtc_qq_bridge.api.client import ApiError
+    e = ApiError("business", "余额不足", code="500", url="https://x/y")
+    check("ApiError 有 kind", e.kind == "business")
+    check("ApiError 有 code", e.code == "500")
+    check("ApiError 有 url", e.url == "https://x/y")
+    check("ApiError 消息含 kind", "[business]" in str(e), str(e))
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in tests:
