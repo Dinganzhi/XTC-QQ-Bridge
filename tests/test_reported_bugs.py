@@ -6350,8 +6350,49 @@ def test_time_label_rejects_out_of_range() -> None:
     check("合法 昨天 09:41 仍可解析", label_epoch("昨天 09:41", now) is not None)
 
 
+
+def test_config_top_level_must_be_mapping() -> None:
+    """config.yaml 顶层写成列表/字符串时，必须给出明确报错。
+
+    早期 `yaml.safe_load(text) or {}` 会原样返回 list/str，下游 cfg.get(...)
+    抛 `AttributeError: 'list' object has no attribute 'get'` —— 用户看不出
+    是自己写错了文件。
+    """
+    import tempfile
+    from xtc_qq_bridge.config import load_config
+
+    root = Path(tempfile.mkdtemp())
+
+    def _write(name: str, content: str) -> str:
+        p = root / name
+        p.write_text(content, encoding="utf-8")
+        return str(p)
+
+    for name, content, kind in (("list.yaml", "- a\n- b\n", "list"),
+                                ("str.yaml", "hello\n", "str")):
+        path = _write(name, content)
+        try:
+            cfg = load_config(path)
+            check(f"顶层是 {kind} 时不应返回非 dict", isinstance(cfg, dict), repr(cfg))
+        except SystemExit as e:
+            msg = str(e)
+            check(f"顶层是 {kind} 时给出明确报错", "顶层" in msg and "映射" in msg, msg[:60])
+        except AttributeError as e:
+            check(f"顶层是 {kind} 时不应抛 AttributeError", False, str(e))
+
+    # 正常配置不受影响
+    ok_path = _write("ok.yaml", "target:\n  xtc_contact: 小明\n")
+    cfg = load_config(ok_path)
+    check("正常配置仍能读出", isinstance(cfg, dict) and cfg.get("target", {}).get("xtc_contact") == "小明")
+    # 空文件 / null 当作空配置
+    for name, content in (("empty.yaml", ""), ("null.yaml", "null\n")):
+        cfg = load_config(_write(name, content))
+        check(f"{name} 视为空配置", isinstance(cfg, dict) and len(cfg) == 0, repr(cfg))
+
+
 def main() -> int:
-    for fn in (test_history_filter_keeps_per_entry_timestamps,
+    for fn in (test_config_top_level_must_be_mapping,
+               test_history_filter_keeps_per_entry_timestamps,
                test_history_filter_expires_per_entry,
                test_history_filter_purges_future_timestamps,
                test_time_label_rejects_out_of_range,
