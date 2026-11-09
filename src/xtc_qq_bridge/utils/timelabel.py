@@ -45,12 +45,18 @@ def label_epoch(time_label: str, now: datetime | None = None) -> float | None:
     # "今天 16:18" / "今日 16:18"
     m = re.fullmatch(r"(?:今天|今日)\s*(\d{1,2}):(\d{2})", label)
     if m:
-        return now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                           second=0, microsecond=0).timestamp()
+        try:
+            return now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                               second=0, microsecond=0).timestamp()
+        except ValueError:
+            return None
     m = re.fullmatch(r"(\d{1,2}):(\d{2})", label)
     if m:
-        dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                         second=0, microsecond=0)
+        try:
+            dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                             second=0, microsecond=0)
+        except ValueError:      # 25:99 这类脏标签（UI 文本可能被截断/误读）
+            return None
         if dt > now + timedelta(minutes=2):
             # 只有时分、却落在**未来**：那只能是**昨天**那条 —— App 的分组标签跨零点后
             # 还画着旧样子（实测 10-15 16:23 的表情在 10-16 00:00 又出现一次，
@@ -61,18 +67,24 @@ def label_epoch(time_label: str, now: datetime | None = None) -> float | None:
     m = re.fullmatch(r"(昨天|前天)\s*(\d{1,2}):(\d{2})", label)
     if m:
         days_back = 1 if m.group(1) == "昨天" else 2
-        return (now - timedelta(days=days_back)).replace(
-            hour=int(m.group(2)), minute=int(m.group(3)),
-            second=0, microsecond=0).timestamp()
+        try:
+            return (now - timedelta(days=days_back)).replace(
+                hour=int(m.group(2)), minute=int(m.group(3)),
+                second=0, microsecond=0).timestamp()
+        except ValueError:
+            return None
     # "星期一 16:18" -> 最近一个已经过去的那个星期几
     m = re.search(r"星期([一二三四五六日天])", label)
     if m:
         tm = re.search(r"(\d{1,2}):(\d{2})", label)
         idx = "一二三四五六日天".index(m.group(1)) + 1        # 周一=1 ... 周日=7
         days_back = (now.isoweekday() - idx) % 7
-        dt = (now - timedelta(days=days_back)).replace(
-            hour=int(tm.group(1)) if tm else 0,
-            minute=int(tm.group(2)) if tm else 0, second=0, microsecond=0)
+        try:
+            dt = (now - timedelta(days=days_back)).replace(
+                hour=int(tm.group(1)) if tm else 0,
+                minute=int(tm.group(2)) if tm else 0, second=0, microsecond=0)
+        except ValueError:
+            return None
         if dt > now:
             dt = dt - timedelta(days=7)
         return dt.timestamp()
