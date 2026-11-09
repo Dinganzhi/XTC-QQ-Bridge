@@ -268,7 +268,9 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._xtc_cmd_prefix = str(
             (cfg.get("xiaotiancai") or {}).get("cmd_prefix", "/小天才")).strip()
         self._cmd_pending: dict[str, tuple[str, str]] = {}  # text -> (side, label)
-        self._cmd_done: set[tuple[str, str, str]] = set()
+        # 用 dict 保持插入顺序（修剪时淘汰最旧的）；旧版是 set，
+        # 修剪用 list(set)[-N:] 会随机丢记录，见 commands._load_cmd_done 的注释。
+        self._cmd_done: dict[tuple[str, str, str], None] = {}
         # 会话级"这条命令已经处理过"记忆：(side, text) -> 已处理时的 App 时间标签。
         # 解决"同一条 /小天才 反复触发"：命令消息会一直挂在"最新一条"上，若 App 的
         # 时间标签也一直不变（同一分钟/解析不出时间），仅靠 (side, text, label) 判重
