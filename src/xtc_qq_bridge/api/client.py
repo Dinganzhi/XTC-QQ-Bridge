@@ -23,8 +23,10 @@ from .crypto import (SUCCESS_CODES, HttpAccount, ImooCrypto,
 
 __all__ = ["ApiError", "ApiResult", "ImooApiClient", "DEFAULT_BASE"]
 
-# 手机端使用的 API 网关（实测可解析并返回 404 = 服务在线）
-DEFAULT_BASE = "https://api.watch.okii.com"
+# 核心 API 的 base。注意：`api.watch.okii.com` 虽然能解析，但据 imoore 项目的
+# 静态分析它只是 HttpConstants.HOST_NAME_ARRAYS[1]，**不是可用 base**；
+# 真正承载账号/设备/群聊等接口的是 `watch.okii.com`。
+DEFAULT_BASE = "https://watch.okii.com"
 
 
 class ApiError(RuntimeError):
