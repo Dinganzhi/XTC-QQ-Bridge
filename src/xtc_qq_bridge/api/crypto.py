@@ -320,18 +320,21 @@ def _json_escape(s: str) -> str:
 def build_base_request_param(acct: HttpAccount, now: float | None = None) -> str:
     """构造 BRP 明文。
 
+    字段与取值来自 `com.xtc.http.bean.BaseRequestParam`（经 imoore 项目的
+    静态分析证实）：`appId` 固定 "0"、`program` 固定 "android"、`imFlag` 固定 "1"。
     **字段顺序固定**：服务端按同一份明文重算签名，顺序变了就验不过。
     """
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now if now is not None else time.time()))
     rid = uuid.uuid4().hex
     if not acct.bind_number:
         # 未绑定设备时（部分只读接口）不带 deviceId/token
-        return (f'{{"imFag":"1","appId":"2","program":"watch","timestamp":"{ts}",'
-                f'"registId":"{acct.regist_id}","accountId":"{_json_escape(acct.account_id)}",'
-                f'"mac":"unkown","requestId":"{rid}"}}')
-    return (f'{{"imFag":"1","appId":"2","program":"watch","timestamp":"{ts}",'
-            f'"registId":"{acct.regist_id}","deviceId":"{_json_escape(acct.bind_number)}",'
-            f'"token":"{_json_escape(acct.chip_id)}","accountId":"{_json_escape(acct.account_id)}",'
+        return (f'{{"accountId":"{_json_escape(acct.account_id)}","appId":"0",'
+                f'"imFlag":"1","program":"android","registId":"{acct.regist_id}",'
+                f'"timestamp":"{ts}","mac":"unkown","requestId":"{rid}"}}')
+    return (f'{{"accountId":"{_json_escape(acct.account_id)}","appId":"0",'
+            f'"deviceId":"{_json_escape(acct.bind_number)}","imFlag":"1",'
+            f'"program":"android","registId":"{acct.regist_id}",'
+            f'"timestamp":"{ts}","token":"{_json_escape(acct.chip_id)}",'
             f'"mac":"unkown","requestId":"{rid}"}}')
 
 

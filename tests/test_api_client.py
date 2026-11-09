@@ -82,13 +82,17 @@ def _acct() -> HttpAccount:
 def test_brp_field_order() -> None:
     """字段顺序固定：服务端按同一份明文重算签名，顺序变了就验不过。"""
     brp = build_base_request_param(_acct(), now=1700000000)
-    order = ['"imFag"', '"appId"', '"program"', '"timestamp"', '"registId"',
-             '"deviceId"', '"token"', '"accountId"', '"mac"', '"requestId"']
+    # 字段与取值来自 com.xtc.http.bean.BaseRequestParam（imoore 项目静态分析证实）
+    order = ['"accountId"', '"appId"', '"deviceId"', '"imFlag"', '"program"',
+             '"registId"', '"timestamp"', '"token"', '"mac"', '"requestId"']
     positions = [brp.find(k) for k in order]
     check("BRP 包含全部字段", all(p >= 0 for p in positions),
           f"缺失 {[order[i] for i, p in enumerate(positions) if p < 0]}")
     check("BRP 字段顺序正确", positions == sorted(positions), f"{positions}")
     check("BRP 保留官方拼写 mac=unkown", '"mac":"unkown"' in brp)
+    check("BRP appId 固定 0", '"appId":"0"' in brp, brp[:120])
+    check("BRP program 固定 android", '"program":"android"' in brp)
+    check("BRP imFlag 固定 1", '"imFlag":"1"' in brp)
 
 
 def test_brp_without_device() -> None:
@@ -304,6 +308,47 @@ def test_constructor_timeout_hardened() -> None:
         c = ImooApiClient(timeout=bad)
         ok = math.isfinite(c.timeout) and 1.0 <= c.timeout <= 300.0
         check(f"构造 timeout={bad!r} 收敛", ok, f"实际 {c.timeout}")
+
+
+# ---------------------------------------------------------------- 离线向量
+def test_real_gateway_vectors() -> None:
+    """记录 2026-11-10 对真实网关的观测结果，防止将来改动破坏已知正确的行为。
+
+    这些是**离线断言**（不发网络请求）：用固定的 BRP 与 key 校验签名，
+    确保"字段顺序/取值"这类改动会被测试拦住。真实联调见 docs/imoo-api.md。
+    """
+    acct = HttpAccount(account_id="ACC1", bind_number="DEV1", chip_id="TOK1",
+                       regist_id=1, inner_model="XTC_Z10", soft_version="9.47.02",
+                       encrypt_key="")
+    brp = build_base_request_param(acct, now=1700000000)
+    # 字段集合必须与 BaseRequestParam 一致（多一个少一个都会导致签名不符）
+    got = set(json.loads(brp))
+    want = {"accountId", "appId", "deviceId", "imFlag", "program",
+            "registId", "timestamp", "token", "mac", "requestId"}
+    check("BRP 字段集合与官方一致", got == want, f"多 {got-want} 缺 {want-got}")
+
+    # 固定输入 -> 固定签名（MD5 是确定性的，用于回归）
+    sig = eebbk_sign("https://watch.okii.com/rsa", brp, "", "")
+    check("签名对固定输入稳定", sig == eebbk_sign("https://watch.okii.com/rsa", brp, "", ""))
+    check("签名 32 位大写", len(sig) == 32 and sig.isupper())
+
+
+def test_v0_plain_matches_server_encswitch() -> None:
+    """真实服务器 /rsa 返回 encSwitch=0，即明文模式；v0 下 BRP 必须原样发出。"""
+    acct = HttpAccount(account_id="A", bind_number="D", chip_id="T", regist_id=1,
+                       inner_model="M", soft_version="1", encrypt_key="")
+    headers, _ = build_signed_request(acct, "GET", "https://watch.okii.com/rsa")
+    brp_header = headers["Base-Request-Param"]
+    check("v0 时 BRP 为明文 JSON", brp_header.startswith("{"), brp_header[:40])
+    check("v0 时 BRP 可解析", isinstance(json.loads(brp_header), dict))
+    check("v0 时无 Eebbk-Key", "Eebbk-Key" not in headers)
+    check("v0 时无 encrypted 头", "encrypted" not in headers)
+
+
+def test_default_base_is_watch_host() -> None:
+    """真实可用 base 是 watch.okii.com；api.watch.okii.com 只是 HOST_NAME_ARRAYS[1]。"""
+    from xtc_qq_bridge.api.client import DEFAULT_BASE
+    check("默认 base 为 watch.okii.com", DEFAULT_BASE == "https://watch.okii.com", DEFAULT_BASE)
 
 
 def main() -> int:

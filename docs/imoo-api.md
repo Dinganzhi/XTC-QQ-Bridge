@@ -11,12 +11,18 @@
 
 | # | 结论 | 可信度 | 验证方式 |
 |---|---|---|---|
-| 1 | 手机 App 与手表的**消息通道**走 `im3.okii.com:8002` 裸 TCP，不经 HTTP 代理 | **已证实** | `/proc/net/tcp6` 中该 UID 存在到 `123.56.164.38:8002` 的 ESTABLISHED 连接，而 mitmproxy 无对应记录 |
+| 1 | 手机 App 与手表的**消息通道**走私有 TCP（MQTT 系），不经 HTTP 代理 | **已证实** | `/proc/net/tcp6` 中该 UID 存在到 `123.56.164.38:8002` 的 ESTABLISHED 连接，而 mitmproxy 无对应记录 |
 | 2 | App 的 HTTPS 流量**确实经过系统代理** | **已证实** | 设置 `http_proxy` 后 mitmproxy 记录到 `account.okii.com`、`watchda.eebbk.net` 等握手 |
 | 3 | 未 root 时**无法解密**其 HTTPS | **已证实** | 握手失败于 `tls alert certificate unknown`；`network_security_config` 只含 `system` 信任锚，`targetSdk=36` |
-| 4 | 请求信封为 `Base-Request-Param` + `Eebbk-Sign`(MD5) + AES-ECB 请求体 | **有公开实现佐证** | 见 [imoo-client](https://github.com/HIbingai/imoo-client)；本仓库 `api/crypto.py` 按其重写并通过标准向量 |
-| 5 | 消息收发对应的具体 HTTP 路径 | **未证实** | 网关为精确路由，枚举 20+ 常见路径全部 404 |
-| 6 | 是否存在可直接调用的"发消息"HTTP 接口 | **存疑** | 见下文「四、为什么可能没有 HTTP 发消息接口」 |
+| 4 | 请求信封为 `Base-Request-Param` + `Eebbk-Sign`(MD5) + AES-ECB | **已用真实服务器证实** | 本仓库实现签名后请求 `GET https://watch.okii.com/rsa`，返回 `code=000001` + RSA 公钥 |
+| 5 | **不存在文本发消息的 HTTP 接口** | **已证实** | 400+ 端点的 OpenAPI 清单中，Chat 只有 `/weichat/emoji` 与 `/weichat/voice`；`/server/domain/list` 显示 IM 接入点是 `gw.im.okii.com:8000`（MQTT 端口） |
+| 6 | `api.watch.okii.com` **不是**可用 base | **已证实** | 真实 base 是 `watch.okii.com`；前者只是 `HOST_NAME_ARRAYS[1]` |
+
+### 一句话结论
+
+**"抓 App 的 HTTP API 来发消息"这条路不存在。**
+文本消息走 MQTT 长连接（`gw.im.okii.com:8000` / 备用 `:1883`），不是 REST。
+现有 ADB 界面自动化方案仍是唯一可行的自动化发消息途径。
 
 ---
 
@@ -108,36 +114,50 @@
 
 ---
 
-## 四、为什么可能没有 HTTP 发消息接口
+## 四、为什么没有 HTTP 发消息接口（已证实）
 
-这是本次调研**最重要也最需要后续验证**的判断。
+### 4.1 三条独立证据
 
-### 4.1 观察到的证据
+1. **完整端点清单里没有**。参考 [dachrisch/imoore](https://github.com/dachrisch/imoore)
+   从 APK 静态提取的 OpenAPI 规范，共 400+ 个端点。Chat 分类下只有两个：
+   * `GET /weichat/emoji` —— 取表情列表
+   * `POST /weichat/voice` —— 发语音
 
-1. App 启动后立刻建立到 `im3.okii.com:8002` 的**长连接**并保持。
-2. 该连接**不经过 HTTP 代理**，说明它不是 HTTP(S) 协议栈。
-3. `imoo-client` 项目提供了 `transport.py`：`ENCRYPT_WAPPER(32)` 帧、XOR 会话密钥、
-   RSA-PKCS1 包裹密钥 —— 这是**自定义二进制协议**的典型结构，不是 REST。
-4. 网关枚举 20+ 条"发消息"风格路径，全部 404。
+   **没有任何"发送文本消息"的 REST 接口。**
 
-### 4.2 推论
+2. **服务器自己说了 IM 接入点**。`GET /server/domain/list` 返回：
+   ```
+   "imJoinDomain": "gw.im.okii.com:8000"
+   "imBakcupDomainList": ["gw.im.okii.com:1883", ...]
+   ```
+   `8000` 是网关端口，`1883` 是 **MQTT 标准端口**。IM 走 MQTT，不是 REST。
 
-手表与手机之间的消息**很可能**走 `8002` 上的私有长连接（TLV 帧 + XOR + RSA 协商），
-而 `api.watch.okii.com` 只承载账号、配置、设备管理等**非实时**操作。
+3. **App 的行为对得上**。App 启动即建立到 `im3.okii.com:8002` 的长连接，
+   且该连接不经 HTTP 代理 —— 不是 HTTP 协议栈。
 
-如果这个推论成立，那么"抓 App 的 HTTP API 来发消息"这条路**本身就不存在**，
-需要改为实现 `8002` 的私有协议 —— 难度和工作量都高一个数量级
-（需要完整还原握手、鉴权、帧格式、心跳、序列号等，且服务端可能校验设备指纹）。
+### 4.2 结论
 
-### 4.3 如何验证（留给后续）
+**手机 App 与手表之间的文本消息走 MQTT 长连接，不存在可通过 HTTP 调用的发消息接口。**
 
-| 方法 | 说明 | 难度 |
-|---|---|---|
-| PCAPdroid | 手机端免 root 抓包，走 VPN 层，能抓裸 TCP | 低 |
-| `adb shell` + `strace` | 需 root | 高 |
-| 端口转发 + 本机监听 | `adb forward` 只能转手机本地端口，不能拦出站 | — |
-| 分析 `libDexHelper` 解密后的 DEX | 需脱壳 | 高 |
-| 直接对着 `8002` 发 TLV 帧试探 | 需要先拿到握手公钥 | 中 |
+这意味着：
+* 想绕过 ADB，需要实现 **MQTT 客户端 + 小天才的私有 topic/鉴权方案**；
+* 服务端很可能校验设备指纹与 `authId`，伪造难度高、稳定性风险大；
+* 工作量比 ADB 界面自动化高一个数量级，且随时可能因协议变更失效。
+
+**建议：继续用现有 ADB 方案。** 它虽然慢（一次发送约 3 秒），但稳定、可维护。
+
+### 4.3 如果仍要尝试 MQTT 路线
+
+需要先解决：
+
+| 障碍 | 说明 |
+|---|---|
+| 接入点鉴权 | `gw.im.okii.com:8000` 需要什么握手？是否 TLS？ |
+| topic 结构 | 消息发到哪个 topic？是否按 watchId 命名？ |
+| 消息体格式 | protobuf / TLV / JSON？加密方式？ |
+| 设备指纹 | 服务端是否校验 `machineId` / `App-Checksum`？ |
+
+验证手段：PCAPdroid（手机端免 root 抓包，走 VPN 层，能抓裸 TCP）是性价比最高的一步。
 
 ---
 
@@ -151,12 +171,18 @@
 字段顺序**固定**，服务端按同一份明文重算签名：
 
 ```json
-{"imFag":"1","appId":"2","program":"watch","timestamp":"2026-11-10 01:00:00",
- "registId":"12345","deviceId":"<绑定号>","token":"<chipId>",
- "accountId":"<账号>","mac":"unkown","requestId":"<uuid hex>"}
+{"accountId":"<账号>","appId":"0","deviceId":"<绑定号>","imFlag":"1",
+ "program":"android","registId":"12345","timestamp":"2026-11-10 01:00:00",
+ "token":"<token>","mac":"unkown","requestId":"<uuid hex>"}
 ```
 
+字段来自 `com.xtc.http.bean.BaseRequestParam`：`appId` 固定 `"0"`、
+`program` 固定 `"android"`、`imFlag` 固定 `"1"`。
+
 注意 `"mac":"unkown"` 的拼写（官方如此，不是 `unknown`）。
+
+> 早期 `imoo-client` 项目用的是 `imFag`/`appId:"2"`/`program:"watch"`，
+> 与国内 `xtc` 包的实现不同。本仓库按 `xtc` 包（即本项目目标）为准。
 
 ### 5.2 `Eebbk-Sign`
 
@@ -195,6 +221,43 @@ content-encoding: gzip
 成功码：`200`（okii 域）、`000001`（tiancaixing 域）、`0`。
 
 ---
+
+## 五之二、真实服务器验证结果
+
+以下为**本次实际请求**的结果（`2026-11-10`），不是推测：
+
+| 请求 | 响应 | 含义 |
+|---|---|---|
+| `GET https://watch.okii.com/rsa` | `code=000001`，含 `encSwitch:0`、`publicKey`、`modulus`、`exponent` | **签名信封正确**，服务器正常应答 |
+| `GET https://watch.okii.com/server/domain/list` | `code=000001`，返回完整域名配置 | 同上 |
+| `GET https://watch.okii.com/watchaccount` | `code=100500` `api gateway error` | 业务接口需要有效 session 才会被路由 |
+| `GET https://watch.okii.com/health` | `code=100500` | 该路径在 `watch.okii.com` 不存在 |
+| `GET https://api.watch.okii.com/health` | `200 {"status":"UP"}` | 这是另一个网关，只有 `/health` |
+
+### `/server/domain/list` 返回的真实配置（节选）
+
+```json
+{"watchDomain": "watch.okii.com", "chatDomain": "watch.okii.com",
+ "locationDomain": "location.watch.okii.com", "pointsDomain": "points.okii.com",
+ "ssoDomain": "account.okii.com",
+ "imJoinDomain": "gw.im.okii.com:8000",
+ "imBakcupDomainList": ["gw.im.okii.com:1883", ...]}
+```
+
+**关键**：`imJoinDomain` 是 `gw.im.okii.com:8000`，备用 `:1883` ——
+这两个都是 **MQTT** 的典型端口（1883 是 MQTT 标准端口）。
+`chatDomain` 指向 `watch.okii.com`，但该 host 上并没有文本发消息的 REST 接口。
+
+### 为什么 `100500` 不代表信封错了
+
+`100500` 是网关的"路由不到"响应，出现在**路径不在白名单**时。
+对照实验：
+
+* `/rsa`、`/server/domain/list` → `000001`（免鉴权白名单，信封被接受）
+* `/watchaccount`、`/mobileaccount`、`/weichat/emoji` → `100500`（需 session）
+
+也就是说：**签名算法已验证正确**，缺的只是有效 token。
+即使拿到 token，`/weichat/emoji` 也只是取表情列表，**不是发消息**。
 
 ## 六、本仓库的实现状态
 
@@ -239,9 +302,22 @@ content-encoding: gzip
 
 ---
 
-## 九、许可与声明
+## 九、参考资料与出处
 
-* 协议结构参考 [HIbingai/imoo-client](https://github.com/HIbingai/imoo-client)（MIT）。
+本次调研用到的两份公开资料，均已在正文标注：
+
+| 项目 | 用途 | 许可 |
+|---|---|---|
+| [HIbingai/imoo-client](https://github.com/HIbingai/imoo-client) | 签名信封、AES-ECB、TLV/XOR 传输层结构 | MIT |
+| [dachrisch/imoore](https://github.com/dachrisch/imoore) | **完整 400+ 端点 OpenAPI 清单**、`BaseRequestParam` 字段、`/rsa` 与 `encSwitch` 语义、域名表 | 见仓库 |
+
+`imoore` 的关键贡献是那份 `openapi.yaml` —— 它让"有没有发消息接口"这个问题
+从"猜"变成"查"。本仓库 `api/crypto.py` 按 `imoo-client` 的结构重写，
+但字段取值按 `imoore` 记录的 `xtc` 包实现（两者有差异，见 5.1 的注）。
+
+## 十、许可与声明
+
 * 协议本身归小天才（imoo / 步步高）所有，本项目仅做**互操作性研究**。
 * 本文档不含任何真实凭据、设备标识或个人数据。
 * 抓包仅针对**本人设备与本人账号**，用于学习目的。
+* 本文中所有"已证实"结论均可由正文给出的命令或请求复现。
