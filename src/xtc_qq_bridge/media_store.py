@@ -90,8 +90,12 @@ class MediaStore:
         return hashlib.sha1(data).hexdigest()[:_CODE_LEN]
 
     def path_of(self, code: str) -> Path | None:
-        """引用码 -> 文件路径（不存在返回 None）。只接受十六进制码，避免路径穿越。"""
-        c = (code or "").strip().lower()
+        """引用码 -> 文件路径（不存在返回 None）。只接受十六进制码，避免路径穿越。
+
+        先转 str 再处理：调用方（尤其 HTTP 回调）可能把 JSON 里的数字/None 直接传进来，
+        对非字符串调 .strip() 会抛 AttributeError，而这个方法的约定是"查不到就返回 None"。
+        """
+        c = str(code or "").strip().lower()
         if not c:
             return None
         if not _CODE_RE.match(c):
