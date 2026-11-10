@@ -39,7 +39,7 @@ _FALLBACK_LOGGER = logging.getLogger("xtc_qq_bridge")
 
 # 项目元信息：与 src/xtc_qq_bridge/version.py 保持一致（tests 会校验，避免两处漂移）。
 # 插件作为独立目录安装到 AstrBot，无法 import 主程序包，因此这里保留一份。
-_PLUGIN_VERSION = "1.0.0-rc.1"
+_PLUGIN_VERSION = "1.0.0-rc.2"
 _PLUGIN_TITLE = "XTC-QQ-Bridge"
 _PLUGIN_AUTHOR = "Dinganzhi"
 _PLUGIN_REPO = "https://github.com/Dinganzhi/xtc-qq-bridge"

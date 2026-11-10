@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """项目元信息（版本/作者/仓库/许可证/版权）：程序入口、编译脚本、CI 都读这里。"""
 
-__version__ = "1.0.0-rc.1"
+__version__ = "1.0.0-rc.2"
 APP_NAME = "xtc-qq-bridge"          # 可执行文件名与数据目录名（保持小写，兼容各平台路径）
 
 PROJECT_TITLE = "XTC-QQ-Bridge"     # 对外展示名称
