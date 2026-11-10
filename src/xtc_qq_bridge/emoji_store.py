@@ -28,6 +28,8 @@
 """
 from __future__ import annotations
 
+import shlex
+
 import base64
 import json
 import struct
@@ -264,8 +266,11 @@ class EmojiStore:
                                                     min_bytes=min_bytes)
             return rows, now or time.time()
         try:
+            # where 来自配置（如 xiaotiancai.package），可能含空格/分号/$( )：
+            # 直接内插会把命令拆坏，甚至执行注入内容。这里 quote 后再拼，
+            # 与 root_access.list_files 的做法保持一致。
             listing = self.adb.shell(
-                f"date +%s; find {where} -type f "
+                f"date +%s; find {shlex.quote(where)} -type f "
                 f"-exec stat -c '%Y %s %n' {{}} \\; 2>/dev/null", timeout=60)
         except Exception as e:  # noqa: BLE001 无法取得就走别的路
             self._log("debug", f"列目录失败 {where}: {e}")
@@ -549,7 +554,7 @@ class EmojiStore:
         parts: list[str] = []
         for base in self.roots:
             target = f"{base}/{EMOJI_SUBDIR}"
-            cmd = f"find {target} -name desc.json 2>/dev/null"
+            cmd = f"find {shlex.quote(target)} -name desc.json 2>/dev/null"
             if self._needs_root(target):
                 if self.root_access is None or not self.root_access.available():
                     continue
