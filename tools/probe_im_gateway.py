@@ -141,10 +141,11 @@ def describe(banner: bytes) -> None:
             else:
                 print(f"    tag=10 len={len(value):3}  （含 BEGIN PUBLIC KEY 但未匹配）")
         elif tag == 11:
-            print(f"    tag=11 len={len(value):3}  二进制块 {value[:16].hex()}...")
+            # 已确认：这就是公钥的 modulus（与 PEM 里的 n 逐字节相同）
+            print(f"    tag=11 len={len(value):3}  公钥 modulus {value[:16].hex()}...")
         elif tag == 12:
-            print(f"    tag=12 len={len(value):3}  值 {value.hex()}"
-                  f"（若为 010001 则是 RSA 指数 65537）")
+            hint = " = RSA 指数 65537" if value == b"\x01\x00\x01" else ""
+            print(f"    tag=12 len={len(value):3}  公钥 exponent {value.hex()}{hint}")
         else:
             print(f"    tag={tag} len={len(value):3}  {value[:24].hex()}")
 
@@ -177,7 +178,12 @@ def main() -> int:
         else:
             print("  → 说明存在逐连接随机成分（如会话密钥）")
 
+    print("\n结构：37 99 | 03 02 | 02 00 | c8 | <TLV 序列>")
+    print("      魔数    版本3.2      标志     tag10=PEM / tag11=n / tag12=e")
+    print("      c8 不是 TLV 标签，是帧标志字节（tag10 从偏移 7 才开始）")
     print("\n结论：该端口是自定义二进制协议，不是标准 MQTT，也不是 TLS。")
+    print("      服务器认帧头但不回应业务帧 —— 真实首包需要设备身份，")
+    print("      所以这条路的门槛是「先有 token」，不是「先猜对协议」。")
     print("详见 docs/imoo-api.md 第 4.3 节。")
     return 0
 
