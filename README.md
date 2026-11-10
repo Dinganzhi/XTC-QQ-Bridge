@@ -2,7 +2,7 @@
 
 **小天才手表 ⇄ QQ 双向消息桥接** · 基于 ADB 界面自动化 + AstrBot 插件
 
-![Version](https://img.shields.io/badge/version-1.0.0--rc.1-blue)
+![Version](https://img.shields.io/badge/version-1.0.0--rc.2-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![Python](https://img.shields.io/badge/python-3.10%2B-yellow)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
