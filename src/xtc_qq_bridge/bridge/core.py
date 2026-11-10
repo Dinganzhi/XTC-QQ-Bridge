@@ -441,7 +441,15 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     if ok and ident is not None:
                         # 执行成功 -> 标记为已完成（持久化），同一条消息不再重复执行
                         self._cmd_done_add(ident[0], text, ident[1])
-                    # 回复失败：不标记，下一轮轮询自动重试
+                    elif not ok and ident is not None:
+                        # 回复失败：把 seen_text 复位，下一轮轮询才会重新入队。
+                        # 光"不标记 done"不够 —— _maybe_xtc_cmd 在入队**之前**就把
+                        # (side, text) -> label 写进了 _cmd_seen_text，而
+                        # _cmd_text_handled 正是靠它判"已处理"，不清掉就永远不会重试。
+                        with self._cmd_lock:
+                            if self._cmd_seen_text.get((ident[0], text)) == ident[1]:
+                                self._cmd_seen_text.pop((ident[0], text), None)
+                        self._log("debug", f"[xtc命令] 回复失败，下轮重试: {text[:24]!r}")
             except Exception as e:  # noqa: BLE001
                 self._log("warning", f"任务处理异常: {e}")
             finally:
@@ -789,6 +797,11 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 self._log("debug", "[补发] 未能重新读界面，按现有快照取图")
 
         pending: list[tuple[str, str, dict | None, str]] = []
+        # 跨屏去重：上翻只滚 0.7 屏，相邻两屏必然有约 30% 重叠，落在重叠区的
+        # 消息会被扫第二遍。文字有 _recent_fwd 的内容护栏兜住，但媒体占位文本
+        # （"图片"/"表情X"）在 _forward_suppressed 里被**显式放行**（否则第二张
+        # 照片会被误判成重复），所以照片/表情没有那层保护 —— 只能在这里按身份挡。
+        seen_idents: set[tuple[str, str]] = set()
         scanned = 0
         hit_store = False          # 本屏里撞到过"库里已有"的消息（日志/调试用）
         stop_all = False           # 需要整体停止（超龄 / 超出扫描上限 / 媒体在等）
@@ -842,7 +855,7 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     if kind in ("sticker", "image") and not ident:
                         # 只有在"确实翻得动"的时候才先去翻一屏找标签；翻不动（无法读取可视区、
                         # 或者当前环境不支持滑动）就按无标签照常补发，绝不能让照片被漏掉。
-                        if len(steps) < self._catchup_screens and self._scroll_probe(root):
+                        if len(steps) < screens_limit and self._scroll_probe(root):
                             break            # 跳出本屏 -> 外层会上翻一屏再扫
                         self._log("debug", f"[补发] 这条媒体没有时间标签，按无标签补发: "
                                           f"{text[:24]!r}")
@@ -924,6 +937,11 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                 continue     # 深度扫描：跳过它，继续往上找更早的消息
                             stop_all = True
                             break
+                    ident_key = (text, ident or "")
+                    if ident_key in seen_idents:
+                        self._log("debug", f"[补发] 重叠区重复扫到，跳过: {text[:24]!r}")
+                        continue
+                    seen_idents.add(ident_key)
                     pending.append((text, ident, sticker, disp_lbl, kind,
                                     self._media_hash(sticker)))
                     screen_all_known = False
@@ -932,7 +950,11 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     break                    # 超龄 / 媒体在等 / 超出扫描上限
                 if screen_all_known and not deep:
                     break                    # 这一屏全是已处理的 -> 已经接上了，不必再向上滚动
-                if len(steps) >= self._catchup_screens:
+                if len(steps) >= screens_limit:
+                    # 注意用 screens_limit 而不是 _catchup_screens：深度扫描时前者被
+                    # 抬到 max(catchup_screens, 5)，后者仍是配置里的原值（默认 1）。
+                    # 早先这里用的是后者，导致"深度扫描翻 5 屏"只写在 range() 上、
+                    # 循环体里的闸门永远是 1 屏，max(...,5) 成了死代码。
                     break
                 # 这一屏全都没在库里 -> 上面很可能还有没读到的消息（实测：图片被顶到可见区
                 # 之外就永远补不到）。向上滚动一屏继续找，最后按原路滚回底部。
