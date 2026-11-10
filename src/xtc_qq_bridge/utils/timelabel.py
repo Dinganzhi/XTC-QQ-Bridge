@@ -77,7 +77,11 @@ def label_epoch(time_label: str, now: datetime | None = None) -> float | None:
     m = re.search(r"星期([一二三四五六日天])", label)
     if m:
         tm = re.search(r"(\d{1,2}):(\d{2})", label)
-        idx = "一二三四五六日天".index(m.group(1)) + 1        # 周一=1 ... 周日=7
+        # 周一=1 ... 周日=7。"天"与"日"都表示周日，必须映射到同一个值：
+        # 若把"天"放进下面这个字符串末尾，它的索引是 7，+1 就成了 8（"周八"），
+        # 算出的 days_back 会落到前一天 —— "星期天 16:18" 会被解析成周一。
+        ch = "日" if m.group(1) == "天" else m.group(1)
+        idx = "一二三四五六日".index(ch) + 1
         days_back = (now.isoweekday() - idx) % 7
         try:
             dt = (now - timedelta(days=days_back)).replace(
