@@ -177,13 +177,19 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                     self._send(200, b"IGNORED")
                     return
                 if action == "login":
-                    _spawn(bridge.login_xiaotiancai, (request_id,), "xtc-login")
+                    if not _spawn(bridge.login_xiaotiancai, (request_id,), "xtc-login"):
+                        _log(logger, "warning", "[QQ回调] 登录任务已满（同时最多 8 个），回 503")
+                        self._send(503, b"busy")
+                        return
                     self._send(200, b"OK")
                 elif action == "auto_login":
                     bridge.toggle_auto_login(request_id)
                     self._send(200, b"OK")
                 elif action == "init":
-                    _spawn(bridge.init_xiaotiancai, (request_id,), "xtc-init")
+                    if not _spawn(bridge.init_xiaotiancai, (request_id,), "xtc-init"):
+                        _log(logger, "warning", "[QQ回调] 初始化任务已满（同时最多 8 个），回 503")
+                        self._send(503, b"busy")
+                        return
                     self._send(200, b"OK")
                 elif action == "history":
                     try:
@@ -191,14 +197,20 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                     except (TypeError, ValueError):
                         count = 20
                     src = str(data.get("history_source") or "").strip()
-                    _spawn(bridge.fetch_xtc_history,
-                           (count, request_id, False, src), "xtc-history")
+                    if not _spawn(bridge.fetch_xtc_history,
+                                  (count, request_id, False, src), "xtc-history"):
+                        _log(logger, "warning", "[QQ回调] 历史消息任务已满（同时最多 8 个），回 503")
+                        self._send(503, b"busy")
+                        return
                     self._send(200, b"OK")
                 elif action == "history_media":
                     # `/小天才 查看图片 <码>`：把历史里归档的那张图重新发到 QQ
                     code = str(data.get("media_code") or "").strip()
-                    _spawn(bridge.fetch_xtc_media, (code, request_id),
-                           "xtc-history-media")
+                    if not _spawn(bridge.fetch_xtc_media, (code, request_id),
+                                  "xtc-history-media"):
+                        _log(logger, "warning", "[QQ回调] 取图任务已满（同时最多 8 个），回 503")
+                        self._send(503, b"busy")
+                        return
                     self._send(200, b"OK")
                 else:
                     _log(logger, "warning", f"[QQ回调] 未知动作: {action}（已忽略）")
