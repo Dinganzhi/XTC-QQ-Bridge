@@ -139,10 +139,13 @@ class HistoryMixin:
         if want in ("手表", "xtc", "watch", "家长", "宝贝"):
             return [e for e in entries if e.get("kind") == "xtc"]
         if want in ("qq", "QQ", "私聊", "群聊"):
+            # 写入侧的 source 是 "QQ私聊 <号>" / "QQ群 <号>"（见 reverse.py），
+            # 前面**没有**方括号 —— 只有拼进 QQ 文本时才补一个左方括号。
+            # 这里若按带方括号的形式匹配，两个分支会恒为空，用户只会以为"库里没数据"。
             if want in ("私聊",):
-                return [e for e in entries if "[QQ私聊" in (e.get("source") or "")]
+                return [e for e in entries if (e.get("source") or "").startswith("QQ私聊")]
             if want in ("群聊",):
-                return [e for e in entries if "[QQ群" in (e.get("source") or "")]
+                return [e for e in entries if (e.get("source") or "").startswith("QQ群")]
             return [e for e in entries if e.get("kind") == "qq"]
         # 具体来源：优先 source_id 精确匹配，其次标签包含
         hit = [e for e in entries if str(e.get("source_id") or "") == want]
