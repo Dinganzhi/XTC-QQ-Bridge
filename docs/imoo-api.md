@@ -215,7 +215,65 @@ POST /totally-bogus-path-xyz           -> 000007 request parameter is invalid.
 对 `gw.im.okii.com:8000` 做了主动探测，**该端口不是标准 MQTT，也不是 TLS**，
 而是一层自定义二进制协议。已确认的结构如下。
 
-#### 端口状态
+#### 4.3.0 先拿到服务端拓扑（`GET /server/domain/list`）
+
+这是本次最省事的发现：**`/server/domain/list` 用 GET、不需要 token 就能调通**，
+直接返回三套环境的完整域名表。方法对了，一次就通；之前用 POST 一直报 `000003`。
+
+```http
+GET /server/domain/list
+Base-Request-Param: {"accountId":"...","appId":"0","deviceId":"<绑定号>",...}
+Eebbk-Sign: <MD5>
+-> {"code":"000001","desc":"success","data":[{...},{...},{...}]}
+```
+
+三套环境（`id` 1 正式 / 2 生产 / 4 模块测试）的关键域名：
+
+| 字段 | 正式环境 | 说明 |
+|---|---|---|
+| `watchDomain` | `watch.okii.com` | 主 API |
+| `chatDomain` | `watch.okii.com` | 聊天（与主 API 同域） |
+| `locationDomain` | `location.watch.okii.com` | 定位 |
+| `ssoDomain` | `account.okii.com` | 登录 |
+| `gatewayDomain` | `api.watch.okii.com` | 网关 |
+| **`imJoinDomain`** | **`gw.im.okii.com:8000`** | **IM 接入点** |
+| **`imBakcupDomainList`** | **`['gw.im.okii.com:1883', 'gw.im.okii.com:8000']`** | 备用 |
+| `imJoinGreyDomain` | `gw.beta.im.okii.com:8000` | 灰度 |
+
+模块测试环境用 `gw.module.im.okii.com:8001`、`account-alpha.okii.com`、
+`watch-module.okii.com` —— 这些可以做无副作用的联调。
+
+#### 4.3.1 `1883` 与 `8000` 是同一个服务
+
+`imBakcupDomainList` 里出现了 `1883`（MQTT 标准端口），一度以为协议就是 MQTT。
+实测两个端口**行为完全一致**，解析到同一个 IP：
+
+| 端口 | 解析 IP | 对 MQTT CONNECT | 对 TLS 头 | 对文本/静默 |
+|---|---|---|---|---|
+| `8000` | `8.141.31.235` | 回 `240402021068` | 回 412 字节首帧 | 无响应 |
+| `1883` | `8.141.31.235` | 回 `240402021068` | 回 412 字节首帧 | 无响应 |
+| `8883` | — | 超时 | — | — |
+| `8001`（模块测试） | `123.57.136.4` | 开放 | — | — |
+
+**结论：`1883` 只是端口号借用了 MQTT 的习惯，协议本身不是 MQTT。**
+
+#### 4.3.2 对 MQTT CONNECT 的应答是固定拒绝
+
+发标准 MQTT 3.1 / 3.1.1 / 5.0 的 CONNECT，无论 clientId 是空串、`test`、
+绑定号、accountId、32 位随机串还是 50 字符长串，**返回的都是同一段 6 字节**：
+
+```
+24 04 02 02 10 68
+```
+
+换成标准 CONNACK 的视角看，首字节应为 `0x20`，这里是 `0x24`（低 4 位不为 0），
+所以它**不是合法 CONNACK**。而且返回码不随任何输入变化 —— 这说明它是一层
+**固定的协议拒绝应答**，与"clientId 不对"无关。
+
+对照第 4.2.2 节的结论，`8000`/`1883` 上存在一个**协议嗅探层**：
+认 TLS 头就给 412 字节自定义帧，认 MQTT 头就给这 6 字节，其余一律静默。
+
+#### 4.3.3 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
@@ -455,21 +513,110 @@ content-encoding: gzip
 
 ---
 
-## 七、凭据获取（未完成）
+## 七、凭据获取（三个已拿到，一个卡住）
 
 调用真实接口需要四个值：`bind_number`（绑定号）、`chip_id`、`account_id`、`encrypt_key`。
 
-| 值 | 可能来源 | 本次结果 |
+| 值 | 状态 | 怎么拿到的 |
 |---|---|---|
-| `bind_number` | App「我的 → 关于手表」页显示 | ❌ 界面被指纹弹窗阻塞 |
-| `chip_id` | App 私有存储 / 登录响应 | ❌ 无 root 不可读 |
-| `account_id` | 登录响应 | ❌ 同上 |
-| `encrypt_key` | 登录响应下发的 `encryptKey` 字段 | ❌ 同上 |
+| `account_id` | ✅ 已取得 | 用账号密码调 `/app/loginV2`，响应 `data.accountId` |
+| `bind_number` | ✅ 已取得 | App「更多 → 宝贝个人中心 → 手表绑定号」页直接显示（16 位小写字母） |
+| `encrypt_key` | ⚠️ 部分 | 结构是 `keyId:aesKey:eebbkKey`，三段式能被服务端识别，但真实值不明 |
+| `chip_id` | ❌ **卡住** | App 私有 SharedPreferences，无 root 读不到 |
 
-**结论：在无 root、且系统级指纹弹窗无法用 ADB 通过的前提下，无法取得凭据。**
-后续若要做真实联调，需要：
-1. 用户在手机上手动完成一次指纹验证（安装证书），或
-2. 用户手动从 App 界面抄下绑定号，并抓一次登录响应（需已装好证书）。
+### 7.1 登录已经完全打通（不需要手机）
+
+这是本次最实用的结论：**账号密码登录整条链路可以在 Linux 上跑通，不需要设备、不需要 root、不需要证书。**
+
+```
+POST /app/rsakey   -> 取 RSA-1024 公钥（000001）
+POST /app/loginV2  -> AES-128-ECB 加密请求体 + RSA 包裹 aesKey
+                   -> 返回 data.accountId / sign / deviceId
+```
+
+实现见 `src/xtc_qq_bridge/api/sso.py`。真实账号实测返回 `000001 success`，
+拿到 `accountId`、`sign`（32 位）、`deviceId`（16 位）。
+
+**注意登录响应里的 `deviceId` 与绑定号不是同一个东西**：前者是手机端会话标识（16 位十六进制），
+后者是手表绑定号（16 位小写字母）。BRP 里的 `deviceId` 要填**绑定号**。
+
+### 7.2 `chip_id` 是硬性必需项（已用对照实验证实）
+
+这一点之前只是从文档推测，这次做了完整的对照实验。结论很干净：
+
+| BRP 里的 `token` | 服务端返回 | 含义 |
+|---|---|---|
+| 空 | `000003` | 参数校验不通过（缺字段） |
+| 任意非空值 | `100500` | 参数结构过了，网关拒绝（值无效） |
+
+换 `registId`（0 / accountId / timestamp）、`model`（空 / XTC_Z10 / Z8A）、
+`dataCenterCode`（CN_BJ / CN / 空）**都不改变结果** —— 唯一决定因素是 `token` 是否为空。
+
+所以 `chip_id` 不能省略、不能伪造。
+
+#### 7.2.1 只有 `/server/domain/list` 不需要 token
+
+把一批 GET 接口逐个试过，只有域名列表放行，其余全部要求 token：
+
+| 接口 | 无 token 时 |
+|---|---|
+| `GET /server/domain/list` | ✅ `000001 success`（返回三套环境域名表） |
+| `GET /mobileinit/authid` | ❌ `010403` The token is invalid |
+| `GET /weichat/emoji` | ❌ `000003` |
+| `GET /watchaccount/query` | ❌ `000003` |
+| `GET /group-chat/familyGroup/groups` | ❌ `000003` |
+| `GET /contact/<绑定号>` | ❌ `000003` |
+| `GET /app/areaCodeList` | ❌ `000003` |
+| `GET /app/login/modes` | ❌ `000003` |
+
+**方法（GET/POST）比参数更关键**：`/server/domain/list` 用 POST 一直报 `000003`，
+换成 GET 立刻就通了。调不通某个接口时，先换方法再怀疑参数。
+
+#### 7.2.2 `010403` 与 `000002` 的区别
+
+`/mobileinit/authid` 会返回内层错误码，把两者区分得很清楚：
+
+| token 取值 | 外层 | 内层 | 含义 |
+|---|---|---|---|
+| 空串 | `000003` | `010403` | **没给** token |
+| 任意非空（1/16/32/64/128 位、登录 sign） | `000003` | `000002` | **给了但值不对** |
+
+这说明服务端先看"有没有"，再看"对不对"。所以 `010403` 不是"格式错"，
+而是"缺失"；`000002` 才是"值无效"。两者都不能靠猜绕过。
+
+### 7.3 `encrypt_key` 的实测行为
+
+`ImooCrypto` 按 `keyId:aesKey:eebbkKey` 三段式识别 v3 加密。实测：
+
+| 传入值 | 服务端返回 |
+|---|---|
+| 空 | `000003`（走 v0 明文） |
+| `1:16字符:x` | `000016`（结构被识别，但内容校验不过） |
+| `1:16字符:`（第三段空） | `000003`（退回 v0） |
+| 只有 aesKey | `000003`（退回 v0） |
+
+`000016` 是**独立于 token 的一层校验**：无论 token 填什么、`eebbkKey` 填什么，
+只要结构是 `1:16字符:非空`，就固定返回 `000016`。说明服务端在这个阶段还没解我的密文，
+而是先校验密钥标识本身。真实 `keyId` / `aesKey` / `eebbkKey` 三值都不明。
+
+### 7.4 为什么拿不到 `chip_id`（三条路都试过）
+
+| 方案 | 结果 |
+|---|---|
+| `run-as` | ❌ `package not debuggable` |
+| `adb backup` | ❌ 只得到 47 字节空备份；`dumpsys package` 的 flags 里没有 `ALLOW_BACKUP`（`allowBackup=false`），App 直接拒绝，手机也不弹确认框 |
+| Shizuku / FV / MiXplorer | ❌ **本质上等同于 `adb shell`**（同样是 uid=2000 shell）。`/data/data/com.xtc.watch` 权限是 0700 且属主是应用 uid，shell 进不去。它只是把同样的权限包装成图形界面，没有提权 |
+| 读 App 日志 | ❌ 日志是腾讯 mars xlog 格式（XOR 加密），需要 App 内的密钥才能解 |
+| `/sdcard/Android/data/com.xtc.watch/` | ✅ 可读，但里面只有日志、表情缓存、崩溃记录，**没有凭据** |
+
+**结论：不 root 就拿不到 `chip_id`。**
+
+### 7.5 剩下的可行路径
+
+1. **临时 root**（Magisk / KernelSU）：拿到后直接读 SharedPreferences，一次性解决。
+2. **把证书装进系统区**：需要 root 或可写 `/system`（本机 `/system` 是 `erofs (ro)`，不可写）。
+3. **用户手动提供**：如果用户能从别处（历史抓包、其他工具）拿到 `chip_id`，直接填入配置即可。
+4. **放弃 HTTP 路线**，继续用 ADB 界面自动化（现状）。
 
 ---
 
