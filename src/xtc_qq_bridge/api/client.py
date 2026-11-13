@@ -28,6 +28,11 @@ __all__ = ["ApiError", "ApiResult", "ImooApiClient", "DEFAULT_BASE"]
 # 真正承载账号/设备/群聊等接口的是 `watch.okii.com`。
 DEFAULT_BASE = "https://watch.okii.com"
 
+# 实测不需要设备 token 就能调通的接口。只放确认过的，宁可少放。
+# `/server/domain/list` 用 GET 时返回三套环境的域名表（见文档 §4.3.0），
+# 因此可以拿它做"网络与签名链路是否通"的自检。
+_TOKEN_FREE_PATHS = frozenset({"/server/domain/list"})
+
 
 class ApiError(RuntimeError):
     """调用失败。`kind` 区分失败层级，便于排错。"""
@@ -91,21 +96,39 @@ class ImooApiClient:
         """签名 POST（请求体加密）。"""
         return self._send("POST", path, dumps_compact(body if body is not None else {}))
 
-    def ready(self) -> tuple[bool, str]:
-        """是否具备调用条件；返回 (可用, 原因)。"""
+    def ready(self, path: str = "") -> tuple[bool, str]:
+        """是否具备调用条件；返回 (可用, 原因)。
+
+        `path` 用于判断该接口是否属于"免凭据"白名单 —— 实测
+        `GET /server/domain/list` 不需要 token 就能调通（见文档 §4.3.0），
+        所以不能因为它缺 token 就把这个接口也拦掉，否则连"网络与签名链路
+        是否通"都无法自检。
+        """
         if not self.enabled:
             return False, "api.enabled 未开启"
-        if not self.account.bind_number or not self.account.chip_id:
-            return False, "缺少设备凭据（api.bind_number / api.chip_id）"
         if not self.account.account_id:
             return False, "缺少账号凭据（api.account_id）"
+        if path and self.is_token_free(path):
+            return True, ""
+        if not self.account.bind_number or not self.account.chip_id:
+            return False, "缺少设备凭据（api.bind_number / api.chip_id）"
         return True, ""
+
+    @staticmethod
+    def is_token_free(path: str) -> bool:
+        """该接口是否不需要设备 token。
+
+        目前只实测确认了 `/server/domain/list` 一个；其余接口在缺 token 时
+        都会返回 `000003`，因此不放进白名单。
+        """
+        clean = str(path or "").split("?", 1)[0].rstrip("/")
+        return clean in _TOKEN_FREE_PATHS
 
     # ---------------------------------------------------------------- 内部
     def _send(self, method: str, path: str, body: str) -> ApiResult:
         started = time.monotonic()
 
-        ok, why = self.ready()
+        ok, why = self.ready(path)
         if not ok:
             return ApiResult(ok=False, error=why, kind="disabled",
                              elapsed=time.monotonic() - started)
