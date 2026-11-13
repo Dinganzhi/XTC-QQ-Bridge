@@ -86,20 +86,37 @@ class SsoError(RuntimeError):
 class LoginResult:
     """登录成功后拿到的东西。
 
-    `token` 是核心 API 用的会话令牌，`account_id` 同时用作 `authId` 头。
+    `ticket` 是核心 API 的会话令牌 —— 它就是**整个 `data` JSON 原文**，
+    不是其中某个子字段。依据（脱壳后的真实代码）::
+
+        com/xtc/account/service/impl/Gibraltar.java:193-194
+            r = Gabon(loginResponse.data, SSOLoginResult.class);
+            r.setTicket(loginResponse.data);
+        com/xtc/account/service/Gibraltar.java:24
+            m.setToken(r.getTicket());
+
+    `token` 保留为 `sign` 的别名，仅为兼容旧调用；真正的 `token` 请用 `ticket`。
     `raw` 保留原始响应，便于排查字段变化。
     """
 
-    token: str = ""
-    account_id: str = ""
+    ticket: str = ""          # 核心 API 的 token（= data 原文）
+    account_id: str = ""      # 登录态里的 accountId，同时也是 authId
+    sign: str = ""            # SSO 签名，不是核心 API 的 token
+    device_id: str = ""       # 登录会话的 deviceId（服务端原样回显客户端上报值）
+    mobile_id: str = ""       # mobileId，BRP 的 accountId 要用它
     raw: dict = field(default_factory=dict)
 
+    @property
+    def token(self) -> str:
+        """核心 API 的 token（等同于 `ticket`）。"""
+        return self.ticket
+
     def __bool__(self) -> bool:
-        return bool(self.token)
+        return bool(self.ticket)
 
     def __repr__(self) -> str:
         # 不要把 token 打进日志
-        return (f"LoginResult(token={'***' if self.token else ''!r}, "
+        return (f"LoginResult(ticket={'***' if self.ticket else ''!r}, "
                 f"account_id={self.account_id!r})")
 
 
@@ -310,16 +327,26 @@ class SsoClient:
             raise SsoError("business", f"{what}失败：{desc}", code=code, attempts_left=left)
 
         raw = data.get("data")
-        # data 通常是一个 JSON 字符串，里面有 token 与 accountId
+        # data 是一个 JSON 字符串，里面是账号信息；这个字符串本身就是 ticket
         inner: dict = {}
         if isinstance(raw, str):
+            ticket = raw          # ← token 就是 data 原文，不做任何拆分
             try:
                 inner = json.loads(raw)
-            except Exception:  # noqa: BLE001 不是 JSON 就当作纯 token 字符串
+            except Exception:  # noqa: BLE001 不是 JSON 就当纯字符串
                 inner = {"token": raw}
+                ticket = raw
         elif isinstance(raw, dict):
             inner = raw
+            ticket = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+        else:
+            inner, ticket = {}, ""
 
-        token = str(inner.get("token") or inner.get("accessToken") or "")
         account_id = str(inner.get("accountId") or inner.get("userId") or "")
-        return LoginResult(token=token, account_id=account_id, raw=inner or data)
+        return LoginResult(
+            ticket=ticket,
+            account_id=account_id,
+            sign=str(inner.get("sign") or ""),
+            device_id=str(inner.get("deviceId") or ""),
+            mobile_id=str(inner.get("mobileId") or ""),
+            raw=inner or data)

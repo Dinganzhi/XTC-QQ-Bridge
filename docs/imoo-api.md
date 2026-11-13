@@ -273,6 +273,78 @@ Eebbk-Sign: <MD5>
 对照第 4.2.2 节的结论，`8000`/`1883` 上存在一个**协议嗅探层**：
 认 TLS 头就给 412 字节自定义帧，认 MQTT 头就给这 6 字节，其余一律静默。
 
+#### 4.3.4 报文结构（脱壳后从代码读出）
+
+IM 的消息体是**带命令号的 TLV**，每个字段用注解标出 tag 号，整体是 varint 编码。
+这是脱壳后`com/xtc/im/core/common/request/entity/` 下的真实定义，可直接照抄：
+
+**发消息（命令号 9）**
+
+```java
+@CommandValue(9)
+public class MessageRequestEntity extends RequestEntity {
+    @TagValue(1)  int    RID;            // 请求序号
+    @TagValue(2)  int    needResponse;   // 是否需要回执
+    @TagValue(10) long   dialogId;       // 会话 ID
+    @TagValue(11) long   imAccountId;    // 本机 IM 账号 ID
+    @TagValue(12) long   registId;
+    @TagValue(13) int    msgType;        // 文本/图片/语音…
+    @TagValue(14) byte[] msg;            // 消息体
+    @TagValue(15) String msgId;
+    @TagValue(18) int    contentType;
+    @TagValue(20) int    noSensitivity;
+}
+```
+
+**登录（命令号 3）**
+
+```java
+@CommandValue(3)
+public class LoginRequestEntity extends RequestEntity {
+    @TagValue(1)  int    RID;
+    @TagValue(10) long   registId;
+    @TagValue(11) String registToken;        // 注意：又一个独立凭据
+    @TagValue(12) long   sdkVersion;
+    @TagValue(17) String deviceToken;
+    @TagValue(21) long   timestamp;
+    @TagValue(24) String baseRequestParam;   // 就是 §7.7 那个 BRP JSON
+    @TagValue(26) String deviceId;
+    @TagValue(18) String imSdkVersionName;
+    @TagValue(19) int    pushType;
+    @TagValue(20) int    platform;
+}
+```
+
+其它命令号：`22` 取服务端公钥、`33` 设置加密参数、以及若干同步/回执类。
+
+`dialogId` 与 `imAccountId` 存在本地库里：
+`databases/app_database_v5.db` 的 `MobileAccount` 表里有一个 `imAccountInfo` 字段，
+是 JSON，包含 `imAccountId` 和 `singlePushDialogId` —— 后者就是要发给手表的那条会话。
+
+**编码格式**：TLV 的长度与 tag 都用 varint（7 位一组、低位在前），
+见 `com/xtc/im/core/common/tlv/Georgia.java` 的 `Gibraltar()` / `Guyana()`：
+
+```java
+int i = bArr[0] & 0x7f;
+for (int k = 1; k < len; k++) i |= (bArr[k] & 0x7f) << (k * 7);
+```
+
+**但字节级的帧头、组包与加解密都在 native 层**（`TCPConnection` 及各
+`Entity.toByteArray()` 全部是 `JniLib.cX()` 空壳，方法体被加固进 so）。
+也就是说：报文语义已经清楚，但要自己实现一个能连上的客户端，
+还差帧头格式与那层加解密 —— 这两块只能靠动态调试或逆向 so，工作量不小。
+
+#### 4.3.5 为什么最终没做成「纯 HTTP 发消息」
+
+脱壳后把全部 Retrofit 注解抽出来，共 **323 个接口**，逐个看过：
+
+- 没有任何「发送聊天消息」的接口；
+- 聊天相关只有群组的增删改查、文件下载、位置共享；
+- `/findWatch/setLeaveMessage` 是**留言**（手表关机时的留言），不是聊天消息。
+
+**结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
+不再是靠试探推断。
+
 #### 4.3.3 端口状态
 
 | 端口 | 状态 | 说明 |
@@ -611,11 +683,128 @@ POST /app/loginV2  -> AES-128-ECB 加密请求体 + RSA 包裹 aesKey
 
 **结论：不 root 就拿不到 `chip_id`。**
 
-### 7.5 剩下的可行路径
+### 7.5 脱壳：拿到全部业务代码
 
-1. **临时 root**（Magisk / KernelSU）：拿到后直接读 SharedPreferences，一次性解决。
+真正解开问题的是**把加密的 dex 从内存里 dump 出来**，而不是继续猜接口。
+
+加固方式是「壳 dex + 尾部加密载荷」：`classes.dex` 只有 5 个类、19 KB 是有效内容，
+剩下 106 MB 是 SecNeo 壳的加密载荷（头 20 字节为 `dexdata` 标记 + 长度 + 8 字节元数据）。
+静态解不开（单字节 XOR 爆破、AES 各模式 × 已知密钥全部失败），
+但**壳会在运行时把载荷原地解密到自己的内存映射里**：
+
+```
+1778 行 /proc/<pid>/maps 里有一条：
+  105.5 MB  rw-p  /data/data/com.xtc.watch/.cache/classes.jar
+```
+
+这条映射的 md5 与磁盘上的 `classes.jar` 不同 —— 证明已被原地解密。
+按映射地址 `dd` 出来，里面能找到 **15 个 `dex\n035` 魔数**，
+逐个按 dex 头声明的 `file_size` 切出来（并修正 sha1 签名与 adler32 校验和），
+就得到 14 个真实 dex，合计约 **7 万个类**。用 jadx 反编译即可读全部业务逻辑。
+
+> 这一步是本次的关键转折：没有它，前面所有结论都只能靠试探；
+> 有了它，`Token 从哪来`、`BRP 有哪些字段` 都是读代码读出来的。
+
+### 7.6 `token` 的真相：它就是登录响应 `data` 的原始 JSON 串
+
+反编译后追到的链条：
+
+```java
+// com/xtc/account/service/impl/Gibraltar.java:193-194（登录成功回调）
+SSOLoginResult r = (SSOLoginResult) Uganda.Gabon(loginResponse.data, SSOLoginResult.class);
+r.setTicket(loginResponse.data);          // ← ticket = data 的原始字符串，不是子字段
+
+// com/xtc/account/service/Gibraltar.java:22-24（网络模型转本地模型）
+MobileAccount m = new MobileAccount();
+m.setToken(r.getTicket());                // ← token 就是 ticket
+
+// com/xtc/h5/Gambia.java:237（构造 BRP）
+baseRequestParam.setToken(Vietnam(mobileAccount));   // = mobileAccount.getToken()
+```
+
+**所以 `token` 不是某个 ID，而是整个 `data` JSON 文本。** 登录时我一直只取
+`sign` 之类的子字段去试，方向从一开始就错了。
+
+实测替换后，`/mobileinit/authid` 的返回从 `000003 / 010403（token 无效）`
+变成 `010013`，其余业务接口从 `000003` 变成 `000016` —— **token 这一关过去了**。
+
+### 7.7 `BaseRequestParam` 的完整字段（含四个此前不知道的）
+
+```java
+// com/xtc/http/bean/BaseRequestParam.java
+accountId  appId  deviceId  imFlag  mac
+machineId  nDeviceId  program  registId  timestamp  token
+```
+
+赋值逻辑在 `com/xtc/h5/Gambia.java:233-249`：
+
+| 字段 | 取值 | 说明 |
+|---|---|---|
+| `appId` | 固定 `"0"` | 不是登录用的 11 |
+| `token` | `mobileAccount.getToken()` | 见 §7.6 |
+| `timestamp` | `yyyy-MM-dd HH:mm:ss` | 本地时间 |
+| `machineId` | `HttpDataTool.Venezuela()` | 原生方法，取不到静态值 |
+| `mac` | `HttpDataTool.Hungary(context)` | **不是 `"unkown"`** |
+| `accountId` | `mobileAccount.getMobileId()` | **不是登录响应的 accountId** |
+| `deviceId` | `HttpDataTool.Gibraltar(mobileId)` | 由 mobileId 推导 |
+| `program` | `"android"` | |
+| `imFlag` | `"1"` | |
+| `registId` | `ImPhoneApi.getRegistId()` | 长期为 0 时服务端不报错 |
+
+两个最容易踩的坑：`accountId` 要填 **mobileId**（形如 `wac…` 的 32 位串），
+以及 `mac` 不是占位串。
+
+### 7.8 `eebbkKey` 不需要"找"：它是客户端随机生成的
+
+这一点颠覆了我之前的所有尝试：
+
+```java
+// com/xtc/watch/util/HongKong.java  （UUIDUtil）
+public static String Hawaii() {
+    String s = UUID.randomUUID().toString();
+    return s.substring(0,8) + s.substring(9,13) + ... ;   // 去掉横线，32 位
+}
+
+// com/xtc/http/Georgia.java:17
+private static final String Germany = HongKong.Hawaii().substring(0, 16);  // ← 前 16 位
+
+// com/xtc/http/okhttp/Guatemala.java:257-259 + Gambia.java:285
+map.put("Eebbk-Key", str);          // str = RSA(aesKey)，encSwitch 开启时
+map.put("encrypted", "encrypted");
+```
+
+也就是说：AES 密钥 = **随机 16 位十六进制**，随请求通过 `Eebbk-Key` 头自报，
+签名也用它（`MD5(url + BRP + body + aesKey)`）。**它不是从服务端取来的固定值**，
+所以之前那 5 个 appId 密钥根本不该用于核心 API。
+
+`encSwitch` 有两条路径（`com/xtc/http/Gabon.java:225` 读的是 `ENC_SWITCH` 偏好，默认 0）：
+
+| 模式 | `Base-Request-Param` | `Eebbk-Key` |
+|---|---|---|
+| v0（encSwitch=0） | BRP 明文 | 明文 aesKey |
+| v3（encSwitch=1） | base64(AES-ECB(BRP)) | base64(RSA(aesKey))，另加 `encrypted: encrypted` |
+
+### 7.9 错误码对照（实测）
+
+| 码 | 含义 | 触发条件 |
+|---|---|---|
+| `000001` | 成功 | |
+| `000003` | 参数无效（细码见 `data.code`） | |
+| `000016` | 参数无效 | 业务接口缺各自参数；`desc` 固定为 request parameter is invalid |
+| `010013` | **APP 版本过低**（`tips` 会明说） | 只出现在 `/mobileinit/authid`，与 `Version` 头无关 |
+| `010401` | 签名无效 | BRP 里 `mac` / `machineId` 留空时出现 |
+| `010403` | 未带 token | BRP 里 `token` 为空 |
+| `000002` | token 值不对 | `token` 非空但不是合法 ticket |
+| `100500` | 网关错误 | appId 与路径不匹配（如 appId=0 打 SSO 路径） |
+
+`000003` 的细码很有用：`010403` = 没给 token，`000002` = 给了但不对，
+`010401` = 签名不对。三者区分清楚了，排错就不会乱猜。
+
+### 7.10 剩下的可行路径
+
+1. **临时 root**（Magisk / KernelSU）：本机 WSA 已装 Magisk，`/debug_ramdisk/su` 可用。
 2. **把证书装进系统区**：需要 root 或可写 `/system`（本机 `/system` 是 `erofs (ro)`，不可写）。
-3. **用户手动提供**：如果用户能从别处（历史抓包、其他工具）拿到 `chip_id`，直接填入配置即可。
+3. **用户手动提供**：如果用户能从别处拿到 `chip_id`，直接填入配置即可。
 4. **放弃 HTTP 路线**，继续用 ADB 界面自动化（现状）。
 
 ---

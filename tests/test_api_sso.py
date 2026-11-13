@@ -137,10 +137,12 @@ def test_device_id_present() -> None:
 
 # ------------------------------------------------------------------ 结果
 def test_login_result_masks_token() -> None:
-    r = LoginResult(token="secret-token-value", account_id="123")
+    r = LoginResult(ticket="secret-token-value", account_id="123")
     check("LoginResult 真值为 True", bool(r))
     check("repr 不泄露 token", "secret-token-value" not in repr(r), repr(r))
     check("repr 保留 account_id", "123" in repr(r), repr(r))
+    # token 是 ticket 的别名，二者必须一致
+    check("token 等同 ticket", r.token == "secret-token-value", r.token)
 
 
 def test_empty_login_result_is_falsy() -> None:
@@ -207,9 +209,11 @@ def test_result_maps_010307() -> None:
 
 def test_result_accepts_000001() -> None:
     c = SsoClient()
-    r = c._result({"code": "000001", "data": json.dumps({"token": "T", "accountId": "A"})}, "登录")
+    data_str = json.dumps({"token": "T", "accountId": "A"})
+    r = c._result({"code": "000001", "data": data_str}, "登录")
     check("000001 返回 LoginResult", bool(r))
-    check("token 提取正确", r.token == "T", r.token)
+    # token 是 data 的原始串，不是里面的 "token" 子字段
+    check("token 等于 data 原文", r.token == data_str, r.token)
     check("accountId 提取正确", r.account_id == "A", r.account_id)
 
 
