@@ -686,7 +686,51 @@ accountToken: {...}, imSdkVersion: 1, commandId: 1, commandDesc: 注册.
 （`appKey`、`businessId` 很可能在 `IMCore` 的 native 实现里）。
 
 ---
-#### 4.3.16 登录帧的发送方式仍未确定
+#### 4.3.16 常量与结构都翻过了：阻塞点在服务端
+
+按「挖常量」的思路把能查的都查了，结论是**这条报错与客户端发的任何值无关**。
+
+**查到的常量（都印证我们的取值是对的）**：
+
+| 常量 | 值 | 说明 |
+|---|---|---|
+| `Platform.PHONE` | 1 | 印证 `platform: 1` |
+| `Platform.WATCH` | 8 | |
+| `Platform.PHONE_TALENT_WATCH` | 12 | |
+| `Platform.THIRD_PARTY_ADULT_WATCH` | 10 | |
+| `HostPackage.HOST_PHONE` | `com.xtc.watch` | 印证 `pkgName` |
+
+`appKey` 在 Java 层**没有任何赋值点** —— `RegistRequestEntity.setAppKey` 只有定义，
+调用在 native（全量搜 `setAppKey(` 只命中阿里/友盟那些第三方 SDK 的同名方法）。
+
+**逐个变量排除**（都试过，报错一字不变）：
+
+| 变量 | 试过的取值 |
+|---|---|
+| `accountToken` | 票据全文 / `sign` / `userName` / `accountId` |
+| `appKey` | `xtc` / `11` / `0` / `watch` |
+| `businessId` | `1` / `0` |
+| `imSdkVersion` | 1 / 2 / 5 / 10 / 100 / 1000 / 2024 / 202401 / 20240101 |
+| 字段完整性 | 只发 RID ↔ 全字段填满 |
+
+**`Parameter calibration does not pass` 这句在 App 里完全搜不到**（dex 字符串、资源都查了），
+所以它是服务端生成的，客户端源码里不可能找到它为什么触发。
+
+**顺手纠正一个判断**：命令映射表 `ReqRespRelationship` 里确实有
+`map.put(32, …)`，所以 32 是有实体的真命令，不是通用通道。
+但用 `cmd=32` 发注册时，服务端回显的字段**全是 null** —— 说明它没有解析我们的载荷，
+注册的正确通道仍然是 `cmd=1` 直发。
+
+**另测**：不发 `EncryptSet` 直接注册（无论是否先发 `cmd 22`），服务端**完全不响应** ——
+说明会话协商是硬性前置，我们的握手环节没有问题。
+
+**结论**：客户端侧的变量已经全部排除完了。
+服务端还在校验某个我们看不到的东西（最可能是 `accountToken` 需要 IM 专用令牌，
+而不是 SSO 票据；或注册前还有一步会话绑定）。
+这一点无法从客户端代码推断，继续黑盒试探的边际收益已经很低。
+
+---
+#### 4.3.17 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -738,7 +782,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.17 端口状态
+#### 4.3.18 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
