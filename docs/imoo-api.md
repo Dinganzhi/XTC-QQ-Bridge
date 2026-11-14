@@ -883,7 +883,37 @@ tag = 3   len 666   desc = "Parameter calibration does not pass\r\n rId: 1301, .
 接收方的 `accountId` 只能从客户端本地数据里取（属于隐私信息，不入库、不提交）。
 
 ---
-#### 4.3.22 登录帧的发送方式仍未确定
+#### 4.3.22 澄清：卡住的是 registToken，不是"注册"本身
+
+之前的表述有误导。**注册不是必需步骤**，必需的是 `registToken` 这个值。
+
+证据：App 自己启动时**从不发注册帧**（第 4.3.20 节已验证），它只登录。
+它首次安装时拿到 `registToken`，之后一直复用。
+
+`LoginRequestEntity` 里 `tag11 registToken` 为空时，服务端回 `30542` ——
+这是"凭证无效"，不是"未注册"。
+
+**`registToken` 可能的来源都查过了**：
+
+| 来源 | 结论 |
+|---|---|
+| IM 注册应答 `RegistResponseEntity.tag11` | 被 `102400` 挡住 |
+| 登录应答 `PushInfo.registToken` | 需要先有有效登录，循环依赖 |
+| SSO / HTTP 接口 | 全量搜过，SSO 返回体里**没有** `imAccountId` / `registToken` / `imToken` 字段 |
+| App 本地存储 `RegistInfoHelper` | 三个方法全是 native，看不到存储位置 |
+
+**App 的本地存储是加密的**。数据库头对比：
+
+```
+app_database_v5.db    53 51 4c 69 74 65 20 66 6f 72 6d 61 74 20 33 00   <- 明文 SQLite
+encrypted_watch_3.db  0e e9 9c 6f 22 bb f7 c0 75 4f 96 bd ae 23 ba 67   <- 已加密（无 SQLite 头）
+```
+
+IM 的库是 `encrypted_watch_3.db`，说明 `registToken` 落在加密码库里，
+要读它得先破库的密钥（SQLCipher 之类），成本比继续试协议更高。
+
+---
+#### 4.3.23 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -935,7 +965,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.23 端口状态
+#### 4.3.24 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
