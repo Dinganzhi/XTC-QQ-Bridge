@@ -490,7 +490,50 @@ s2c  15B: a0 20 0c    | 0a 0a <10B 密文>
 任何人都无法解出客户端 `EncryptSet` 里那 128 字节的会话密钥。
 所以「抓一次 App 流量看明文」这条路对 IM 层是关闭的。
 
-#### 4.3.9 登录仍被拒，且返回的是固定消息
+#### 4.3.9 固定消息已解到「能读出字段名」的程度
+
+对那条 386 字节的应答做了系统排查，结论如下。
+
+**异或密钥确认无误。** 逐字节验算：密文 `22 e9 20 31 40 55 67 e7 …`
+配 `key=00112233445566778899aabbccddeeff` 得到 `22 f8 02 02 04 00 01 90 67 25 …`，
+每一字节都对得上（`0x22^0x00=0x22`、`0xf8^0x11=0xe9`、`0x02^0x22=0x20` …）。
+
+**换起始偏移扫描**：只有偏移 0 能解出英文单词（7 个），其余 15 个偏移都是 0 个。
+所以对齐也是对的。
+
+**明文结构**：`22 f8 02` = tag34 / len376，正好 3+376=379 吻合。
+
+**明文里能读出的英文片段**（按出现顺序）：
+
+```
+does   form   null   stion   baseb   umber   usiness   Id: 1, c   imS   MA1
+```
+
+补全后是这些字段名：**`basebandVersion`**（baseb…）、**`modelNumber`**（…umber）、
+**`businessId`**（…usiness…）、`platform`（…form）、`imSdkVersionName`（imS…）、`mac`。
+**这些全是 `RegistRequestEntity` 的字段**，不是 `LoginRequestEntity` 的。
+
+**排除了几种可能**：
+
+| 假设 | 结果 |
+|---|---|
+| 是压缩流（zlib/deflate/gzip） | ❌ 各偏移都解不开 |
+| 是 UTF-8 / GBK / GB18030 / Big5 / UTF-16 | ❌ 只有 UTF-16BE 把 ASCII 抬进 CJK 区，不是真解 |
+| 是握手残留 | ❌ 排空后仍收到，且静默 8 秒无推送 |
+| 是对请求的回显 | ❌ 填不同 `registToken`/`deviceToken`、发注册报文、只发 RID，响应**逐字节相同** |
+
+**目前的解读**：这是一条**固定消息**，内容围绕「设备注册」的字段。
+它更像服务端在说「你这条不是有效业务帧，请先注册」，而不是逐字段校验结果。
+
+**由此得到的行动线索**：`cmd=32` 的载荷被当成**注册实体**解析了。
+原因是登录与注册的标签号大量重叠（tag17 imei/deviceToken、tag18 imsi/imSdkVersionName、
+tag19 mac/pushType、tag20 modelNumber/platform、tag21 basebandVersion/timestamp、
+tag24 businessId/baseRequestParam）。既然服务端按注册解释，
+那么**正确顺序应是先 `cmd 1` 注册拿到 `registId`/`registToken`，再 `cmd 3` 登录**，
+而不是跳过注册直接登录。
+
+---
+#### 4.3.10 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -542,7 +585,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.10 端口状态
+#### 4.3.11 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
