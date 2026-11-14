@@ -642,12 +642,51 @@ imSdkVersion: 1, commandId: 1, commandDesc: 注册.
 | 25 | accountToken | 代码 |
 | 26 | imSdkVersion | 代码 |
 
-**还剩 `platform` 和 `deviceId` 两个没找到标签**：
-2–48 号标签用字符串和整数都试过，都没能让这两个字段变成非空。
-它们可能是从传输层推导的，或者用了更大的标签号。
+**标签空间按 32 取模**：43/75/107 都指向 appKey，44/76/108 都指向 pkgName，
+说明服务端只取 `tag mod 32`。据此补全：
+
+| tag | 字段 | 怎么找到的 |
+|---|---|---|
+| **42** | **platform**（整型） | 整数扫描，`tag=42` 时 `platform: 7` 出现 |
+| **45** | **deviceId** | 字符串扫描命中（42 的 `mod 32` 序列里 46 号缺位） |
+| 43/44/47…57 | appKey / pkgName / sysName … accountToken | 扫描确认，与 `mod 32` 自洽 |
+
+`deviceId` 会被服务端**校验格式**：发绑定号（16 个小写字母）时被清空，
+换成票据里的 `deviceId`（16 位十六进制）才显示出来。
+
+#### 4.3.15 全部字段填满后仍被拒：取值问题
+
+补齐所有字段后，回显里已经**没有 null、没有空值**：
+
+```
+Parameter calibration does not pass
+rId: 4001, platform: 1, appKey: xtc, pkgName: com.xtc.watch,
+deviceId: 2613eea414f4c7f0, sdkVersion: 33, sysName: Android,
+sysVerstion: 13, imei: 868459075835651, imsi: 460001234567890,
+mac: 02:00:00:00:00:00, modelNumber: Z8A, basebandVersion: 1.0.0,
+buildNumber: 60ND747018715, resolution: 1236*2676, businessId: 1,
+accountToken: {...}, imSdkVersion: 1, commandId: 1, commandDesc: 注册.
+```
+
+仍然报「参数校验不通过」，但已经**没有 null 字段**了 ——
+说明卡点从「缺字段」变成了「某个值不对」。
+
+最可疑的几个（都是猜的，没有真值来源）：
+
+| 字段 | 我填的 | 问题 |
+|---|---|---|
+| `appKey` | `xtc` | 纯猜 |
+| `businessId` | `1` | 纯猜 |
+| `platform` | `1` | 具体取值未知 |
+| `resolution` | `1236*2676` | 分隔符可能是 `x` 或 `,` |
+| `imsi` | `460001234567890` | 造的值，服务端可能校验运营商段 |
+| `mac` | `02:00:00:00:00:00` | 造的，可能校验 OUI |
+
+下一步是逐个替换这些值试，或者从 App 的 native 代码里把这些常量挖出来
+（`appKey`、`businessId` 很可能在 `IMCore` 的 native 实现里）。
 
 ---
-#### 4.3.15 登录帧的发送方式仍未确定
+#### 4.3.16 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -699,7 +738,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.16 端口状态
+#### 4.3.17 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
