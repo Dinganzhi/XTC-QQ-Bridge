@@ -579,7 +579,75 @@ tag36 len8 { tag1 = RID（我们发的，会原样回显）, tag2 = 0x774e = 305
 拿到 `registToken` 之后登录才有希望。
 
 ---
-#### 4.3.12 登录帧的发送方式仍未确定
+#### 4.3.12 解密成功：会话密钥必须用纯 ASCII
+
+这是整条线上最关键的一个坑：**会话密钥里不能有非 ASCII 字节。**
+
+之前一直用 `00112233445566778899aabbccddeeff` 当密钥，服务端能接受（返回 200），
+但用它解响应只能得到 59% 可打印、大量乱码。原因是从差分分析反推出来的密钥流是：
+
+```
+00 11 22 33 44 55 66 77 | ef bf bd ef bf bd ef ...
+```
+
+前 8 字节和我们的密钥**完全一致**，第 9 字节起变成 `EF BF BD` 循环 ——
+`EF BF BD` 正是 **U+FFFD 替换字符的 UTF-8 编码**。
+说明服务端把密钥当**字符串**处理，`0x88`、`0x99` 这些非法 UTF-8 字节被替换掉了。
+
+换成 16 个可打印 ASCII（`0123456789abcdef`）之后，可打印率从 59% 跳到 **96%**，
+明文一下就全出来了。
+
+**结论：`EncryptSet` 上报的会话密钥必须是 16 个可打印 ASCII 字符。**
+
+#### 4.3.13 服务端到底在说什么
+
+解密后的完整响应（原文）：
+
+```
+Parameter calibration does not pass
+rId: 1201, platform: null, appKey: xtc, pkgName: com.xtc.watch,
+deviceId: , sdkVersion: 33, sysName: Android, sysVerstion: 13,
+imei: 868459075835651, imsi: 460001234567890, mac: 02:00:00:00:00:00,
+modelNumber: Z8A, basebandVersion: 1.0.0, buildNumber: 60ND747018715,
+resolution: 1236*2676, businessId: 1, accountToken: {...},
+imSdkVersion: 1, commandId: 1, commandDesc: 注册.
+```
+
+**「Parameter calibration does not pass」= 参数校验不通过**，
+后面把我们提交的每个字段原样列出来，`null` / 空的就是缺的。
+
+这不是猜测，是服务端自己说的。之前所有"固定消息"的困惑到此为止——
+它一直是这条校验失败的回显，只是密钥错了导致读不出来。
+
+#### 4.3.14 注册实体的标签号（实测扫出来的）
+
+脱壳代码只给出了部分字段，实际字段更多。用「塞标记值 → 看哪个字段变」的办法扫出：
+
+| tag | 字段 | 来源 |
+|---|---|---|
+| 11 | appKey | 代码 |
+| 12 | **pkgName** | 实测 |
+| 13 | （发了但不显示，deviceId 仍为空） | 代码标注 deviceId，实测不符 |
+| 14 | **sdkVersion** | 实测 |
+| 15 | **sysName** | 实测 |
+| 16 | **sysVerstion**（原文如此拼写） | 实测 |
+| 17 | imei | 代码 |
+| 18 | imsi | 代码 |
+| 19 | mac | 代码 |
+| 20 | modelNumber | 代码 |
+| 21 | basebandVersion | 代码 |
+| 22 | buildNumber | 代码 |
+| 23 | **resolution** | 实测 |
+| 24 | businessId | 代码 |
+| 25 | accountToken | 代码 |
+| 26 | imSdkVersion | 代码 |
+
+**还剩 `platform` 和 `deviceId` 两个没找到标签**：
+2–48 号标签用字符串和整数都试过，都没能让这两个字段变成非空。
+它们可能是从传输层推导的，或者用了更大的标签号。
+
+---
+#### 4.3.15 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -631,7 +699,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.13 端口状态
+#### 4.3.16 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
