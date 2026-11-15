@@ -211,12 +211,20 @@ class ServerXiaotiancai:
             self.log("warning", f"IM 会话不可用：{exc}")
             return NOT_LOGGED_IN
 
-    def login(self, *args, **kwargs) -> bool:
+    def login(self, *args, **kwargs) -> str:
+        """返回状态字符串（与 ADB 版一致）：already / ok / fail / error。
+
+        注意**不能返回布尔值**：调用方会做 `"登录：" + _login_status_text(status)`，
+        布尔会直接抛 `can only concatenate str (not "bool") to str`。
+        """
+        if self._session is not None:
+            return "already"
         try:
             self._ensure_session()
-            return True
-        except Exception:
-            return False
+            return "ok"
+        except Exception as exc:  # noqa: BLE001
+            self.log("warning", f"[IM] 登录失败：{exc}")
+            return "fail"
 
     def recover(self, *args, **kwargs) -> bool:
         try:
