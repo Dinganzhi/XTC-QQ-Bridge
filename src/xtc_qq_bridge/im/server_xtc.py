@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""服务端模式：不依赖 ADB，直接走小天才 IM 服务器收发消息。
+"""IM 模式：不依赖 ADB，直接走小天才 IM 服务器收发消息。
 
 `Xiaotiancai`（ADB + 界面自动化）的替代实现，对外暴露同名方法与状态常量，
 让桥接层无需改动即可切换后端。
 
 能力对照：
 
-| 能力 | ADB 模式 | 服务端模式 |
+| 能力 | ADB 模式 | IM 模式 |
 |---|---|---|
 | 发文字 | 模拟点击输入框 | `cmd 40` 单聊消息 |
 | 收消息 | 读界面气泡 | `cmd 12` 同步拉取 |
@@ -16,7 +16,7 @@
 
 ```yaml
 xiaotiancai:
-  mode: "server"          # adb（默认）| server
+  mode: "im"              # adb（默认）| im
   server:
     credentials: "~/.config/xtc-bridge/imoo-credentials.json"
     contacts: {}          # 联系人名 -> 对方 imAccountId
@@ -62,7 +62,7 @@ def _dv(buf: bytes, i: int):
 
 
 class _NullAdb:
-    """server 模式下桥接层仍会摸 ADB 的几个方法，这里给最小空壳。"""
+    """IM 模式下桥接层仍会摸 ADB 的几个方法，这里给最小空壳。"""
 
     def is_connected(self) -> bool:
         return True
@@ -128,7 +128,8 @@ class ServerXiaotiancai:
         self._session = None
         self._current_contact = ""
         self._current_peer = 0
-        srv = self.cfg.get("server") or {}
+        # 子键既支持 im（新名），也兼容 server（旧名）
+        srv = self.cfg.get("im") or self.cfg.get("server") or {}
         self.credentials_path = Path(
             os.path.expanduser(srv.get("credentials") or "~/.config/xtc-bridge/imoo-credentials.json")
         )
@@ -192,7 +193,7 @@ class ServerXiaotiancai:
     # ---------------------------------------------------------- 兼容接口
 
     def launch(self) -> bool:
-        """服务端模式无需启动 App。"""
+        """IM 模式无需启动 App。"""
         return True
 
     def login_state(self, force: bool = False) -> str:
@@ -223,7 +224,7 @@ class ServerXiaotiancai:
         return STATE_CHAT if self._current_peer else STATE_LIST
 
     def app_state_with_root(self, *args, **kwargs):
-        # server 模式没有界面可读：始终报 LIST，让轮询走"无消息"分支
+        # IM 模式没有界面可读：始终报 LIST，让轮询走"无消息"分支
         return STATE_LIST, None
 
     def is_in_chat(self) -> bool:
@@ -236,7 +237,7 @@ class ServerXiaotiancai:
         return None
 
     def settle(self, *args, **kwargs) -> None:
-        """界面稳定等待——服务端模式无界面，直接返回。"""
+        """界面稳定等待——IM 模式无界面，直接返回。"""
         return None
 
     def scroll_chat_by(self, *args, **kwargs) -> bool:
@@ -247,7 +248,7 @@ class ServerXiaotiancai:
 
     def ensure_input_clean(self, *args, **kwargs) -> str:
         # 界面版返回的是给用户看的状态文字，不是布尔
-        return "输入框无需清理（server 模式）"
+        return "输入框无需清理（im 模式）"
 
     def learn_send_point(self, *args, **kwargs) -> bool:
         return True
@@ -261,7 +262,7 @@ class ServerXiaotiancai:
     def end_blind_send(self, text: str):
         return True, "", False
 
-    # 媒体类：服务端模式暂不支持
+    # 媒体类：IM 模式暂不支持
     def capture_sticker(self, *args, **kwargs):
         return None
 
@@ -279,7 +280,7 @@ class ServerXiaotiancai:
     def open_chat(self, contact: str) -> bool:
         peer = self._peer_of(contact)
         if not peer:
-            self.log("warning", f"服务端模式找不到联系人「{contact}」的 imAccountId，"
+            self.log("warning", f"IM 模式找不到联系人「{contact}」的 imAccountId，"
                                 f"请在 config.yaml -> xiaotiancai.server.contacts 里补上")
             return False
         self._current_contact = contact
@@ -288,7 +289,7 @@ class ServerXiaotiancai:
 
     def send_message(self, text: str) -> bool:
         if not self._current_peer:
-            self.log("warning", "服务端模式未打开会话，无法发送")
+            self.log("warning", "IM 模式未打开会话，无法发送")
             return False
         code = self._with_session(lambda s: s.send_text(self._current_peer, text, self.cred))
         if code == 200:
@@ -319,31 +320,53 @@ class ServerXiaotiancai:
     def _dump_with_retry(self, *args, **kwargs):
         return None
 
-    # ADB 模式下部分代码会摸 `xtc.adb`
+    # IM 模式下部分代码会摸 `xtc.adb`
     adb = _NullAdb()
     package = "com.xtc.watch"
 
     # ---------------------------------------------------------- 拉取
 
-    def fetch_messages(self, limit: int = 20) -> list[dict]:
-        """拉一批同步消息（只读）。返回 `[{type, content, msgId, timestamp}]`。"""
+    def fetch_messages(self, limit: int = 30, sync_key: int = 0) -> tuple[list[dict], int]:
+        """拉一批同步消息，返回 (消息列表, 新的 syncKey)。
+
+        `syncKey` 是**增量游标**而不是历史页码：传 0 表示"从头再来一次"，
+        之后用返回的新游标继续增量拉取。服务端只保留增量，**不是**完整聊天归档，
+        所以这里拿不到很久以前的聊天记录。
+
+        只保留 `type == 3`（文字聊天），其它类型是电量/健康/成员等系统数据。
+        """
         from .session import build_frame, tlv_int
+
+        rid = 100000 + int(time.time()) % 100000
 
         def _pull(session):
             session._tls.sendall(
                 build_frame(
                     12,
-                    tlv_int(1, 100000 + int(time.time()) % 100000)
+                    tlv_int(1, rid)
                     + tlv_int(11, int(self.cred["im_sender_account_id"]))
                     + tlv_int(12, int(self.cred["im_regist_id"]))
-                    + tlv_int(13, 0)
-                    + tlv_int(14, limit),
+                    + tlv_int(13, int(sync_key))
+                    + tlv_int(14, int(limit)),
                 )
             )
-            return session._recv_frame(6)
+            # 同步应答是**多帧**的：必须持续读到空闲，只读一帧会丢掉后续消息
+            buf = b""
+            session._tls.settimeout(6.0)
+            try:
+                while len(buf) < 2097152:
+                    chunk = session._tls.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+            except Exception:
+                pass
+            return buf
 
         raw = self._with_session(_pull) or b""
+        key = b"0123456789abcdef"
         out: list[dict] = []
+        next_key = sync_key
         i = 0
         while i < len(raw):
             if raw[i] != 0xA0:
@@ -354,7 +377,6 @@ class ServerXiaotiancai:
                 break
             payload = raw[start : start + length]
             i = start + length
-            # 解 tag10 并用会话密钥解开
             j = 0
             while j < len(payload):
                 tag, j2 = _dv(payload, j)
@@ -364,8 +386,12 @@ class ServerXiaotiancai:
                 if ln is None or j3 + ln > len(payload):
                     break
                 if tag == 10:
-                    key = self.cred and b"0123456789abcdef"
                     plain = bytes(b ^ key[k % len(key)] for k, b in enumerate(payload[j3 : j3 + ln]))
+                    # 解出来的载荷还有一层内层头：[命令号][长度][TLV…]
+                    _ic, _ip = _dv(plain, 0)
+                    _il, _is = _dv(plain, _ip)
+                    if _il is not None and _is + _il <= len(plain):
+                        plain = plain[_is : _is + _il]
                     fields = {}
                     k = 0
                     while k < len(plain):
@@ -377,18 +403,21 @@ class ServerXiaotiancai:
                             break
                         fields[t2] = plain[k3 : k3 + l2]
                         k = k3 + l2
+                    if 13 in fields and 14 not in fields:
+                        next_key = int.from_bytes(fields[13], "big")
                     if 14 in fields:
-                        body = fields[14].decode("utf-8", "replace")
-                        out.append(
-                            {
-                                "content": body,
-                                "msgId": fields.get(16, b"").decode("utf-8", "replace"),
-                                "timestamp": int.from_bytes(fields.get(17, b"\x00"), "big"),
-                                "type": int.from_bytes(fields.get(18, b"\x00"), "big"),
-                            }
-                        )
+                        mtype = int.from_bytes(fields.get(18, b"\x00"), "big")
+                        if mtype == 3:
+                            out.append(
+                                {
+                                    "content": fields[14].decode("utf-8", "replace"),
+                                    "msgId": fields.get(16, b"").decode("utf-8", "replace"),
+                                    "timestamp": int.from_bytes(fields.get(17, b"\x00"), "big"),
+                                    "type": mtype,
+                                }
+                            )
                 j = j3 + ln
-        return out
+        return out, next_key
 
 
 __all__ = ["ServerXiaotiancai", "STATE_CHAT", "STATE_LIST", "LOGGED_IN", "NOT_LOGGED_IN"]

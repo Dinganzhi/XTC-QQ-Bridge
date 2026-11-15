@@ -237,12 +237,14 @@ def main() -> None:
                         f"（可选 {'/'.join(speed_profile.PROFILE_NAMES)}），已按 {_profile} 运行")
 
     # ---------------------------------------------------------------
-    # 模式切换：server 模式完全不依赖 ADB
-    #   xiaotiancai.mode = "adb"（默认）| "server"
+    # 模式切换：
+    #   xiaotiancai.mode = "adb"（默认，界面自动化）
+    #                    | "im"（直连 IM 协议，不依赖 ADB）
+    #   "server" 是 "im" 的旧名字，仍然接受
     # ---------------------------------------------------------------
     _mode = str((cfg.get("xiaotiancai") or {}).get("mode") or "adb").strip().lower()
-    if _mode == "server":
-        return _run_server_mode(cfg, log, args, webhook_ctx=None)
+    if _mode in ("im", "server"):
+        return _run_im_mode(cfg, log, args, webhook_ctx=None)
 
     from ..adb_controller import ADBController
     adb_cfg = cfg.get("adb") or {}
@@ -448,15 +450,15 @@ if __name__ == "__main__":
     main()
 
 
-def _run_server_mode(cfg: dict, log, args, webhook_ctx=None) -> None:
-    """服务端模式：不启动 ADB，直接走小天才 IM 服务器。"""
+def _run_im_mode(cfg: dict, log, args, webhook_ctx=None) -> None:
+    """IM 模式：不启动 ADB，直接走小天才 IM 服务器。"""
     import threading as _threading
     import time as _time
 
     from ..im.server_xtc import ServerXiaotiancai
 
     xc_cfg = cfg.get("xiaotiancai") or {}
-    log.info("运行模式: server（直连小天才 IM 服务器，不使用 ADB）")
+    log.info("运行模式: im（直连小天才 IM 服务器，不使用 ADB）")
 
     xtc = ServerXiaotiancai(xc_cfg, logger=log,
                             cache_path=str(runtime_paths.data_path("ui_send_cache.json")))
@@ -498,7 +500,7 @@ def _run_server_mode(cfg: dict, log, args, webhook_ctx=None) -> None:
         log.info("--once 测试完成")
         return
 
-    log.info("桥接运行中（server 模式），Ctrl+C 退出")
+    log.info("桥接运行中（im 模式），Ctrl+C 退出")
     try:
         while True:
             _time.sleep(1)
