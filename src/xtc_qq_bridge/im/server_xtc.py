@@ -139,7 +139,9 @@ class ServerXiaotiancai:
         self._last_fetch = 0.0
         self._fetch_interval = float(srv.get("fetch_interval", 2.0) or 2.0)
         self._pending: list[dict] = []
-        self._sync_key = 0
+        # syncKey 落盘：不持久化的话进程一重启就归零，下次会用 syncKey=0
+        # 把服务端缓冲区里的历史全部重拉一遍（去重表能挡住重复转发，但白拉一次很浪费）。
+        self._sync_key = self._load_sync_key()
         self._target_contact = str((cfg or {}).get("target_contact") or "")
         self._load_credentials()
 
@@ -361,8 +363,10 @@ class ServerXiaotiancai:
         if now - self._last_fetch >= self._fetch_interval:
             self._last_fetch = now
             try:
-                msgs, key = self.fetch_messages()
-                self._sync_key = key or self._sync_key
+                msgs, key = self.fetch_messages(sync_key=self._sync_key)
+                if key and key != self._sync_key:
+                    self._sync_key = key
+                    self._save_sync_key(key)
                 # 新消息追加到待处理队列（fetch_messages 只返回增量的文字消息）
                 for m in msgs:
                     if m not in self._pending:
@@ -376,6 +380,23 @@ class ServerXiaotiancai:
         label = self._label_of(m.get("timestamp", 0))
         contact = self._target_contact or self._current_contact
         return (contact, text, label, "", [])
+
+    def _sync_key_file(self):
+        from .. import runtime_paths
+        return runtime_paths.data_path("im_sync_key.json")
+
+    def _load_sync_key(self) -> int:
+        try:
+            return int(json.loads(self._sync_key_file().read_text("utf-8")).get("sync_key", 0))
+        except Exception:
+            return 0
+
+    def _save_sync_key(self, key: int) -> None:
+        try:
+            self._sync_key_file().write_text(
+                json.dumps({"sync_key": int(key)}), "utf-8")
+        except Exception:
+            pass
 
     @staticmethod
     def _extract_text(raw: str) -> str:
