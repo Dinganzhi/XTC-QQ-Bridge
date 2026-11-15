@@ -252,7 +252,57 @@ class ImSession:
                 return int.from_bytes(value, "big")
         return None
 
+    # -- 保活 ------------------------------------------------------
+
+    def heartbeat(self, timeout: float = 5.0) -> bool:
+        """发一次心跳。返回连接是否还活着。
+
+        心跳应答是 7 字节、没有状态码字段（不是 200 那种），
+        所以这里只判断"有没有收到数据"，不解析 code。
+        """
+        try:
+            self.rid += 1
+            self._tls.sendall(build_frame(7, tlv_int(1, self.rid) + tlv_int(2, int(time.time()))))
+            frame = self._recv_frame(timeout)
+            return bool(frame)
+        except Exception:
+            return False
+
+    def start_keepalive(self, interval: float = 60.0) -> None:
+        """后台心跳保活。
+
+        票据大约 10 小时过期，但**会话一旦建立就不会因为票据过期而失效** ——
+        只要连接不断，就不需要重新登录。长连接因此能绕开票据刷新的问题。
+        """
+        import threading
+
+        if getattr(self, "_ka_thread", None) is not None:
+            return
+        stop = threading.Event()
+        self._ka_stop = stop
+
+        def _loop() -> None:
+            while not stop.wait(interval):
+                if not self.heartbeat():
+                    self._log("warning", "心跳失败，连接可能已断开")
+                    return
+
+        t = threading.Thread(target=_loop, name="im-keepalive", daemon=True)
+        self._ka_thread = t
+        t.start()
+        self._log("info", f"已启动心跳保活（每 {interval:.0f} 秒）")
+
+    def stop_keepalive(self) -> None:
+        stop = getattr(self, "_ka_stop", None)
+        if stop is not None:
+            stop.set()
+        self._ka_thread = None
+
     def close(self) -> None:
+        try:
+            self.stop_keepalive()
+        except Exception:
+            pass
         try:
             self._tls.close()
         except Exception:

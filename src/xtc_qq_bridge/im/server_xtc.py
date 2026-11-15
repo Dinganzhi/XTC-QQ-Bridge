@@ -179,7 +179,11 @@ class ServerXiaotiancai:
         session = ImSession(log=lambda lvl, msg: self.log("info", f"[IM] {msg}"))
         code = session.login_from_config(self.cred)
         if code != 200:
+            session.close()
             raise RuntimeError(f"IM 登录失败：code={code}")
+        # 长连接保活：票据约 10 小时过期，但会话建立后不会因票据过期失效，
+        # 心跳不断就不用重新登录，从而绕开"必须找客户端续票"的问题。
+        session.start_keepalive(float(self._fetch_interval * 30) or 60.0)
         self._session = session
         return session
 
