@@ -175,8 +175,30 @@ def resource_dir(name: str) -> Path | None:
     return p if p.is_dir() else None
 
 
+_DATA_DIR_CACHE: Path | None = None
+
+
+def data_dir() -> Path:
+    """返回**真正可写**的数据目录。
+
+    `DATA_DIR` 是 `APP_DIR/data`，但 `APP_DIR` 只保证自己可写，
+    `data/` 子目录可能是 root 所有（例如容器/打包时创建） → 写入静默失败，
+    消息历史、去重表、命令去重记录全都存不下来，表现为"数据库被清空"。
+    所以这里做一次可写探测，不可写就退回用户数据目录。
+    """
+    global _DATA_DIR_CACHE
+    if _DATA_DIR_CACHE is not None:
+        return _DATA_DIR_CACHE
+    if _writable(DATA_DIR):
+        _DATA_DIR_CACHE = DATA_DIR
+    else:
+        _DATA_DIR_CACHE = _user_data_dir() / "data"
+        _DATA_DIR_CACHE.mkdir(parents=True, exist_ok=True)
+    return _DATA_DIR_CACHE
+
+
 def data_path(name: str) -> Path:
-    return DATA_DIR / name
+    return data_dir() / name
 
 
 def log_path(name: str) -> Path:
