@@ -46,6 +46,14 @@ MAGIC_PUB_REQ = 0x36
 MAGIC_PUB_RESP = 0x37
 
 FRAMES_DIR = Path.home() / ".config" / "xtc-bridge" / "im-frames"
+CRED_FILE = Path.home() / ".config" / "xtc-bridge" / "imoo-credentials.json"
+
+
+def _load_cfg() -> dict:
+    """读本地凭据文件（仓库外，权限 600）。"""
+    import json as _json
+
+    return _json.loads(CRED_FILE.read_text("utf-8"))
 
 
 # ---------------------------------------------------------------- 编解码
@@ -252,6 +260,43 @@ class ImSession:
 
     # -- 登录 ------------------------------------------------------
 
+    def login_from_config(self, cfg: dict | None = None) -> int | None:
+        """按配置里的设备参数构造登录帧（不依赖任何抓包）。
+
+        需要的字段见 `_load_cfg`。这些都是设备级常量 + 一次性取得的票据，写进配置即可。
+        """
+        c = cfg or _load_cfg()
+        ticket = c["im_account_token"]
+        brp = json.dumps(
+            {
+                "accountId": c["mobile_id"],
+                "appId": c["im_app_id"],
+                "deviceId": c["im_device_id_brp"],
+                "imFlag": c["im_im_flag"],
+                "mac": c["im_mac"],
+                "machineId": c["im_machine_id"],
+                "program": c["im_program"],
+                "registId": c["im_regist_id"],
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "token": ticket,
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        inner = (
+            tlv_int(1, 2101)
+            + tlv(24, brp.encode())
+            + tlv(26, c["im_device_id_tlv"].encode())
+            + tlv(18, int(c["im_sdk_version_name"]).to_bytes(7, "big"))
+            + tlv_int(20, int(c["im_platform"]))
+            + tlv_int(10, int(c["im_regist_id"]))
+            + tlv(11, b"null")
+            + tlv_int(12, int(c["im_sdk_version"]))
+            + tlv(21, int(time.time() * 1000).to_bytes(8, "big"))
+        )
+        resp = self.send(32, tlv(10, xor_key(tlv(35, inner), SESSION_KEY)))
+        return self.code_of(resp)
+
     def login_from_captured(self, frame_path: Path | None = None) -> int | None:
         """用抓到的登录帧明文重新加密后发出，返回状态码。
 
@@ -272,14 +317,15 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="小天才 IM 会话：自建握手 + 复用登录帧")
-    parser.add_argument("--login", action="store_true", help="握手后发送登录帧")
+    parser.add_argument("--login", action="store_true", help="握手后按配置构造登录帧")
+    parser.add_argument("--replay", action="store_true", help="改用重放抓包帧的方式登录")
     parser.add_argument("--frame", type=Path, default=None, help="登录帧明文路径")
     args = parser.parse_args()
 
     session = ImSession(log=lambda lvl, msg: print(f"[{lvl}] {msg}"))
     try:
         if args.login:
-            code = session.login_from_captured(args.frame)
+            code = session.login_from_config()
             print(f"登录状态码：{code}")
             if code != 200:
                 return 1

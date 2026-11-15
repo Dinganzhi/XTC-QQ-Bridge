@@ -1103,7 +1103,68 @@ BRP 里的 `token` 就是 SSO 票据。我们尝试自己造一张：
 参数能配置化，票据不能。`tools/im_session.py` 用的就是重放路线。
 
 ---
-#### 4.3.30 登录帧的发送方式仍未确定
+#### 4.3.30 登录打通了：注册和登录都靠 `tag33` / `tag35` 这两层包装
+
+清空 App 数据后重新走一遍登录，这次代理能解密了，于是拿到了**注册帧的真实结构**。
+
+**注册请求是 `cmd 32 | tag10（加密）| tag33 { … }`**，里面 14 个字段：
+
+| tag | 字段 | 备注 |
+|---|---|---|
+| 1 | RID | |
+| 25 | accountToken | SSO 票据 |
+| 11 | appKey | 32 位十六进制 |
+| 22 | basebandVersion | |
+| 24 | **businessId** | **等于 accountId，不是 `"1"`** |
+| 13 | deviceId | 第三个 deviceId，32 位十六进制 |
+| 26 | imSdkVersion | 94605 |
+| 20 | modelNumber | |
+| 12 | pkgName | |
+| 10 | platform | 1 |
+| 23 | resolution | 打包成一个整数 |
+| 14 | sysName | |
+| 15 | sysVerstion | |
+| 16 | sdkVersion | 12595 |
+
+**登录同理，包装标签是 `tag35`。**
+
+之前一直失败的两个真实原因：
+
+1. **少了 `tag33` / `tag35` 包装** —— 少了它，服务端会把帧当成**注册**解析
+   （回显里 `commandId: 1`），所以字段全显示 null；
+2. **`businessId` 填错** —— 我填的是 `"1"`，实际要填 `accountId`（`wacb…`）。
+   这一条最隐蔽：配置文件里的 `mobile_id` 当时是空串，导致 `businessId` 为空。
+
+把这两条改对之后，注册返回 `200` 并给出新的 `registId`。
+
+#### 4.3.31 票据必须来自客户端：我们自己签发的被判 `invalid token`
+
+用自己走的 SSO 登录拿到的票据，注册直接回 `invalid token`；
+换成客户端那张票据就正常。
+
+客户端票据的 `maxAge` 是 **-1（永不过期）**，所以**只需要取得一次**。
+
+#### 4.3.32 结论：登录可以完全由配置构造，不需要重放
+
+把设备级参数和那张票据写进配置后，**用配置构造登录帧**（不是重放抓包）：
+
+```
+用配置构造的登录帧 -> code = 200
+```
+
+`tools/im_session.py` 已改为 `login_from_config()`：从
+`~/.config/xtc-bridge/imoo-credentials.json` 读参数，现算时间戳，自己拼帧。
+
+需要的字段：`mobile_id`、`im_app_key`、`im_regist_id`、`im_account_token`、
+`im_device_id_tlv`、`im_device_id_brp`、`im_mac`、`im_machine_id`、
+`im_app_id`、`im_im_flag`、`im_program`、`im_sdk_version`、
+`im_sdk_version_name`、`im_platform`。
+
+**这些都是设备级常量，同一台设备固定不变**；票据永不过期。
+所以一次性取到之后，就彻底不需要客户端了。
+
+---
+#### 4.3.33 登录帧的发送方式仍未确定
 
 把 `registToken` / `deviceToken` 分别填空、填票据、都填票据，三次请求的响应**完全一致**
 （386 字节），说明服务端返回的是一条**固定消息**，不是针对本次请求的回显。
@@ -1155,7 +1216,7 @@ t21=timestamp, t24=baseRequestParam(BRP JSON), t26=deviceId
 **结论：发消息没有 HTTP 接口，只能走 IM 长连接。** 这条结论现在是代码级确认，
 不再是靠试探推断。
 
-#### 4.3.31 端口状态
+#### 4.3.34 端口状态
 
 | 端口 | 状态 | 说明 |
 |---|---|---|
