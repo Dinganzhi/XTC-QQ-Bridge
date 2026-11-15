@@ -411,11 +411,16 @@ class ServerXiaotiancai:
 
     @staticmethod
     def _label_of(ts_ms: int) -> str:
-        """把毫秒时间戳格式化成 HH:MM（桥接按这个口径做去重和"太旧"判定）。"""
+        """把毫秒时间戳格式化成 `MM-DD HH:MM`。
+
+        **必须带日期**：桥接的 `_abs_time_label` 对只有 `HH:MM` 的标签会补"今天"，
+        于是昨天的滞留消息会被显示成今天、还会被判成"新消息"重复转发。
+        带上日期后 `_abs_time_label` 能直接解析成绝对时间，与 App 的分组标签同口径。
+        """
         if not ts_ms:
             return ""
         try:
-            return time.strftime("%H:%M", time.localtime(ts_ms / 1000.0))
+            return time.strftime("%m-%d %H:%M", time.localtime(ts_ms / 1000.0))
         except Exception:
             return ""
 
