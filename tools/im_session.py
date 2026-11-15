@@ -297,6 +297,42 @@ class ImSession:
         resp = self.send(32, tlv(10, xor_key(tlv(35, inner), SESSION_KEY)))
         return self.code_of(resp)
 
+    def send_text(self, receiver_id: int, text: str, cfg: dict | None = None) -> int | None:
+        """给单个联系人发一条文本消息（`cmd 40`）。
+
+        `receiver_id` 是对方的 `imAccountId`；发送方 `imAccountId` 取自配置
+        （注意每个手机账号都不一样，填错会得到 `102400`）。
+        """
+        import uuid as _uuid
+
+        c = cfg or _load_cfg()
+        content = json.dumps(
+            {
+                "content": text,
+                "hintType": -1,
+                "isSensitive": False,
+                "msgNewContent": "",
+                "msgNewType": 0,
+                "showType": 0,
+                "text": text,
+                "textMsgType": 0,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        payload = (
+            tlv_int(1, 100000 + int(time.time()) % 100000)
+            + tlv_int(11, int(c["im_sender_account_id"]))
+            + tlv_int(16, 3)
+            + tlv(14, content.encode())
+            + tlv(15, _uuid.uuid4().hex.encode())
+            + tlv_int(13, 1)
+            + tlv_int(10, receiver_id)
+            + tlv_int(12, int(c["im_regist_id"]))
+        )
+        resp = self.send(40, payload)
+        return self.code_of(resp)
+
     def login_from_captured(self, frame_path: Path | None = None) -> int | None:
         """用抓到的登录帧明文重新加密后发出，返回状态码。
 
