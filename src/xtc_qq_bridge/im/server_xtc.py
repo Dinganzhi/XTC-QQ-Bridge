@@ -134,6 +134,13 @@ class ServerXiaotiancai:
             os.path.expanduser(srv.get("credentials") or "~/.config/xtc-bridge/imoo-credentials.json")
         )
         self.contacts = dict(srv.get("contacts") or {})
+        # 收消息：轮询每轮调 get_latest_message，
+        # 这里做节流 + 缓存，避免每 2 秒就打一次网络
+        self._last_fetch = 0.0
+        self._fetch_interval = float(srv.get("fetch_interval", 2.0) or 2.0)
+        self._pending: list[dict] = []
+        self._sync_key = 0
+        self._target_contact = str((cfg or {}).get("target_contact") or "")
         self._load_credentials()
 
     # ---------------------------------------------------------- 凭据
@@ -224,8 +231,8 @@ class ServerXiaotiancai:
         return STATE_CHAT if self._current_peer else STATE_LIST
 
     def app_state_with_root(self, *args, **kwargs):
-        # IM 模式没有界面可读：始终报 LIST，让轮询走"无消息"分支
-        return STATE_LIST, None
+        # 报 CHAT，轮询才会去取 get_latest_message；界面为 None
+        return STATE_CHAT, None
 
     def is_in_chat(self) -> bool:
         return bool(self._current_peer)
@@ -299,8 +306,50 @@ class ServerXiaotiancai:
         return False
 
     def get_latest_message(self, *args, **kwargs):
-        # 界面版签名：(contact, text, time_label, own_text, own_recent)
-        return (None, None, "", "", [])
+        """界面版签名：(contact, text, time_label, own_text, own_recent)。
+
+        IM 模式下由 `cmd 12` 同步拉取，返回一条待转发消息；没有新消息时返回空。
+        """
+        now = time.time()
+        if now - self._last_fetch >= self._fetch_interval:
+            self._last_fetch = now
+            try:
+                msgs, key = self.fetch_messages()
+                self._sync_key = key or self._sync_key
+                # 新消息追加到待处理队列（fetch_messages 只返回增量的文字消息）
+                for m in msgs:
+                    if m not in self._pending:
+                        self._pending.append(m)
+            except Exception as exc:  # noqa: BLE001 网络抖动不致命
+                self.log("warning", f"[IM] 拉取消息失败：{exc}")
+        if not self._pending:
+            return (None, None, "", "", [])
+        m = self._pending.pop(0)
+        text = self._extract_text(m.get("content", ""))
+        label = self._label_of(m.get("timestamp", 0))
+        contact = self._target_contact or self._current_contact
+        return (contact, text, label, "", [])
+
+    @staticmethod
+    def _extract_text(raw: str) -> str:
+        """消息体是 JSON，取其中的 text/content 字段。"""
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return raw
+        if isinstance(obj, dict):
+            return str(obj.get("text") or obj.get("content") or raw)
+        return raw
+
+    @staticmethod
+    def _label_of(ts_ms: int) -> str:
+        """把毫秒时间戳格式化成 HH:MM（桥接按这个口径做去重和"太旧"判定）。"""
+        if not ts_ms:
+            return ""
+        try:
+            return time.strftime("%H:%M", time.localtime(ts_ms / 1000.0))
+        except Exception:
+            return ""
 
     def latest_kind(self, *args, **kwargs):
         return ""

@@ -460,7 +460,10 @@ def _run_im_mode(cfg: dict, log, args, webhook_ctx=None) -> None:
     xc_cfg = cfg.get("xiaotiancai") or {}
     log.info("运行模式: im（直连小天才 IM 服务器，不使用 ADB）")
 
-    xtc = ServerXiaotiancai(xc_cfg, logger=log,
+    # 收消息需要知道"消息归属哪个联系人"（IM 帧里只有 watchId，没有显示名）
+    _im_cfg = dict(xc_cfg)
+    _im_cfg.setdefault("target_contact", str((cfg.get("target") or {}).get("xtc_contact") or ""))
+    xtc = ServerXiaotiancai(_im_cfg, logger=log,
                             cache_path=str(runtime_paths.data_path("ui_send_cache.json")))
     contacts = getattr(xtc, "contacts", {}) or {}
     if contacts:
