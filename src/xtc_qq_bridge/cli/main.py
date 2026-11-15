@@ -236,6 +236,14 @@ def main() -> None:
             log.warning(f"performance.profile={_raw!r} 不是有效档位"
                         f"（可选 {'/'.join(speed_profile.PROFILE_NAMES)}），已按 {_profile} 运行")
 
+    # ---------------------------------------------------------------
+    # 模式切换：server 模式完全不依赖 ADB
+    #   xiaotiancai.mode = "adb"（默认）| "server"
+    # ---------------------------------------------------------------
+    _mode = str((cfg.get("xiaotiancai") or {}).get("mode") or "adb").strip().lower()
+    if _mode == "server":
+        return _run_server_mode(cfg, log, args, webhook_ctx=None)
+
     from ..adb_controller import ADBController
     adb_cfg = cfg.get("adb") or {}
     adb = ADBController(adb_path=adb_cfg.get("path", ""),
@@ -438,3 +446,66 @@ def run_check(config_path=None) -> int:
 
 if __name__ == "__main__":
     main()
+
+
+def _run_server_mode(cfg: dict, log, args, webhook_ctx=None) -> None:
+    """服务端模式：不启动 ADB，直接走小天才 IM 服务器。"""
+    import threading as _threading
+    import time as _time
+
+    from ..im.server_xtc import ServerXiaotiancai
+
+    xc_cfg = cfg.get("xiaotiancai") or {}
+    log.info("运行模式: server（直连小天才 IM 服务器，不使用 ADB）")
+
+    xtc = ServerXiaotiancai(xc_cfg, logger=log,
+                            cache_path=str(runtime_paths.data_path("ui_send_cache.json")))
+    contacts = getattr(xtc, "contacts", {}) or {}
+    if contacts:
+        log.info(f"已加载联系人映射 {len(contacts)} 条")
+    else:
+        log.warning("联系人映射为空：请在 config.yaml -> xiaotiancai.server.contacts "
+                    "里配置「联系人名 -> 对方 imAccountId」，否则无法定位收件人")
+
+    state = xtc.login_state(force=True)
+    if state == xtc.NOT_LOGGED_IN:
+        log.error("IM 会话不可用，请检查 xiaotiancai.server.credentials 指向的凭据文件")
+        if args.once:
+            return
+
+    from ..bridge import MessageBridge, make_forwarder
+    bridge = MessageBridge(cfg, getattr(xtc, "adb", None), xtc,
+                           make_forwarder(cfg, log), logger=log)
+
+    webhook_server = None
+    wh_cfg = cfg.get("webhook") or {}
+    if wh_cfg.get("enabled"):
+        from ..qq_webhook import create_webhook_server
+
+        webhook_server = create_webhook_server(
+            bridge, host=wh_cfg.get("host", "127.0.0.1"),
+            port=int(wh_cfg.get("port", 5000)),
+            path=wh_cfg.get("path", "/qq_callback"),
+            token=wh_cfg.get("token", ""), logger=log)
+        _threading.Thread(target=webhook_server.serve_forever, daemon=True).start()
+        log.info(f"反向回调已启动: http://{wh_cfg.get('host', '127.0.0.1')}:"
+                 f"{wh_cfg.get('port', 5000)}{wh_cfg.get('path', '/qq_callback')}")
+
+    bridge.start()
+    if args.once:
+        _time.sleep(3)
+        bridge.stop()
+        log.info("--once 测试完成")
+        return
+
+    log.info("桥接运行中（server 模式），Ctrl+C 退出")
+    try:
+        while True:
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.stop()
+        if webhook_server:
+            webhook_server.shutdown()
+        log.info("已停止")
