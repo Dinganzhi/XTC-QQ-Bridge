@@ -45,7 +45,9 @@ class Xiaotiancai(StateMixin, LoginMixin, PopupMixin, ChatMixin, SendMixin):
         # 完整配置与各子段：弹窗/登录这些行为也要能调（此前只有 ui 段可配）
         self.cfg = cfg
         self.popup = cfg.get("popup", {}) or {}
-        self.login = cfg.get("login", {}) or {}
+        # 注意：不能叫 self.login —— 会遮蔽 LoginMixin.login() 方法，
+        # 导致 self.xtc.login(phone, password) 变成"调用一个 dict"。
+        self.login_cfg = cfg.get("login", {}) or {}
         self.logger = logger
         self._cache_path = cache_path or ""
         self._warned_not_login = False

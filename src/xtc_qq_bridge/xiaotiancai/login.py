@@ -213,7 +213,7 @@ class LoginMixin:
             #    输入法（`ime_shown()` 常为 False），此时 BACK 不是收键盘而是"返回上一页"，
             #    会从账密登录页退回欢迎页甚至退出 App；随后找不到登录按钮 ->
             #    报出误导性的"未找到登录按钮（页面结构变化？）"，并一直登录不上。
-            if (self.login.get("close_keyboard_before_tap", True)
+            if (self.login_cfg.get("close_keyboard_before_tap", True)
                     and self.keyboard_visible()):
                 self.adb.keyevent(4)
                 time.sleep(0.5)

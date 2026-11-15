@@ -171,6 +171,31 @@ class ServerXiaotiancai:
 
     # ---------------------------------------------------------- 会话
 
+    def renew_ticket(self) -> str:
+        """用 SSO 重新签发一张 IM 票据。
+
+        关键：`deviceId` 必须用账号的**持久化 SSO 设备身份**（配置里的
+        `im_sso_device_id`）。随机 deviceId 签出来的票 IM 侧会回 4200。
+        """
+        from ..api.sso import SsoClient
+
+        dev = str(self.cred.get("im_sso_device_id") or "").strip()
+        if not dev:
+            raise RuntimeError("配置缺少 im_sso_device_id，无法自动续票")
+        phone = str(self.cred.get("phone") or "").strip()
+        password = str(self.cred.get("password") or "").strip()
+        if not phone or not password:
+            raise RuntimeError("凭据文件缺少 phone/password，无法自动续票")
+        res = SsoClient().password_login(phone, password, device_id=dev)
+        self.cred["im_account_token"] = res.ticket
+        try:
+            self.credentials_path.write_text(
+                __import__("json").dumps(self.cred, ensure_ascii=False, indent=2), "utf-8")
+        except Exception:
+            pass
+        self.log("info", "[IM] 票据已自动续签")
+        return res.ticket
+
     def _ensure_session(self):
         from ..im.session import ImSession
 
@@ -178,6 +203,16 @@ class ServerXiaotiancai:
             return self._session
         session = ImSession(log=lambda lvl, msg: self.log("info", f"[IM] {msg}"))
         code = session.login_from_config(self.cred)
+        if code in (4200, 102400):
+            # 票据过期：自动续签后重试一次
+            self.log("warning", f"[IM] 登录被拒（code={code}），尝试自动续票")
+            try:
+                session.close()
+            except Exception:
+                pass
+            self.renew_ticket()
+            session = ImSession(log=lambda lvl, msg: self.log("info", f"[IM] {msg}"))
+            code = session.login_from_config(self.cred)
         if code != 200:
             session.close()
             raise RuntimeError(f"IM 登录失败：code={code}")

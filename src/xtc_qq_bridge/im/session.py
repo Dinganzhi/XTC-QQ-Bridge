@@ -341,7 +341,9 @@ class ImSession:
             + tlv_int(20, int(c["im_platform"]))
             + tlv_int(10, int(c["im_regist_id"]))
             + tlv(11, b"null")
-            + tlv_int(12, int(c["im_sdk_version"]))
+            # sdkVersion 服务端按 4 字节整型解析：94605 最少 3 字节，
+            # 少一个字节会让整条帧对不上（App 恒为 4 字节）
+            + tlv(12, int(c["im_sdk_version"]).to_bytes(4, "big"))
             + tlv(21, int(time.time() * 1000).to_bytes(8, "big"))
         )
         resp = self.send(32, tlv(10, xor_key(tlv(35, inner), SESSION_KEY)))
