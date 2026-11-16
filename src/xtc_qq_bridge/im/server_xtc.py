@@ -381,6 +381,25 @@ class ServerXiaotiancai:
         contact = self._target_contact or self._current_contact
         return (contact, text, label, "", [])
 
+    # 可能是消息时间的候选标签（按优先级）。App 给**表情包/图片**的帧偶尔不带
+    # tag17，早先的实现会得到 0，然后 _label_of 返回空、_format_xtc_time 退回
+    # "当前时间" —— 于是滞留消息的时间看起来就是拉取时刻。这里按候选依次找，
+    # 只接受像毫秒时间戳的值（>= 1e12），找不到才返回 0（由调用方标注为未知）。
+    _TS_TAGS = (17, 19, 21, 15)
+
+    @classmethod
+    def _pick_timestamp(cls, fields: dict) -> int:
+        for tag in cls._TS_TAGS:
+            raw = fields.get(tag)
+            if not raw:
+                continue
+            v = int.from_bytes(raw, "big")
+            if v >= 1_000_000_000_000:      # 毫秒时间戳
+                return v
+            if 1_000_000_000 <= v < 10_000_000_000:   # 秒级，补成毫秒
+                return v * 1000
+        return 0
+
     def _sync_key_file(self):
         from .. import runtime_paths
         return runtime_paths.data_path("im_sync_key.json")
@@ -534,7 +553,7 @@ class ServerXiaotiancai:
                                 {
                                     "content": fields[14].decode("utf-8", "replace"),
                                     "msgId": fields.get(16, b"").decode("utf-8", "replace"),
-                                    "timestamp": int.from_bytes(fields.get(17, b"\x00"), "big"),
+                                    "timestamp": self._pick_timestamp(fields),
                                     "type": mtype,
                                 }
                             )
