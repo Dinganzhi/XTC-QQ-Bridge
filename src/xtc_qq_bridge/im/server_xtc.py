@@ -139,6 +139,10 @@ class ServerXiaotiancai:
         self._last_fetch = 0.0
         self._fetch_interval = float(srv.get("fetch_interval", 2.0) or 2.0)
         self._pending: list[dict] = []
+        # 当前这条消息的类型与媒体地址（latest_kind / latest_sticker 用）
+        self._current_kind = ""
+        self._media_kind = "sticker"
+        self._media_url = ""
         # syncKey 落盘：不持久化的话进程一重启就归零，下次会用 syncKey=0
         # 把服务端缓冲区里的历史全部重拉一遍（去重表能挡住重复转发，但白拉一次很浪费）。
         self._sync_key = self._load_sync_key()
@@ -380,9 +384,19 @@ class ServerXiaotiancai:
             except Exception as exc:  # noqa: BLE001 网络抖动不致命
                 self.log("warning", f"[IM] 拉取消息失败：{exc}")
         if not self._pending:
+            self._current_kind = ""
+            self._media_url = ""
             return (None, None, "", "", [])
         m = self._pending.pop(0)
-        text = self._extract_text(m.get("content", ""))
+        kind = str(m.get("kind") or "text")
+        self._current_kind = kind
+        self._media_kind = kind
+        self._media_url = str(m.get("mediaUrl") or "")
+        if kind in ("sticker", "image"):
+            # 媒体消息的正文只是给桥接做身份/说明用的占位，图片本身走 latest_sticker()
+            text = str(m.get("mediaLabel") or ("表情" if kind == "sticker" else "图片"))
+        else:
+            text = self._extract_text(m.get("content", ""))
         label = self._label_of(m.get("timestamp", 0))
         contact = self._target_contact or self._current_contact
         return (contact, text, label, "", [])
@@ -423,6 +437,86 @@ class ServerXiaotiancai:
         except Exception:
             pass
 
+    # 表情包 / 图片的消息体里，媒体地址藏在这些键上（实测取到过前两个）
+    _MEDIA_KEYS = ("appPath", "wholeUrl", "watchPath", "url", "imgUrl", "picUrl",
+                   "imageUrl", "stickerUrl")
+
+    @classmethod
+    def _classify(cls, raw: str) -> tuple[str, str, str]:
+        """解析消息体，返回 `(kind, mediaUrl, label)`。
+
+        IM 把表情包/图片也塞在 `type=3` 的文字帧里：外层是标准 8 字段 JSON，
+        `content` 又是一段 JSON 字符串，里面才有 `appPath` / `wholeUrl` 这类地址。
+        早期实现只取 `text`，于是这类消息被当成文字转发，QQ 只收到一段 JSON 或
+        "图片"两个字——这就是"表情包没发出来"的原因。
+        """
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return "text", "", ""
+        if not isinstance(obj, dict):
+            return "text", "", ""
+        inner = obj.get("content")
+        if not (isinstance(inner, str) and inner.lstrip().startswith("{")):
+            return "text", "", ""
+        try:
+            body = json.loads(inner)
+        except Exception:
+            return "text", "", ""
+        if not isinstance(body, dict):
+            return "text", "", ""
+        for key in cls._MEDIA_KEYS:
+            url = str(body.get(key) or "")
+            if not url.startswith("http"):
+                continue
+            # 图/表情按有没有"照片"语义区分：表情包带 code/emojiType，照片带尺寸类字段
+            emojiish = any(k in body for k in ("emojiType", "expressionType", "facecode",
+                                               "packageName", "seriesId"))
+            kind = "sticker" if emojiish else "image"
+            label = str(body.get("code") or body.get("desc") or "") or "表情"
+            return kind, url, label
+        return "text", "", ""
+
+    def _fetch_media(self, url: str) -> tuple[bytes, str]:
+        """下载媒体（带本地缓存）。失败返回 `(b"", "")`，由调用方走重试。"""
+        import hashlib as _hashlib
+        import urllib.request as _req
+
+        from .. import runtime_paths as _rp
+
+        ext = ".gif" if url.lower().endswith(".gif") else ".png"
+        name = _hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ext
+        cache = _rp.data_path("im_media") / name
+        try:
+            if cache.exists() and cache.stat().st_size > 0:
+                return cache.read_bytes(), ext
+        except OSError:
+            pass
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            with _req.urlopen(url, timeout=15) as resp:
+                data = resp.read()
+            if not data:
+                return b"", ""
+            tmp = cache.with_suffix(cache.suffix + ".part")
+            tmp.write_bytes(data)
+            tmp.replace(cache)
+            return data, ext
+        except Exception as exc:  # noqa: BLE001 网络抖动交给桥接的重试队列
+            self.log("warning", f"[IM] 下载媒体失败：{type(exc).__name__}")
+            return b"", ""
+
+    def latest_sticker(self, *args, **kwargs):
+        """把当前这条消息的媒体交给桥接（IM 模式不需要读屏取图）。"""
+        url = getattr(self, "_media_url", "")
+        if not url:
+            return None
+        data, ext = self._fetch_media(url)
+        if not data:
+            return None
+        return {"data": data, "kind": getattr(self, "_media_kind", "sticker"),
+                "animated": ext == ".gif", "source": url}
+
     @staticmethod
     def _extract_text(raw: str) -> str:
         """消息体是 JSON，取其中的 text/content 字段。"""
@@ -450,10 +544,15 @@ class ServerXiaotiancai:
             return ""
 
     def latest_kind(self, *args, **kwargs):
-        return ""
+        """当前这条消息的类型：`text` / `sticker` / `image`。
+
+        桥接据此决定走"文字"还是"图片"。必须和 `get_latest_message` 同源，
+        否则媒体消息会被当成文字发出（QQ 只收到一段 JSON 或"图片"两个字）。
+        """
+        return getattr(self, "_current_kind", "") or ""
 
     def message_kind(self, *args, **kwargs):
-        return "text"
+        return getattr(self, "_current_kind", "") or "text"
 
     def _chat_bubbles(self, *args, **kwargs):
         return []
@@ -555,9 +654,15 @@ class ServerXiaotiancai:
                     if 14 in fields:
                         mtype = int.from_bytes(fields.get(18, b"\x00"), "big")
                         if mtype == 3:
+                            # 表情包/图片也走 type=3，必须分类，否则会被当文字转发
+                            _raw = fields[14].decode("utf-8", "replace")
+                            _kind, _media_url, _media_label = self._classify(_raw)
                             out.append(
                                 {
                                     "content": fields[14].decode("utf-8", "replace"),
+                                    "kind": _kind,
+                                    "mediaUrl": _media_url,
+                                    "mediaLabel": _media_label,
                                     "msgId": fields.get(16, b"").decode("utf-8", "replace"),
                                     "timestamp": self._pick_timestamp(fields),
                                     "type": mtype,

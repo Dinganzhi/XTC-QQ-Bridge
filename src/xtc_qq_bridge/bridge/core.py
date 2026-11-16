@@ -668,14 +668,25 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                         # 传消息自己的时间：检测可能滞后几分钟（刚重启/刚唤醒时），
                         # 缓存文件是"消息显示时"写进去的，只有按消息时间才找得回原图。
                         if is_media:
-                            got_lock = self._op_lock.acquire(timeout=self._media_lock_timeout)
-                            try:
-                                sticker = self._capture_sticker(
-                                    root, text, near_epoch=self._label_epoch(time_label or ""),
-                                    match_label=key[3] or raw_label, kind=kind)
-                            finally:
-                                if got_lock:
-                                    self._op_lock.release()
+                            # IM 模式：媒体直接从协议里拿到（或下载），不需要读屏取图
+                            provider = getattr(self.xtc, "latest_sticker", None)
+                            if provider is not None:
+                                try:
+                                    sticker = provider()
+                                except Exception as exc:  # noqa: BLE001
+                                    self._log("warning", f"[媒体] 取图失败: {exc}")
+                                    sticker = None
+                            else:
+                                got_lock = self._op_lock.acquire(
+                                    timeout=self._media_lock_timeout)
+                                try:
+                                    sticker = self._capture_sticker(
+                                        root, text,
+                                        near_epoch=self._label_epoch(time_label or ""),
+                                        match_label=key[3] or raw_label, kind=kind)
+                                finally:
+                                    if got_lock:
+                                        self._op_lock.release()
                             if sticker is None:
                                 # 无法取得媒体：登记"稍后重试"，**这一轮先不发**
                                 # （不发的话 QQ 只会收到"图片"两个字）
