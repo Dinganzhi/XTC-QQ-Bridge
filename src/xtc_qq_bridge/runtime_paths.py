@@ -25,6 +25,7 @@ Nuitka 的两种打包模式对"文件在哪"的答案完全不同（已实测�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -176,6 +177,36 @@ def resource_dir(name: str) -> Path | None:
 
 
 _DATA_DIR_CACHE: Path | None = None
+_ACCOUNT_KEY: str | None = None
+
+
+def set_account(key: str) -> None:
+    """把数据目录切到该账号专属的子目录（`accounts/<key>/`）。
+
+    切换账号时**必须隔离**：`syncKey`、去重历史、消息日志都是账号维度的。
+    混在同一个目录里会出现"新账号的消息被旧账号的去重表挡掉"，
+    或者新账号一上来就用旧账号的游标去同步（漏掉开头一段消息）。
+    """
+    global _ACCOUNT_KEY, _DATA_DIR_CACHE
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "", str(key or ""))[:32]
+    if safe == (_ACCOUNT_KEY or ""):
+        return
+    _ACCOUNT_KEY = safe or None
+    _DATA_DIR_CACHE = None          # 缓存失效，下次 data_dir() 重新解析
+
+
+def account_key() -> str | None:
+    """当前生效的账号键（未设置时为 None）。"""
+    return _ACCOUNT_KEY
+
+
+def _base_data_dir() -> Path:
+    """未按账号隔离时的数据目录：优先 APP_DIR/data，不可写则退回用户目录。"""
+    if _writable(DATA_DIR):
+        return DATA_DIR
+    fallback = _user_data_dir() / "data"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
 
 
 def data_dir() -> Path:
@@ -189,12 +220,12 @@ def data_dir() -> Path:
     global _DATA_DIR_CACHE
     if _DATA_DIR_CACHE is not None:
         return _DATA_DIR_CACHE
-    if _writable(DATA_DIR):
-        _DATA_DIR_CACHE = DATA_DIR
-    else:
-        _DATA_DIR_CACHE = _user_data_dir() / "data"
-        _DATA_DIR_CACHE.mkdir(parents=True, exist_ok=True)
-    return _DATA_DIR_CACHE
+    base = _base_data_dir()
+    if _ACCOUNT_KEY:
+        base = base / "accounts" / _ACCOUNT_KEY
+    base.mkdir(parents=True, exist_ok=True)
+    _DATA_DIR_CACHE = base
+    return base
 
 
 def data_path(name: str) -> Path:

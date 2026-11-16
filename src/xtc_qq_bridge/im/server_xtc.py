@@ -188,7 +188,13 @@ class ServerXiaotiancai:
         password = str(self.cred.get("password") or "").strip()
         if not phone or not password:
             raise RuntimeError("凭据文件缺少 phone/password，无法自动续票")
-        res = SsoClient().password_login(phone, password, device_id=dev)
+        # nDeviceId 固定复用：每次换新值等于伪装成另一台设备，可能触发二次验证
+        n_dev = str(self.cred.get("im_n_device_id") or "").strip()
+        if not n_dev:
+            import os as _os
+            n_dev = self.cred["im_n_device_id"] = _os.urandom(16).hex()
+        res = SsoClient().password_login(phone, password,
+                                         device_id=dev, n_device_id=n_dev)
         self.cred["im_account_token"] = res.ticket
         try:
             self.credentials_path.write_text(

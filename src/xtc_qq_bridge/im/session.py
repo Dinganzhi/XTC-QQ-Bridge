@@ -310,6 +310,88 @@ class ImSession:
 
     # -- 登录 ------------------------------------------------------
 
+    def register(self, cfg: dict | None = None, *, req_id: int = 3001) -> tuple[int | None, int]:
+        """向 IM 注册本设备，返回 `(状态码, registId)`。
+
+        `tag24`（businessId）**必须等于账号自己的手表 ID**：填错或沿用别的账号的值
+        都会得到 `102400`。票据里的 `deviceId` 也必须是该账号绑定过的设备身份，
+        随机生成的值同样会被拒（实测，见 docs/imoo-api.md）。
+        """
+        c = cfg or _load_cfg()
+        inner = (
+            tlv_int(1, req_id)
+            + tlv(25, c["im_account_token"].encode())
+            + tlv(11, c["im_app_key"].encode())
+            + tlv(22, b"TQ3A.230901.001")
+            + tlv(24, c["mobile_id"].encode())
+            + tlv(13, c["im_device_id_brp"].encode())
+            + tlv_int(26, int(c["im_sdk_version"]))
+            + tlv(20, b"Subsystem for Android(TM)")
+            + tlv(12, b"com.xtc.watch")
+            + tlv_int(10, 1)
+            + tlv(23, (15815582120554544).to_bytes(7, "big"))
+            + tlv_int(14, 33)
+            + tlv(15, b"Subsystem for Android(TM) 13")
+            + tlv_int(16, 12595)
+        )
+        resp = self.send(32, tlv(10, xor_key(tlv(33, inner), SESSION_KEY)))
+        code = self.code_of(resp)
+        rid = 0
+        if resp is not None:
+            inner_cmd, i = dec_varint(resp.payload, 0)
+            inner_len, j = dec_varint(resp.payload, i)
+            if inner_len is not None:
+                for tag, value in parse_tlvs(resp.payload[j : j + inner_len]):
+                    if tag == 10 and len(value) <= 8:
+                        rid = int.from_bytes(value, "big")
+        return code, rid
+
+    def sync_once(self, cfg: dict | None = None, *, sync_key: int = 0) -> tuple[int | None, int | None]:
+        """同步一次，返回 `(状态码, 新 syncKey)`。
+
+        应答是**多帧**的（一条消息一帧），只读第一帧会漏掉后面的。
+        游标位置随帧型不同：消息帧在 tag15，纯 ack 帧在 tag13。
+        """
+        c = cfg or _load_cfg()
+        payload = (
+            tlv_int(1, self.rid)
+            + tlv_int(11, int(c["im_sender_account_id"]))
+            + tlv_int(12, int(c["im_regist_id"]))
+            + tlv_int(13, sync_key)
+            + tlv_int(14, 30)
+        )
+        self._tls.sendall(build_frame(12, payload))
+        code: int | None = None
+        key: int | None = None
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            try:
+                frame = self._recv_frame(2.0)
+            except Exception:
+                break
+            if not frame or frame[0] != MAGIC_BIZ:
+                continue
+            length, start = dec_varint(frame, 2)
+            if length is None:
+                continue
+            for tag, value in parse_tlvs(frame[start : start + length]):
+                if tag != 10 or not value:
+                    continue
+                plain = xor_key(value, SESSION_KEY)
+                inner_cmd, i = dec_varint(plain, 0)
+                inner_len, j = dec_varint(plain, i)
+                if inner_len is None:
+                    continue
+                fields = dict(parse_tlvs(plain[j : j + inner_len]))
+                if code is None and 2 in fields and len(fields[2]) <= 4:
+                    code = int.from_bytes(fields[2], "big")
+                for tag_id in (15, 13):
+                    raw = fields.get(tag_id)
+                    if raw and len(raw) <= 8:
+                        key = int.from_bytes(raw, "big")
+                        break
+        return code, key
+
     def login_from_config(self, cfg: dict | None = None) -> int | None:
         """按配置里的设备参数构造登录帧（不依赖任何抓包）。
 

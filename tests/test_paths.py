@@ -68,7 +68,21 @@ def test_log_path_resolution() -> None:
           str(rel))
     abs_in = tmpdir("abs") / "xtc-abs.log"
     check("绝对日志路径原样保留", rp.log_path(str(abs_in)) == abs_in, str(rp.log_path(str(abs_in))))
-    check("data_path 落在 DATA_DIR", rp.data_path("msg_log.json") == rp.DATA_DIR / "msg_log.json")
+    # data_path 的实际落点由 data_dir() 决定，不再等于 DATA_DIR：
+    #   1) DATA_DIR 不可写时退回用户数据目录（否则写入静默失败、历史全丢）；
+    #   2) 设了账号时再套一层 accounts/<key>/（换账号必须隔离游标与去重表）。
+    # 这里只断言"落在 data_dir() 下且该目录确实可写"，不锁死具体位置。
+    d = rp.data_path("msg_log.json")
+    check("data_path 落在 data_dir() 下",
+          d.parent == rp.data_dir() and d.name == "msg_log.json", str(d))
+    check("data_dir() 可写", os.access(rp.data_dir(), os.W_OK), str(rp.data_dir()))
+    rp.set_account("pathtest")
+    scoped = rp.data_dir()
+    check("设了账号后数据目录带账号隔离",
+          scoped.parent.name == "accounts" and scoped.name == "pathtest", str(scoped))
+    check("账号目录下的 data_path 也在其中",
+          rp.data_path("x.json").parent == scoped, str(rp.data_path("x.json")))
+    rp.set_account("")
 
 
 def test_resource_lookup() -> None:

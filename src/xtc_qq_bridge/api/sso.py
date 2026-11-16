@@ -275,19 +275,24 @@ class SsoClient:
 
     # ---------------------------------------------------------------- 对外
     def password_login(self, phone: str, password: str, *,
-                       area_code: str = "86", device_id: str = "") -> LoginResult:
+                       area_code: str = "86", device_id: str = "",
+                       n_device_id: str = "") -> LoginResult:
         """账号密码登录。成功返回 LoginResult，失败抛 SsoError。
 
         注意 `days` 必须是字符串 "-1"；传整数会让服务端 500。
+
+        `n_device_id` 建议固定复用（首次登录时生成一次并存下来）：每次换新值
+        等于把自己伪装成另一台设备，可能触发「换设备登录」二次验证。
         """
         if not phone or not password:
             raise SsoError("config", "手机号与密码都不能为空")
-        # deviceId 与 mac 同值，必须 32 位十六进制；nDeviceId 是 App 会带的额外字段。
+        # deviceId 与 mac 同值，必须 32 位十六进制。
         # **必须传 device_id**：IM 侧只认「票据 deviceId == 账号的持久化 SSO 设备身份」
-        # 的那些票，随机 deviceId 签出来的票 IM 会回 4200（抓包实证，见 docs 4.3.37）。
+        # 的那些票，随机 deviceId 签出来的票 IM 注册/登录会回 102400 / 4200
+        # （抓包实证，见 docs/imoo-api.md）。
         dev = (device_id or "").strip() or os.urandom(16).hex()
         payload = {
-            "nDeviceId": os.urandom(16).hex(),
+            "nDeviceId": (n_device_id or "").strip() or os.urandom(16).hex(),
             "userName": phone,
             "areaCode": area_code,
             "password": password,

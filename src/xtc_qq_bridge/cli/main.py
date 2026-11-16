@@ -148,6 +148,38 @@ def verify_bundle() -> int:
     return 0 if ok else 1
 
 
+def _apply_account_scope(cfg: dict) -> None:
+    """按账号隔离数据目录（见 `runtime_paths.set_account`）。
+
+    账号键优先取 IM 凭据里的 `mobile_id`（= 该账号绑定的手表 ID，全局唯一），
+    拿不到就退回登录手机号。这样换账号后 syncKey、去重历史、消息日志各归各的，
+    不会出现"新账号被旧账号的去重表挡掉"。
+    """
+    import json as _json
+    import pathlib as _pathlib
+
+    xc = cfg.get("xiaotiancai") or {}
+    key = ""
+    im_sub = xc.get("im") or xc.get("server") or {}
+    cred_path = str(im_sub.get("credentials") or "").strip()
+    if cred_path:
+        try:
+            data = _json.loads(
+                _pathlib.Path(cred_path).expanduser().read_text("utf-8"))
+            key = str(data.get("mobile_id") or data.get("phone") or "")
+        except Exception:
+            key = ""            # 凭据读不到不该拦住启动，退回下面的手机号
+    if not key:
+        key = str((xc.get("login") or {}).get("phone") or "")
+    if not key:
+        return
+    # 目录名用短哈希：既稳定区分账号，又不会在路径里暴露手机号或手表 ID
+    import hashlib as _hashlib
+
+    runtime_paths.set_account(_hashlib.sha256(key.encode("utf-8")).hexdigest()[:16])
+    runtime_paths.ensure_dirs()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=f"XTC-QQ-Bridge（小天才 <-> QQ 桥接）{__version__}")
     ap.add_argument("--config", default="", help="配置文件路径（默认：exe 旁边的 config.yaml）")
@@ -199,6 +231,7 @@ def main() -> None:
         sys.exit(2)
 
     cfg = load_config(str(cfg_path))
+    _apply_account_scope(cfg)
     # 速度/稳定档位：把 performance.profile 的默认值**填空**进 cfg（用户写死的键不动）
     from .. import speed_profile
     _profile, _filled, _pinned = speed_profile.apply_profile(cfg)
