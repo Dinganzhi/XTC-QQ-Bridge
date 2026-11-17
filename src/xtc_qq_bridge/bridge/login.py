@@ -109,22 +109,26 @@ class LoginMixin:
             phone = str(acc.get("phone", "")).strip()
             password = str(acc.get("password", "")).strip()
             contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
+            # 纯协议实现（IM 模式）没有界面：前台/启动/学按钮坐标这些步骤全都不适用，
+            # 硬塞进来只会给用户发一堆看不懂的 ADB 术语。
+            uses_ui = bool(getattr(self.xtc, "uses_ui", True))
             with self._op_lock:
                 # 1) 弹窗清理（一次多轮）
-                if self.xtc.settle():
+                if uses_ui and self.xtc.settle():
                     msgs.append("已清理弹窗")
                 # 2) App 前台：已经在前台就完全不启动（避免"已经启动还反复启动"）
-                if self.xtc.adb.is_in_foreground(self.xtc.package):
-                    msgs.append("App 已在前台")
-                else:
-                    launched = False
-                    for _ in range(2):
-                        if self.xtc.launch():
-                            launched = True
-                            break
-                        time.sleep(1.5)
-                    msgs.append("启动" + ("OK" if launched else "失败"))
-                self.xtc.settle()
+                if uses_ui:
+                    if self.xtc.adb.is_in_foreground(self.xtc.package):
+                        msgs.append("App 已在前台")
+                    else:
+                        launched = False
+                        for _ in range(2):
+                            if self.xtc.launch():
+                                launched = True
+                                break
+                            time.sleep(1.5)
+                        msgs.append("启动" + ("OK" if launched else "失败"))
+                    self.xtc.settle()
                 # 3) 登录态：明确已登录就跳过；无法判断时**不猜**，只报告
                 state = self.xtc.login_state(force=True)
                 if state == LOGIN_LOGGED_IN:
@@ -155,7 +159,8 @@ class LoginMixin:
                     msgs.append(self.xtc.ensure_input_clean())
                     # 6) 顺手学一次"发送按钮坐标"：预输入要用它，学完**重启后的第一条**
                     #    QQ 消息也能 ~1 秒内把文字打进去（只注入一个探针字符随即清空，不发消息）
-                    if self.xtc.learn_send_point():
+                    #    IM 模式没有按钮，这步跳过。
+                    if uses_ui and self.xtc.learn_send_point():
                         msgs.append("已记录发送按钮坐标")
             reply = "初始化完成：" + "，".join(msgs)
         except Exception as e:  # noqa: BLE001
@@ -167,6 +172,19 @@ class LoginMixin:
                 self.forwarder.reply_result(request_id, reply)
             except Exception as e:  # noqa: BLE001
                 self._log("warning", f"初始化回传异常: {e}")
-        else:
+            return
+        # 启动时的例行初始化**默认不推送 QQ**：进程重启（或被 systemd 拉起）就会跑一次，
+        # 一切正常还每次都发一条"初始化完成"只会骚扰用户。需要时把
+        # xiaotiancai.init_notify 设成 always 即可恢复。
+        notify_mode = str((self.cfg.get("xiaotiancai") or {}).get("init_notify")
+                          or "problem").strip().lower()
+        if notify_mode == "never":
+            return
+        problem = any(word in reply for word in
+                      ("失败", "未进入", "未登录", "无法确认", "未配置", "异常"))
+        if notify_mode == "always" or problem:
             self._notify(reply)
+        else:
+            self._log("info", "[初始化] 一切正常，不推送 QQ"
+                               "（xiaotiancai.init_notify=always 可改为总是推送）")
 

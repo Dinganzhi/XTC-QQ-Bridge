@@ -974,6 +974,10 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 except Exception as e:  # noqa: BLE001 无法取得可视区就不翻
                     self._log("debug", f"[补发] 无法读取消息列表可视区，不执行向上滚动: {e}")
                     break
+                if vb is None:
+                    # 纯协议实现（IM 模式）没有可滚动的聊天视图：补发只走一次
+                    # "已有气泡"的快照，不向上翻页。这里直接结束，避免拿 None 去下标。
+                    break
                 step = int((vb[3] - vb[1]) * 0.7) or 200
                 if not self.xtc.scroll_chat_by(vb, step):
                     break

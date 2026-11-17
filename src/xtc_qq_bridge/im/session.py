@@ -27,6 +27,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,13 @@ class ImSession:
 
     def __init__(self, *, timeout: float = 10.0, log=None):
         self._log = log or (lambda *_a, **_k: None)
+        # **所有 socket 读写都要持这把锁**：心跳线程和轮询线程共用同一条 TLS 连接，
+        # 并发 recv/send 会让 OpenSSL 内部的 BIO 状态错乱，实测导致进程 SEGV
+        # （systemd 日志里是 status=11/SEGV + core-dump），重启后整个桥接重来一遍。
+        self._io_lock = threading.RLock()
+        self._closed = False
+        self._keepalive_thread: threading.Thread | None = None
+        self._keepalive_stop: threading.Event | None = None
         self._tls = self._connect(timeout)
         self.rid = 2000
 
@@ -226,8 +234,11 @@ class ImSession:
 
     def send(self, cmd: int, payload: bytes, *, timeout: float = 6.0) -> Response | None:
         """发一条业务命令，返回解密后的响应（没有响应时返回 None）。"""
-        self._tls.sendall(build_frame(cmd, payload))
-        frame = self._recv_frame(timeout)
+        with self._io_lock:             # 一问一答必须整体互斥，否则会读到别人的应答
+            if self._closed:
+                return None
+            self._tls.sendall(build_frame(cmd, payload))
+            frame = self._recv_frame(timeout)
         if not frame or frame[0] != MAGIC_BIZ:
             return None
         rcmd = frame[1]
@@ -260,13 +271,17 @@ class ImSession:
         心跳应答是 7 字节、没有状态码字段（不是 200 那种），
         所以这里只判断"有没有收到数据"，不解析 code。
         """
-        try:
-            self.rid += 1
-            self._tls.sendall(build_frame(7, tlv_int(1, self.rid) + tlv_int(2, int(time.time()))))
-            frame = self._recv_frame(timeout)
-            return bool(frame)
-        except Exception:
-            return False
+        with self._io_lock:
+            if self._closed:
+                return False
+            try:
+                self.rid += 1
+                self._tls.sendall(
+                    build_frame(7, tlv_int(1, self.rid) + tlv_int(2, int(time.time()))))
+                frame = self._recv_frame(timeout)
+                return bool(frame)
+            except Exception:
+                return False
 
     def start_keepalive(self, interval: float = 60.0) -> None:
         """后台心跳保活。
@@ -283,8 +298,11 @@ class ImSession:
 
         def _loop() -> None:
             while not stop.wait(interval):
+                if self._closed or stop.is_set():
+                    return
                 if not self.heartbeat():
-                    self._log("warning", "心跳失败，连接可能已断开")
+                    if not self._closed and not stop.is_set():
+                        self._log("warning", "心跳失败，连接可能已断开")
                     return
 
         t = threading.Thread(target=_loop, name="im-keepalive", daemon=True)
@@ -296,17 +314,22 @@ class ImSession:
         stop = getattr(self, "_ka_stop", None)
         if stop is not None:
             stop.set()
+        thread = getattr(self, "_ka_thread", None)
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=3.0)      # 让心跳先退出，否则它可能还在 recv
         self._ka_thread = None
 
     def close(self) -> None:
-        try:
-            self.stop_keepalive()
-        except Exception:
-            pass
-        try:
-            self._tls.close()
-        except Exception:
-            pass
+        """幂等关闭。先停保活线程并等它退出，再关连接，避免"线程还在 recv 时连接被关掉"。"""
+        self.stop_keepalive()
+        with self._io_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._tls.close()
+            except Exception:
+                pass
 
     # -- 登录 ------------------------------------------------------
 
@@ -360,7 +383,10 @@ class ImSession:
             + tlv_int(13, sync_key)
             + tlv_int(14, 30)
         )
-        self._tls.sendall(build_frame(12, payload))
+        with self._io_lock:
+            if self._closed:
+                return None, None
+            self._tls.sendall(build_frame(12, payload))
         code: int | None = None
         key: int | None = None
         deadline = time.monotonic() + 8.0

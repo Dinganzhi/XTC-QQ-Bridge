@@ -299,6 +299,9 @@ class ServerXiaotiancai:
     def chat_title(self, *args, **kwargs) -> str:
         return self._current_contact
 
+    # 本实现不读屏、不点击：初始化流程据此跳过"前台/启动/学按钮坐标"这些界面步骤
+    uses_ui = False
+
     def chat_view_bounds(self, *args, **kwargs):
         return None
 
@@ -314,7 +317,7 @@ class ServerXiaotiancai:
 
     def ensure_input_clean(self, *args, **kwargs) -> str:
         # 界面版返回的是给用户看的状态文字，不是布尔
-        return "输入框无需清理（im 模式）"
+        return "输入框无需清理"
 
     def learn_send_point(self, *args, **kwargs) -> bool:
         return True
