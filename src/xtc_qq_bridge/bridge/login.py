@@ -99,6 +99,60 @@ class LoginMixin:
         self._job_queue.put(("init", request_id))
         return "queued"
 
+    def _init_im(self, request_id: str) -> None:
+        """IM 模式的初始化：只校验协议层状态，不涉及任何界面动作。
+
+        检查项：会话可用 / 登录态 / 联系人映射 / 同步游标。
+        """
+        msgs: list[str] = []
+        try:
+            state = self.xtc.login_state(force=True)
+            if state == LOGIN_LOGGED_IN:
+                msgs.append("IM 会话已就绪")
+            else:
+                # 会话不通时先试一次自动续票（票据过期是最常见的原因）
+                try:
+                    self.xtc.renew_ticket()          # type: ignore[attr-defined]
+                    msgs.append("票据已自动续签")
+                    state = self.xtc.login_state(force=True)
+                except Exception as exc:  # noqa: BLE001
+                    msgs.append(f"续票失败（{exc}）")
+                msgs.append("已登录" if state == LOGIN_LOGGED_IN else "未登录")
+            contacts = getattr(self.xtc, "contacts", {}) or {}
+            msgs.append(f"联系人映射 {len(contacts)} 条" if contacts else "联系人映射为空（无法定位收件人）")
+            pending = getattr(self.xtc, "_pending", None)
+            if isinstance(pending, list) and pending:
+                msgs.append(f"待转发 {len(pending)} 条")
+            reply = "初始化完成：" + "，".join(msgs)
+        except Exception as exc:  # noqa: BLE001
+            self._log("warning", f"初始化异常: {exc}")
+            reply = "初始化失败：" + str(exc)
+        self._emit_init_reply(request_id, reply)
+
+    def _emit_init_reply(self, request_id: str, reply: str) -> None:
+        """统一出口：写日志；有 request_id 就回传插件，否则按 init_notify 策略决定是否推 QQ。"""
+        self._log("info", f"[初始化] {reply}")
+        if request_id:
+            try:
+                self.forwarder.reply_result(request_id, reply)
+            except Exception as e:  # noqa: BLE001
+                self._log("warning", f"初始化回传异常: {e}")
+            return
+        # 启动时的例行初始化**默认不推送 QQ**：进程重启（或被 systemd 拉起）就会跑一次，
+        # 一切正常还每次都发一条"初始化完成"只会骚扰用户。需要时把
+        # xiaotiancai.init_notify 设成 always 即可恢复。
+        notify_mode = str((self.cfg.get("xiaotiancai") or {}).get("init_notify")
+                          or "problem").strip().lower()
+        if notify_mode == "never":
+            return
+        problem = any(word in reply for word in
+                      ("失败", "未进入", "未登录", "无法确认", "未配置", "异常", "为空"))
+        if notify_mode == "always" or problem:
+            self._notify(reply)
+        else:
+            self._log("info", "[初始化] 一切正常，不推送 QQ"
+                               "（xiaotiancai.init_notify=always 可改为总是推送）")
+
     def _do_init_job(self, request_id: str) -> None:
         """检测并恢复界面状态（**按需执行**，不做无意义的重启/点击）：
         清理弹窗 -> 只在前台不对时启动 -> 只在未登录时登录 -> 只在不在聊天页时进入
@@ -109,9 +163,12 @@ class LoginMixin:
             phone = str(acc.get("phone", "")).strip()
             password = str(acc.get("password", "")).strip()
             contact = (self.cfg.get("target") or {}).get("xtc_contact", "")
-            # 纯协议实现（IM 模式）没有界面：前台/启动/学按钮坐标这些步骤全都不适用，
-            # 硬塞进来只会给用户发一堆看不懂的 ADB 术语。
+            # 纯协议实现（IM 模式）没有界面：前台/启动/进聊天页/清输入框/学按钮坐标
+            # 全都无从谈起，硬塞进来只会给用户发一堆看不懂的 ADB 术语。
+            # 所以 IM 模式走独立的 `_init_im()`，只做协议层该做的事。
             uses_ui = bool(getattr(self.xtc, "uses_ui", True))
+            if not uses_ui:
+                return self._init_im(request_id)
             with self._op_lock:
                 # 1) 弹窗清理（一次多轮）
                 if uses_ui and self.xtc.settle():
@@ -166,25 +223,5 @@ class LoginMixin:
         except Exception as e:  # noqa: BLE001
             self._log("warning", f"初始化异常: {e}")
             reply = "初始化失败：" + str(e)
-        self._log("info", f"[初始化] {reply}")
-        if request_id:
-            try:
-                self.forwarder.reply_result(request_id, reply)
-            except Exception as e:  # noqa: BLE001
-                self._log("warning", f"初始化回传异常: {e}")
-            return
-        # 启动时的例行初始化**默认不推送 QQ**：进程重启（或被 systemd 拉起）就会跑一次，
-        # 一切正常还每次都发一条"初始化完成"只会骚扰用户。需要时把
-        # xiaotiancai.init_notify 设成 always 即可恢复。
-        notify_mode = str((self.cfg.get("xiaotiancai") or {}).get("init_notify")
-                          or "problem").strip().lower()
-        if notify_mode == "never":
-            return
-        problem = any(word in reply for word in
-                      ("失败", "未进入", "未登录", "无法确认", "未配置", "异常"))
-        if notify_mode == "always" or problem:
-            self._notify(reply)
-        else:
-            self._log("info", "[初始化] 一切正常，不推送 QQ"
-                               "（xiaotiancai.init_notify=always 可改为总是推送）")
+        self._emit_init_reply(request_id, reply)
 
