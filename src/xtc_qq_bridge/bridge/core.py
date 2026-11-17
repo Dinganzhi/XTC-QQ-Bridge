@@ -349,12 +349,16 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         self._fwd_retry_thread.start()
         self._log("info", f"小天才消息轮询已启动（间隔 {self._poll_interval}s）")
         # 启动即自动初始化（等价于 QQ 命令 /小天才 初始化，以前只有手动发命令才会做）：
-        # 清弹窗 -> 确认前台 -> 按需登录 -> 进入聊天页 -> 清空输入框残留。
+        # ADB 模式：清弹窗 -> 确认前台 -> 按需登录 -> 进入聊天页 -> 清空输入框残留。
         # 不做这一步时，启动后的第一轮轮询可能还在列表页/残留状态上，
         # 读到的第一条"新消息"实际是启动前的旧消息。
+        # IM 模式没有界面，初始化只校验协议层状态（见 LoginMixin._init_im）。
         try:
             self._job_queue.put(("init", ""))
-            self._log("info", "已排队启动自动初始化（清弹窗 / 进聊天页 / 清输入框残留）")
+            if bool(getattr(self.xtc, "uses_ui", True)):
+                self._log("info", "已排队启动自动初始化（清弹窗 / 进聊天页 / 清输入框残留）")
+            else:
+                self._log("info", "已排队启动自动初始化（校验 IM 会话与联系人映射）")
         except Exception as e:  # noqa: BLE001
             self._log("warning", f"启动自动初始化入队失败: {e}")
 
