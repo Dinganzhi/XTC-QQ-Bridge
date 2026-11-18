@@ -28,7 +28,7 @@
 - SSO 负责「你是谁」，产出 `accountToken`（票据）
 - IM 负责「收发消息」，只认票据 + 设备身份
 
-这也是为什么「SSO 签票成功」不等于「IM 能用」——本文第 8 节会证明这个差别是致命的。
+因此「SSO 签票成功」并不等价于「IM 可用」，二者差异见第 8 节的实验验证。
 
 ---
 
@@ -61,13 +61,13 @@
 tag(varint) | length(varint) | value(length 字节)
 ```
 
-整数一律**大端裸字节**，不用 varint。这一条踩过坑，见 7.2。
+整数一律按**大端裸字节**编码，不使用 varint；长度差异带来的影响见 7.2 节。
 
 ---
 
 ## 4. 两种帧格式
 
-同一个连接上有两种魔数，**结构不同**，别混：
+同一连接上存在两种魔数，二者结构不同，不可混用：
 
 ### 4.1 公钥交换帧（0x36 / 0x37）
 
@@ -123,7 +123,7 @@ payload = tag1(RID)                      # 1002
 
 **`SESSION_KEY` 必须是 16 个可打印 ASCII 字符。**
 
-这是最容易踩的坑：服务端把它当 **String** 处理，非 ASCII 字节会被替换成 U+FFFD（`EF BF BD`），
+这是最易出错之处：服务端将其按 **String** 处理，非 ASCII 字节会被替换为 U+FFFD（`EF BF BD`），
 两边密钥不一致，后续所有帧都解不开。
 
 实测可用值：`0123456789abcdef`。
@@ -167,7 +167,7 @@ inner_cmd(varint) | inner_len(varint) | inner_payload(TLV...)
 
 内层 `inner_cmd` 用于区分注册（`tag33`）与登录（`tag35`）。
 
-**这一层如果不剥，会以为"什么都没解析出来"**——实测最初就卡在这里。
+若未剥离该层，会得到「无任何字段」的错误结论；该项在实测初期即成为阻塞点。
 
 ---
 
@@ -207,7 +207,7 @@ inner_cmd(varint) | inner_len(varint) | inner_payload(TLV...)
 | 1 | 2 | RID |
 | **24** | 301 | BRP JSON（见下） |
 | 26 | 32 | deviceId 字符串 |
-| 18 | 7 | `16094875454681141` |
+| 18 | 7 | 版本号名（见 7.4） |
 | 20 | 1 | 平台 1 |
 | 10 | 4 | registId |
 | 11 | 4 | **`"null"` 字面量** |
@@ -226,7 +226,7 @@ inner_cmd(varint) | inner_len(varint) | inner_payload(TLV...)
 
 `timestamp` 必须是**当前时间**。
 
-#### 「一个字节」的坑
+#### 长度相差一个字节导致的错位
 
 `tag12`（版本号 94605）最少只需 3 字节，但 **App 恒定用 4 字节**。
 服务端按 4 字节整型解析，少一个字节整帧错位：
@@ -235,6 +235,26 @@ inner_cmd(varint) | inner_len(varint) | inner_payload(TLV...)
 |---|---|---|---|
 | tag12 长度 | 4 | 3 | 4 |
 | 帧总长 | 678 | 677 | 678 |
+
+### 7.4 版本号字段的编码
+
+`tag18`（`im_sdk_version_name`）是把**点分版本号当作 ASCII 直接存进 7 字节整型**：
+
+```
+16094875454681141  =  0x392E34362E3035  =  b"9.46.05"
+```
+
+对应关系：
+
+| 版本字符串 | 7 字节 | 整型值 |
+|---|---|---|
+| `9.46.05` | `39 2E 34 36 2E 30 35` | 16094875454681141 |
+| `9.48.00` | `39 2E 34 38 2E 30 30` | 16094875488235568 |
+
+`tag12`（`im_sdk_version`）与之配套，是去掉点的整数：`9.46.05` → `94605`，`9.48.00` → `94800`。
+
+**两个字段必须同步修改。** 只改 `tag12` 时服务端看到的版本名仍是旧值，
+客户端能力判定不会更新——表现为服务端下发「版本升级后可查看」之类的占位内容。
 
 ### 7.3 帧里没有校验字段
 
@@ -276,7 +296,7 @@ im_sso_device_id 必须是 IM 服务端已经绑定到该账号的设备身份�
 ```
 
 用随机 deviceId 会得到「SSO 发票成功 + IM 拒绝」这种极具误导性的组合状态，
-排查时极容易误判成签名或报文问题。
+排查时极易误判为签名或报文问题。
 
 ---
 
@@ -326,28 +346,56 @@ im_sso_device_id 必须是 IM 服务端已经绑定到该账号的设备身份�
 
 ### 9.5 消息体格式
 
-> **表情包和图片也是 `type=3`**，和纯文字同一种帧。
+聊天消息（`type=3`）有三种形态，**媒体地址所在字段各不相同**：
 
-外层是标准 8 字段 JSON：
-
-```json
-{"content":"...","hintType":-1,"isSensitive":false,"msgNewContent":"",
- "msgNewType":0,"showType":0,"text":"...","textMsgType":0}
-```
-
-`content` 又是一段 JSON 字符串。文字消息里它就是文本本身；媒体消息里它长这样：
+#### 形态一：纯文字
 
 ```json
-{"appPath":"http://.../emoji/<code>","code":"<code>","emojiType":1,
- "facecode":"...","packageName":"...","seriesId":"..."}
+{"content":"文本","hintType":-1,"isSensitive":false,"msgNewContent":"",
+ "msgNewType":0,"showType":0,"text":"文本","textMsgType":0}
 ```
 
-判据：
+`content` 与 `text` 相同。
 
-- 带 `emojiType` / `facecode` / `packageName` / `seriesId` → **表情包**
-- 只有 `url` / `imgUrl` 之类 → **图片**
+#### 形态二：表情包
 
-只取 `text` 会把这类消息当文字发出去（QQ 收到一段 JSON），这就是"表情包没转发"的原因。
+`content` 是一段 **JSON 字符串**，媒体地址在其中：
+
+```json
+{"content":"{\"appPath\":\"http://…/emoji/…\",\"code\":\"watch_…\",
+             \"emojiType\":1,\"facecode\":\"…\"}",
+ "textMsgType":0}
+```
+
+判据：出现 `emojiType` / `expressionType` / `facecode` / `packageName` / `seriesId`。
+
+#### 形态三：照片 / 视频
+
+媒体信息在 **`msgNewContent`**，而 `content` 字段**并不存在**：
+
+```json
+{"msgNewType":6,"textMsgType":2,
+ "msgNewContent":"{\"source\":{\"downloadUrl\":\"https://…/im_pic_….webp?e=…&token=…\",
+                                \"width\":320,\"height\":360,
+                                \"urlDeadline\":1795480824306},
+                   \"trackMd5\":\"…\"}"}
+```
+
+判据：`msgNewType=6` 且 `textMsgType=2`。
+
+#### 由此产生的两个问题
+
+1. **只看 `content` 会把照片当成文字**，QQ 里只剩一句「给你发了一条图片消息」。
+   正确的判定顺序是：先查 `msgNewContent`（照片/视频），再查 `content`（表情包）。
+2. **URL 后缀不可信**：照片地址写作 `.webp`，下载得到的字节实际是 JPEG（`FF D8 FF`）。
+   文件扩展名必须按内容魔数判定：
+
+   | 魔数 | 格式 |
+   |---|---|
+   | `FF D8 FF` | JPEG |
+   | `89 50 4E 47` | PNG |
+   | `47 49 46` | GIF |
+   | `RIFF` + `WEBP` | WebP |
 
 ### 9.6 时间戳
 
@@ -414,7 +462,7 @@ POST /app/loginV3    加密体: 用上一步的公钥加密 AES 密钥
  "timestamp":"YYYY-MM-DD HH:MM:SS"}
 ```
 
-两个容易漏的点：
+两处易被遗漏的字段：
 
 - **`nDeviceId`** 是 App 额外带的字段。固定复用同一个值；每次换新值等于伪装成另一台设备。
 - **`mac` 与 `deviceId` 同值**，且必须是 32 位十六进制。
@@ -487,9 +535,9 @@ sign = lowercase_hex( MD5( url + "##".join("k=v" 按 key 排序) + secret ) )
 
 ---
 
-## 15. 踩坑速查
+## 15. 常见问题速查
 
-| 现象 | 根因 |
+| 现象 | 成因 |
 |---|---|
 | 所有帧都解不开 | `SESSION_KEY` 含非 ASCII，被服务端替换成 U+FFFD |
 | 解析不到任何字段 | 没剥内层 `[cmd][len]` 头 |

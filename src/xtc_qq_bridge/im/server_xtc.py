@@ -440,7 +440,7 @@ class ServerXiaotiancai:
         except Exception:
             pass
 
-    # 表情包 / 图片的消息体里，媒体地址藏在这些键上（实测取到过前两个）
+    # 表情包的媒体地址在这些键上（实测前两个有效）
     _MEDIA_KEYS = ("appPath", "wholeUrl", "watchPath", "url", "imgUrl", "picUrl",
                    "imageUrl", "stickerUrl")
 
@@ -448,10 +448,17 @@ class ServerXiaotiancai:
     def _classify(cls, raw: str) -> tuple[str, str, str]:
         """解析消息体，返回 `(kind, mediaUrl, label)`。
 
-        IM 把表情包/图片也塞在 `type=3` 的文字帧里：外层是标准 8 字段 JSON，
-        `content` 又是一段 JSON 字符串，里面才有 `appPath` / `wholeUrl` 这类地址。
-        早期实现只取 `text`，于是这类消息被当成文字转发，QQ 只收到一段 JSON 或
-        "图片"两个字——这就是"表情包没发出来"的原因。
+        聊天消息（`type=3`）有三种形态，媒体地址的位置**各不相同**：
+
+        * 纯文字    `{"content":"文本", "textMsgType":0, ...}`
+        * 表情包    `{"content":"{\"appPath\":\"http://…\",\"code\":…}", "textMsgType":0}`
+                    —— 媒体在 `content` 这层 JSON 里
+        * 照片/视频 `{"msgNewType":6, "textMsgType":2,
+                     "msgNewContent":"{\"source\":{\"downloadUrl\":\"https://…\"}}"}`
+                    —— 媒体在 `msgNewContent` 里，`content` 字段甚至不存在
+
+        早期实现只看 `content`，因此照片类消息被当成文字转发（QQ 里只剩一句
+        「给你发了一条图片消息」），这是图片收不到的真正原因。
         """
         try:
             obj = json.loads(raw)
@@ -459,26 +466,63 @@ class ServerXiaotiancai:
             return "text", "", ""
         if not isinstance(obj, dict):
             return "text", "", ""
+
+        # ① 照片 / 视频：媒体信息在 msgNewContent（新格式，优先判定）
+        newc = obj.get("msgNewContent")
+        if isinstance(newc, str) and newc.lstrip().startswith("{"):
+            try:
+                nb = json.loads(newc)
+            except Exception:
+                nb = None
+            if isinstance(nb, dict):
+                src = nb.get("source")
+                if isinstance(src, dict):
+                    url = str(src.get("downloadUrl") or src.get("url") or "")
+                    if url.startswith("http"):
+                        # 只有视频才带时长字段；这里统一按图片处理
+                        return "image", url, ""
+                for key in ("downloadUrl", "url", "imgUrl", "picUrl"):
+                    url = str(nb.get(key) or "")
+                    if url.startswith("http"):
+                        return "image", url, ""
+
+        # ② 表情包：媒体在 content 这层 JSON 里
         inner = obj.get("content")
-        if not (isinstance(inner, str) and inner.lstrip().startswith("{")):
-            return "text", "", ""
-        try:
-            body = json.loads(inner)
-        except Exception:
-            return "text", "", ""
-        if not isinstance(body, dict):
-            return "text", "", ""
-        for key in cls._MEDIA_KEYS:
-            url = str(body.get(key) or "")
-            if not url.startswith("http"):
-                continue
-            # 图/表情按有没有"照片"语义区分：表情包带 code/emojiType，照片带尺寸类字段
-            emojiish = any(k in body for k in ("emojiType", "expressionType", "facecode",
-                                               "packageName", "seriesId"))
-            kind = "sticker" if emojiish else "image"
-            label = str(body.get("code") or body.get("desc") or "") or "表情"
-            return kind, url, label
+        if isinstance(inner, str) and inner.lstrip().startswith("{"):
+            try:
+                body = json.loads(inner)
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                for key in cls._MEDIA_KEYS:
+                    url = str(body.get(key) or "")
+                    if not url.startswith("http"):
+                        continue
+                    emojiish = any(k in body for k in
+                                   ("emojiType", "expressionType", "facecode",
+                                    "packageName", "seriesId"))
+                    kind = "sticker" if emojiish else "image"
+                    label = str(body.get("code") or body.get("desc") or "") or "表情"
+                    return kind, url, label
+
         return "text", "", ""
+
+    @staticmethod
+    def _sniff_ext(data: bytes) -> str:
+        """按**内容魔数**判定图片格式。
+
+        不能信 URL 后缀：实测照片地址写的是 `.webp`，下载下来的字节却是 JPEG
+        （`ff d8 ff`）。按后缀命名会让下游解码器选错分支。
+        """
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:3] == b"GIF":
+            return ".gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return ".webp"
+        return ".bin"
 
     def _fetch_media(self, url: str) -> tuple[bytes, str]:
         """下载媒体（带本地缓存）。失败返回 `(b"", "")`，由调用方走重试。"""
@@ -487,24 +531,26 @@ class ServerXiaotiancai:
 
         from .. import runtime_paths as _rp
 
-        ext = ".gif" if url.lower().endswith(".gif") else ".png"
-        name = _hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ext
+        # 缓存按 URL 哈希命名、不含扩展名：扩展名由内容决定，等下载完再补
+        name = _hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ".bin"
         cache = _rp.data_path("im_media") / name
         try:
             if cache.exists() and cache.stat().st_size > 0:
-                return cache.read_bytes(), ext
+                data = cache.read_bytes()
+                return data, self._sniff_ext(data)
         except OSError:
             pass
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            with _req.urlopen(url, timeout=15) as resp:
+            req = _req.Request(url, headers={"User-Agent": "okhttp/3.12.0"})
+            with _req.urlopen(req, timeout=20) as resp:
                 data = resp.read()
             if not data:
                 return b"", ""
-            tmp = cache.with_suffix(cache.suffix + ".part")
+            tmp = cache.with_suffix(".part")
             tmp.write_bytes(data)
             tmp.replace(cache)
-            return data, ext
+            return data, self._sniff_ext(data)
         except Exception as exc:  # noqa: BLE001 网络抖动交给桥接的重试队列
             self.log("warning", f"[IM] 下载媒体失败：{type(exc).__name__}")
             return b"", ""
