@@ -675,11 +675,15 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                             # IM 模式：媒体直接从协议里拿到（或下载），不需要读屏取图
                             provider = getattr(self.xtc, "latest_sticker", None)
                             if provider is not None:
+                                import time as _t
+                                _tm = _t.monotonic()
                                 try:
                                     sticker = provider()
                                 except Exception as exc:  # noqa: BLE001
                                     self._log("warning", f"[媒体] 取图失败: {exc}")
                                     sticker = None
+                                self._log("info", f"[媒体] 取图用时 {_t.monotonic() - _tm:.2f}s"
+                                                  f"（{'有图' if sticker else '无图'}）")
                             else:
                                 got_lock = self._op_lock.acquire(
                                     timeout=self._media_lock_timeout)

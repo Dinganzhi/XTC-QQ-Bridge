@@ -339,6 +339,8 @@ class ForwardingMixin:
           * 失败的目标进补投计划：只补它们，退避 + 有上限，不再"每 5 秒一轮"。
         """
         disp = display_label or label
+        import time as _t
+        _t0 = _t.monotonic()
         if self._forward_suppressed(contact, text, label):
             self._log("debug", f"[转发] 这条正在补投或刚转发过，跳过: {text[:24]!r}")
             return
@@ -353,6 +355,7 @@ class ForwardingMixin:
         if ok:
             self._mark_forwarded(contact, text, label, disp, media_hash=media_hash,
                                  sticker=sticker)
+            self._log("info", f"[耗时] 转发成功用时 {_t.monotonic() - _t0:.2f}s")
             return
         if sent:
             # 部分成功：**立刻**记历史（否则标签一变就会被当成新消息，重发一遍私聊）

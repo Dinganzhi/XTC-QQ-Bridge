@@ -534,26 +534,40 @@ class ServerXiaotiancai:
         # 缓存按 URL 哈希命名、不含扩展名：扩展名由内容决定，等下载完再补
         name = _hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ".bin"
         cache = _rp.data_path("im_media") / name
+        _t0 = time.monotonic()
         try:
             if cache.exists() and cache.stat().st_size > 0:
                 data = cache.read_bytes()
                 return data, self._sniff_ext(data)
         except OSError:
             pass
-        try:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            req = _req.Request(url, headers={"User-Agent": "okhttp/3.12.0"})
-            with _req.urlopen(req, timeout=20) as resp:
-                data = resp.read()
-            if not data:
-                return b"", ""
-            tmp = cache.with_suffix(".part")
-            tmp.write_bytes(data)
-            tmp.replace(cache)
-            return data, self._sniff_ext(data)
-        except Exception as exc:  # noqa: BLE001 网络抖动交给桥接的重试队列
-            self.log("warning", f"[IM] 下载媒体失败：{type(exc).__name__}")
-            return b"", ""
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        req = _req.Request(url, headers={"User-Agent": "okhttp/3.12.0"})
+        # 手表刚发出图片时，媒体可能还没上传完，URL 在前几秒会返回 404。
+        # 这里先就地快速重试：命中则总延迟约 1~3 秒；若直接交给桥接的重试队列，
+        # 要等 5/10/20/40 秒的指数退避，用户体感就是"慢了半分钟"。
+        last_err = ""
+        for attempt in range(3):
+            try:
+                with _req.urlopen(req, timeout=20) as resp:
+                    data = resp.read()
+                if not data:
+                    last_err = "空响应"
+                    continue
+                tmp = cache.with_suffix(".part")
+                tmp.write_bytes(data)
+                tmp.replace(cache)
+                extra = "" if attempt == 0 else f"（第 {attempt + 1} 次尝试）"
+                self.log("info", f"[IM] 媒体下载 {len(data) / 1024:.0f}KB "
+                                 f"耗时 {time.monotonic() - _t0:.2f}s{extra}")
+                return data, self._sniff_ext(data)
+            except Exception as exc:  # noqa: BLE001
+                code = getattr(exc, "code", None)
+                last_err = type(exc).__name__ + (f"/HTTP {code}" if code else "")
+                if attempt < 2:
+                    time.sleep(1.0)
+        self.log("warning", f"[IM] 下载媒体失败（{last_err}），交给重试队列")
+        return b"", ""
 
     def latest_sticker(self, *args, **kwargs):
         """把当前这条消息的媒体交给桥接（IM 模式不需要读屏取图）。"""
