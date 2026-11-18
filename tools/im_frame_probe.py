@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """握手后试探后续帧格式与 AES 加密方式。
 

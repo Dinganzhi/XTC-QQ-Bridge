@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """IM 通道账号一键工具：签票 / 注册 / 登录 / 自检 / 写回凭据。
 

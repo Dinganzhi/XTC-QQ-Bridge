@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # nuitka-project: --windows-console-mode=force
 """小天才 <-> QQ 桥接 —— 仓库入口（薄封装）。

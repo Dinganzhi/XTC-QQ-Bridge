@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """测试 SSO 各登录版本，找出哪个接口返回 ticket。
 

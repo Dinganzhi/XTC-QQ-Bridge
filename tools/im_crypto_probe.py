@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """判定 IM 内层加密：响应用不用我们上报的会话密钥。
 

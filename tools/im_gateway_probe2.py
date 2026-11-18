@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """直接连 IM 网关，探命令 22（取服务端 RSA 公钥）。
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """IM 模式：不依赖 ADB，直接走小天才 IM 服务器收发消息。
 
 `Xiaotiancai`（ADB + 界面自动化）的替代实现，对外暴露同名方法与状态常量，

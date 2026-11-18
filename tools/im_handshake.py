@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """IM 网关自建握手：自己生成 AES 密钥并上报。
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """TLS 透明代理：解密并记录 IM 通道的原始字节。
 

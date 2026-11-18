@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """小天才 IM 会话：自建 TLS 握手 + 按配置构造登录帧。
 
 背景见 docs/imoo-api.md 第 4.3 节。要点：
