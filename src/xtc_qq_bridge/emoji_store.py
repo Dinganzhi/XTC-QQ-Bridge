@@ -126,6 +126,18 @@ class EmojiStore:
         """内部存储路径需要走 `su`；外部存储/其它路径仍用普通 shell。"""
         return path.startswith("/data/")
 
+    @staticmethod
+    def _shell_path(path: str) -> str:
+        """把路径安全地拼进 adb shell 命令（与 `_listing` 用同一份引号处理）。
+
+        为什么必须 quote（缺陷 A7）：这里的路径来自配置（如 `xiaotiancai.package`）
+        或设备上列出来的文件名，可能含空格/分号/`$( )` 等 shell 元字符 —— 直接内插
+        会把命令拆坏（读不到文件），甚至执行注入内容。`_listing` / `_read_head` /
+        `_find_desc_cmd` 拼的是同一类 `find/head` 命令，引号处理必须统一，否则漏掉
+        任何一处就留下一个可被路径内容影响的命令。
+        """
+        return shlex.quote(path or "")
+
     def name_is_unique(self, name: str) -> bool:
         """这个名字在本地表情包里是不是只有一套包有（有就无需像素核对）。"""
         hits = self._pack_hits(name)
@@ -268,9 +280,9 @@ class EmojiStore:
         try:
             # where 来自配置（如 xiaotiancai.package），可能含空格/分号/$( )：
             # 直接内插会把命令拆坏，甚至执行注入内容。这里 quote 后再拼，
-            # 与 root_access.list_files 的做法保持一致。
+            # 与 root_access.list_files 的做法保持一致（统一走 _shell_path）。
             listing = self.adb.shell(
-                f"date +%s; find {shlex.quote(where)} -type f "
+                f"date +%s; find {self._shell_path(where)} -type f "
                 f"-exec stat -c '%Y %s %n' {{}} \\; 2>/dev/null", timeout=60)
         except Exception as e:  # noqa: BLE001 无法取得就走别的路
             self._log("debug", f"列目录失败 {where}: {e}")
@@ -301,7 +313,10 @@ class EmojiStore:
                 return b""
             return self.root_access.read_head(path, n)
         try:
-            b64 = self.adb.shell(f"head -c {n} {path} | base64 -w0", timeout=30)
+            # path 同样可能来自配置/设备文件名，必须与 _listing 用同一套引号处理，
+            # 否则含空格/元字符的路径会把命令拆坏甚至执行注入内容（缺陷 A7）。
+            b64 = self.adb.shell(
+                f"head -c {n} {self._shell_path(path)} | base64 -w0", timeout=30)
         except Exception as e:  # noqa: BLE001 无法读取就当没有
             self._log("debug", f"读文件头失败 {path}: {e}")
             return b""
@@ -554,7 +569,7 @@ class EmojiStore:
         parts: list[str] = []
         for base in self.roots:
             target = f"{base}/{EMOJI_SUBDIR}"
-            cmd = f"find {shlex.quote(target)} -name desc.json 2>/dev/null"
+            cmd = f"find {self._shell_path(target)} -name desc.json 2>/dev/null"
             if self._needs_root(target):
                 if self.root_access is None or not self.root_access.available():
                     continue

@@ -239,6 +239,10 @@ class Main(star.Star):
             text = (event.message_str or "").strip()
             if not text or text.startswith("/"):
                 return  # 跳过命令本身（命令走 on_xtc_command）
+            if self._is_astrbot_command(event, text):
+                # AstrBot 唤醒阶段已把 "/help" 之类剥成 "help"（上面的 "/" 前缀因此
+                # 拦不住），这里按 AstrBot 的真实语义识别命令，别把命令当聊天转发。
+                return
             if self._looks_like_cmd(text):
                 return  # @机器人/无斜杠形式的命令文本（如"小天才 命令模式"）不转发
             sender_name = event.get_sender_name() or str(event.get_sender_id())
@@ -269,10 +273,108 @@ class Main(star.Star):
         except Exception:  # noqa: BLE001
             return False
 
+    def _is_astrbot_command(self, event: AstrMessageEvent, text: str) -> bool:
+        """判断这条 QQ 文本是否会被 AstrBot 当作**命令**处理（而不是普通聊天）。
+
+        为什么需要它：AstrBot 的唤醒阶段（`astrbot/core/pipeline/waking_check/
+        stage.py`）会把唤醒前缀从 `event.message_str` 里剥掉（"/help" -> "help"），
+        所以 `text.startswith("/")` 对唤醒后的文本**恒为假**（死代码），而
+        `_looks_like_cmd` 只认"小天才"开头的命令 —— 两者都不拦时，命令模式关闭
+        后 `help` 会被当成普通聊天转发到孩子的智能手表（手表侧还会再执行一遍）。
+
+        判定方式（不改 sys.path、不依赖 AstrBot 私有模块）：
+        1. 平台原始消息 `event.message_obj.message_str` 若仍以 "/" 开头：唤醒阶段
+           只改 `event.message_str`，`message_obj` 保留适配器收到的原文，这是最直接
+           的证据（也是"命令文本 vs 普通聊天"误伤最小的一种）；
+        2. 唤醒阶段会把**本次过滤器全部通过的 handler** 写进事件的 extras
+           （`activated_handlers`）。其中只要有一个 handler 带指令过滤器
+           （`CommandFilter`），就说明文本确实命中了某个命令 —— 内置命令
+           （help/reset/...）、第三方插件命令、别名和命令组都能覆盖。
+
+        注意不能把"以 / 开头"当成唯一判据：私聊默认无需唤醒词，直接发 `help`
+        也会命中内置 help 命令（此时原文里根本没有 "/"）。
+        """
+        original = ""
+        try:
+            original = str(getattr(event.message_obj, "message_str", "") or "").strip()
+        except Exception:  # noqa: BLE001 个别适配器/影子事件没有 message_obj
+            original = ""
+        if original.startswith("/"):
+            return True
+        woken = getattr(event, "is_at_or_wake_command", None)
+        if woken is False:
+            # 明确未被唤醒（群聊里没 @ 机器人、也没有唤醒词的普通消息）：标准指令
+            # 过滤器（CommandFilter 要求 is_at_or_wake_command）不会命中，此时即使
+            # 正文碰巧以命令词开头也只是普通聊天，必须照常转发。
+            # 注意只有**明确的 False** 才提前放行：字段不存在（老版本/影子事件）时
+            # 不能断定"没唤醒"，继续往下用命令名兜底。
+            return False
+        try:
+            activated = event.get_extra("activated_handlers") or []
+        except Exception:  # noqa: BLE001 老版本事件/测试影子事件没有 extras
+            activated = []
+        for handler in activated:
+            for handler_filter in getattr(handler, "event_filters", None) or ():
+                # CommandFilter 的可移植特征：带 command_name，或能给出完整命令名。
+                if getattr(handler_filter, "command_name", None) or callable(
+                        getattr(handler_filter, "get_complete_command_names", None)):
+                    return True
+        # 兜底：上述 extras 不可用时（老版本 AstrBot / 影子事件），退而枚举插件
+        # 元数据里登记的命令名；拿不到任何命令名就返回 False（宁可放行聊天，
+        # 也不武断拦截 —— 真正的命令文本还有上面的 "/" 原文与 _looks_like_cmd 兜着）。
+        names = self._registered_command_names()
+        if names:
+            parts = (text or "").strip().split()
+            if parts and parts[0] in names:
+                return True
+        return False
+
+    def _registered_command_names(self) -> set[str]:
+        """从 AstrBot 插件元数据里尽力收集已注册命令的**首词**（失败就返回空集）。
+
+        StarMetadata 的命令名在不同 AstrBot 版本里字段不一样（4.27.x 只有
+        star_handler_full_names，新版本可能提供 commands），所以这里按鸭子类型
+        读取 `commands` / `command_names`，条目可能是字符串、dict 或对象。
+        """
+        names: set[str] = set()
+        context = getattr(self, "context", None)
+        getter = getattr(context, "get_all_stars", None)
+        if not callable(getter):
+            return names
+        try:
+            stars = getter() or []
+        except Exception:  # noqa: BLE001 宿主未就绪时不要影响消息处理
+            return names
+        for star in stars:
+            raw = getattr(star, "commands", None)
+            if raw is None:
+                raw = getattr(star, "command_names", None)
+            for item in raw or ():
+                if isinstance(item, str):
+                    name = item
+                elif isinstance(item, dict):
+                    name = (item.get("name") or item.get("command_name")
+                            or item.get("command") or "")
+                else:
+                    name = (getattr(item, "name", None)
+                            or getattr(item, "command_name", None)
+                            or getattr(item, "command", None) or "")
+                name = str(name).strip().lstrip("/")
+                if name:
+                    names.add(name.split()[0])
+        return names
+
     @staticmethod
     def _looks_like_cmd(text: str) -> bool:
         """判断 QQ 文本是否形如对小天才机器人的命令调用（含去斜杠 / @提及 形式），
-        用于防止命令文本在命令模式关闭时被当作普通消息转发。"""
+        用于防止命令文本在命令模式关闭时被当作普通消息转发。
+
+        **智能手表那一侧真的有命令**（`/小天才 历史消息`、`查看图片`、`搜索`、
+        `在线人数`、`提醒`、`关于`，实现在 `bridge/commands.py`）：这些文本一旦被
+        转发进手表聊天，桥接轮询时还会把它当命令再执行一遍。所以本方法必须继续
+        拦住这 6 个子命令（以及插件自身的 `小天才` / `小天才登录`），不能因为
+        命令模式关闭就放行 —— 这是与 `_is_astrbot_command`（AstrBot 命令）并列的
+        另一类命令文本，两者职责不同，不能互相替代。"""
         t = text.strip()
         while t.startswith("/"):
             t = t[1:].lstrip()

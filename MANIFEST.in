@@ -1,0 +1,31 @@
+# =============================================================================
+#  sdist 清单：保证 wheel 能从 sdist 构建出**带运行时资源**的包。
+#
+#  背景：config.example.yaml / assets/keyboardservice-debug.apk /
+#  astrbot_plugin_xtc_bridge/ 都在仓库根，不是 src 布局里的包目录，setuptools
+#  默认不会把它们放进 sdist；而 pyproject 里的 [tool.setuptools.data-files]
+#  在从 sdist 构建 wheel 时需要这些源文件存在，缺了就会静默丢失（wheel 只剩 .py）。
+#  这里显式把它们列进 sdist，`pip install xtc-qq-bridge`（sdist -> wheel）才完整。
+# =============================================================================
+
+# 配置模板（首次运行生成 config.yaml 用）
+include config.example.yaml
+
+# 项目元信息文件（README/LICENSE 也会被 setuptools 默认包含，这里显式列出以免遗漏）
+include README.md
+include LICENSE
+include requirements.txt
+include requirements-build.txt
+
+# 捆绑的 ADBKeyBoard APK 及其说明
+recursive-include assets *
+
+# AstrBot 插件源码（--install-plugin 复制用）
+recursive-include astrbot_plugin_xtc_bridge *
+
+# 不把本地生成物/缓存打进 sdist
+global-exclude __pycache__ *.py[cod] .DS_Store
+exclude config.yaml
+prune data
+prune logs
+prune .venv

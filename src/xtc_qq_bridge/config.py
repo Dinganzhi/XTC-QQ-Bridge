@@ -42,18 +42,47 @@ def _as_mapping(obj, path: str) -> dict:
         "（常见原因：开头多了 `- ` 列表符号，或整份文件只是一行文本）。")
 
 
+# 已知的顶层配置段：每一项下游都会当映射用（`cfg.get(段) -> .get(...)`）。
+# 只校验顶层还不够 —— 用户很容易写成简写 `logging: INFO`，它能通过顶层校验，
+# 随后在 cli/main.py 的 `_log_cfg.get(...)` 处抛裸
+# `AttributeError: 'str' object has no attribute 'get'`，完全看不出是配置写错了。
+_KNOWN_SECTIONS = (
+    "adb", "xiaotiancai", "target", "forward", "webhook", "msg_log",
+    "logging", "root", "performance", "bridge", "media", "ui", "emoji",
+)
+
+
+def _check_sections(cfg: dict, path: str) -> dict:
+    """校验已知顶层段必须是映射（`段:` 下面缩进的键值对），否则给出清晰报错。"""
+    for key in _KNOWN_SECTIONS:
+        if key not in cfg:
+            continue
+        val = cfg[key]
+        if val is None or isinstance(val, dict):
+            continue
+        raise SystemExit(
+            f"配置文件格式不对：{path} 的 `{key}:` 段必须是「键: 值」的映射，"
+            f"当前是 {type(val).__name__}（{val!r}）。"
+            f"常见原因：把 `{key}:` 写成了标量简写，请对照 config.example.yaml "
+            "改成缩进的键值对（例如 logging: 下面另起一行写 level: INFO）。")
+    return cfg
+
+
 def load_config(path: str) -> dict:
-    text = read_text_auto(path)
     try:
-        import yaml
-        return _as_mapping(yaml.safe_load(text), path)
-    except ImportError:
-        try:  # JSON 是 YAML 子集，无 pyyaml 时可用 JSON 格式配置
-            return _as_mapping(json.loads(text), path)
-        except SystemExit:
-            raise
-        except Exception:
-            raise SystemExit("无法解析配置：请先 pip install pyyaml（或将 config.yaml 写成 JSON 格式）")
+        # 读文件也放进 try：BOM + 非 UTF-8 字节时旧代码在 try 之外解码，
+        # 用户只会看到一堆 UnicodeDecodeError 栈，不知道是配置文件编码的问题。
+        text = read_text_auto(path)
+        try:
+            import yaml
+        except ImportError:
+            try:  # JSON 是 YAML 子集，无 pyyaml 时可用 JSON 格式配置
+                return _check_sections(_as_mapping(json.loads(text), path), path)
+            except SystemExit:
+                raise
+            except Exception:
+                raise SystemExit("无法解析配置：请先 pip install pyyaml（或将 config.yaml 写成 JSON 格式）")
+        return _check_sections(_as_mapping(yaml.safe_load(text), path), path)
     except SystemExit:
         raise
     except Exception as e:

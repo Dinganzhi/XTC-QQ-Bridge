@@ -372,6 +372,15 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
             self._job_thread.join(timeout=5)
         if self._fwd_retry_thread:
             self._fwd_retry_thread.join(timeout=5)
+        # 显式落盘：去重表/回声表/消息库都改成了"脏标记 + 节流刷盘"，
+        # 正常退出时靠 atexit 也能刷，但 SIGTERM/stop() 路径不保证 atexit 一定执行
+        # （例如被 systemd 强制终止）。这里主动 flush，避免丢掉最后一秒的判定记录
+        # 导致重启后把已转发过的消息再转一遍。三个 flush() 都是幂等的。
+        for store in (self.echo, self.history, self.msgs):
+            try:
+                store.flush()
+            except Exception as e:  # noqa: BLE001 落盘失败不应让退出流程失败
+                self._log("warning", f"[退出] 状态落盘失败: {e}")
 
     def _next_job(self):
         """取下一个任务：**发送优先**（返回 (来源队列, 任务)）。
@@ -671,6 +680,10 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                         # 发送会点输入框/打字/写"发送成功"提示，界面一动坐标就废了。
                         # 传消息自己的时间：检测可能滞后几分钟（刚重启/刚唤醒时），
                         # 缓存文件是"消息显示时"写进去的，只有按消息时间才找得回原图。
+                        # mhash 必须先初始化：非媒体消息不会进入下面的取图分支，
+                        # 而转发调用要无条件读它（此前漏了这行，纯文字消息会抛
+                        # UnboundLocalError: cannot access local variable 'mhash'）。
+                        mhash = ""
                         if is_media:
                             # IM 模式：媒体直接从协议里拿到（或下载），不需要读屏取图
                             provider = getattr(self.xtc, "latest_sticker", None)
@@ -721,9 +734,15 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                             # 以前这里传的是原始标签（如 "21:55"），而补发用的是绝对标签
                             # （"09-29 21:55"）—— 两条路径算出的去重键不同，于是同一条消息
                             # 会被"补发 + 实时"各转发一次（用户报的"2 转发了两遍"就是这么来的）。
+                            # media_hash 必须一路带下去：它是"同一张图"唯一稳定的身份。
+                            # 此前这里把它丢掉了，于是 (a) 历史库写不进 (文本, 哈希) 身份，
+                            # 同一张图每次被读到都可能再发一遍；(b) 短期去重键退化成
+                            # ("xtc", 联系人, "图片", "") —— 所有照片共用，120 秒内第二张
+                            # 不同照片会被判成重复而静默丢弃（用户报的"第二张照片收不到"）。
                             self._queue_forward(contact, text, label, sticker=sticker, kind=kind,
                                                 display_label=self._display_time_label(contact,
-                                                                                       label))
+                                                                                       label),
+                                                media_hash=mhash)
                 # 媒体（图片/表情）当时没就绪的那些：到点后重试取图并补发（不依赖"还是不是最新"）
                 if self._pending_media:
                     try:
@@ -932,9 +951,17 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                                 continue
                             stop_all = True
                             break
-                        sticker = self._capture_sticker(
-                            root, text, near_epoch=self._label_epoch(disp_lbl or own_lbl),
-                            match_label=ident or disp_lbl, kind=kind)
+                        # 与实时路径同一纪律：取图必须在界面锁内完成。
+                        # QQ->手表 的发送线程会点输入框、打字、写"发送成功"提示，
+                        # 界面一动，抠到的就是错位图或空白区（补发路径此前漏了这把锁）。
+                        got_lock = self._op_lock.acquire(timeout=self._media_lock_timeout)
+                        try:
+                            sticker = self._capture_sticker(
+                                root, text, near_epoch=self._label_epoch(disp_lbl or own_lbl),
+                                match_label=ident or disp_lbl, kind=kind)
+                        finally:
+                            if got_lock:
+                                self._op_lock.release()
                         if sticker is not None:
                             mhash0 = self._media_hash(sticker)
                             if mhash0 and self.history.seen("xtc", contact or "",
@@ -983,11 +1010,22 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                     self._log("debug", f"[补发] 无法读取消息列表可视区，不执行向上滚动: {e}")
                     break
                 if vb is None:
-                    # 纯协议实现（IM 模式）没有可滚动的聊天视图：补发只走一次
-                    # "已有气泡"的快照，不向上翻页。这里直接结束，避免拿 None 去下标。
+                    # chat_view_bounds 在"认不出消息列表容器"时会返回 None
+                    # （见 xiaotiancai/chat.py 的 return None）；纯协议实现（IM 模式）
+                    # 根本没有可滚动的聊天视图，也走这里。此前直接下标 vb[3] 会抛
+                    # TypeError，被上层吞成「补发流程异常」，本屏已收集的 pending 全部
+                    # 作废、每轮轮询刷一条告警，--catchup 直接崩。
+                    # 取不到可视区就不翻页，按当前这一屏的结果继续。
+                    self._log("debug", "[补发] 未识别到消息列表可视区，停止向上翻页")
                     break
                 step = int((vb[3] - vb[1]) * 0.7) or 200
-                if not self.xtc.scroll_chat_by(vb, step):
+                got_lock = self._op_lock.acquire(timeout=self._media_lock_timeout)
+                try:
+                    scrolled = self.xtc.scroll_chat_by(vb, step)
+                finally:
+                    if got_lock:
+                        self._op_lock.release()
+                if not scrolled:
                     break
                 steps.append(step)
                 fresh_root = self._fresh_chat_root()
@@ -1009,7 +1047,12 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
                 except Exception:  # noqa: BLE001
                     vb2 = None
                 if vb2:
-                    self.xtc.scroll_chat_by(vb2, -step)
+                    got_lock = self._op_lock.acquire(timeout=self._media_lock_timeout)
+                    try:
+                        self.xtc.scroll_chat_by(vb2, -step)
+                    finally:
+                        if got_lock:
+                            self._op_lock.release()
         if steps:
             self._log("debug", f"[补发] 为了找更早的消息向上滚动了 {len(steps)} 屏（已滚回底部）")
 
@@ -1092,7 +1135,9 @@ class MessageBridge(MediaMixin, ForwardingMixin, ReverseMixin, LoginMixin, Histo
         kind：`sticker`/`image`/`text`（由**气泡本身**判定）。手打的、内容恰好以"表情"
         开头的文本必须传 text，否则会被当成表情包发出一条没有图的"空气消息"。
         """
-        self.dedup.mark(("xtc", contact or "", text, label or ""))
+        # 去重键的身份部分：优先时间标签，其次是内容哈希。
+        # 媒体占位文本在不同照片之间相同，只用标签会让无标签照片互相判重。
+        self.dedup.mark(("xtc", contact or "", text, label or media_hash or ""))
         # 注意：内容级护栏（_recent_fwd_seen）**不在这里**打点 —— 打点必须发生在
         # "真的要发出去"那一刻（见 _do_forward_job），否则刚入队的这条会被自己挡掉。
         self._job_queue.put(("forward", contact, text, label or "", sticker,

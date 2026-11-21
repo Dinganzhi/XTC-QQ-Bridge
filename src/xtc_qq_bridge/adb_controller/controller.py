@@ -419,12 +419,17 @@ class ADBController:
         """
         if self._sdk is None:
             raw = self.getprop("ro.build.version.sdk")
-            try:
-                self._sdk = int(raw) if raw.strip() else 0
-            except ValueError:
-                self._sdk = 0
+            # **先判断是否读到，再决定要不要写缓存**（缺陷 A6）：旧实现先写
+            # `self._sdk = 0` 再 `return 0`，于是一次 getprop 抖动就把 0 永久缓存下来。
+            # 0 < 29 会让剪贴板注入通道永久关闭 —— 设备只抖动几秒，中文注入却从此
+            # 只剩 ASCII 的 `input text`，重启才能恢复，与"查询失败不缓存"的文档矛盾。
             if not raw.strip():
                 return 0                    # 没读到：本次按 0 处理，但不缓存
+            try:
+                self._sdk = int(raw)
+            except ValueError:
+                # 读到了但格式异常：同样不缓存，下一次重新探测（避免一次坏值锁死）
+                return 0
         return self._sdk
 
     def invalidate_probes(self) -> None:
@@ -659,7 +664,11 @@ class ADBController:
         """
         try:
             now = time.monotonic()
-            if now - float(self._throttle.get(key, 0.0)) < interval:
+            # 初值必须是 -inf 而不是 0.0（缺陷 A8）：time.monotonic() 在刚启动的机器
+            # （容器/模拟器/裸机短开机）上本身就接近 0，用 0.0 当"上次打印时间"会让
+            # `now - 0.0 < interval` 成立，于是每个键的第一条日志被吞掉 —— 恰恰是
+            # 最该看到的那条（Bridge 侧同类问题见 bridge/core.py 里以 -inf 初始化的冷却时间戳）。
+            if now - float(self._throttle.get(key, float("-inf"))) < interval:
                 return
             self._throttle[key] = now
             getattr(self.logger, level)(msg)
@@ -795,7 +804,7 @@ class ADBController:
         self.invalidate_focus()
 
     def clear_text_field(self) -> None:
-        """清空当前输入框：优先 ADBKeyBoard 的 ADB_CLEAR_TEXT，其次全选+删除。"""
+        """清空当前输入框：优先 ADBKeyBoard 的 ADB_CLEAR_TEXT，其次全选+删除，最后逐字退格。"""
         if self._adbkeyboard_ready() and self._adbkeyboard_active():
             try:
                 self.shell("am broadcast -a ADB_CLEAR_TEXT")
@@ -803,11 +812,29 @@ class ADBController:
                 return
             except AdbError:
                 pass
+        # 全选是否成功决定"一次 DEL 删完"还是"逐字退格"：
+        # `input keycombination 113 29`（CTRL+A）在部分 Android 版本/裁剪系统上不存在
+        # 或直接失败（抛 AdbError）。旧实现把全选和退格放在同一个 try 里，全选一抛异常
+        # 就跳到 except，退格被整体跳过 —— 输入框保留旧文本，随后 fill_login_form 把
+        # 新文本追加在后面（密码变成"旧密码新密码"，登录必然失败）（缺陷 A5）。
+        # 现在全选失败也继续走退格清空，尽量把输入框清干净。
+        selected = False
         try:
             self.shell("input keycombination 113 29")  # CTRL+A
             time.sleep(0.2)
-            self.keyevent(67)  # DEL
-            time.sleep(0.2)
+            selected = True
+        except AdbError:
+            self.logger.debug("全选输入框内容失败（keycombination 不支持？），改用逐字退格清空")
+        try:
+            if selected:
+                self.keyevent(67)  # DEL：与全选配合一次删完
+                time.sleep(0.2)
+            else:
+                # 40 次与 xiaotiancai.ensure_input_clean() 的清空次数一致，
+                # 足以覆盖账号/密码/验证码这类常规长度的输入。
+                for _ in range(40):
+                    self.keyevent(67)  # 逐字退格
+                time.sleep(0.2)
         except AdbError:
             pass
 

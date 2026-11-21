@@ -83,6 +83,28 @@ def test_log_path_resolution() -> None:
     check("账号目录下的 data_path 也在其中",
           rp.data_path("x.json").parent == scoped, str(rp.data_path("x.json")))
     rp.set_account("")
+    # data_path 现在落在**真正可写**的数据目录（data_dir()）之下，而不再无条件等于首选
+    # 目录 DATA_DIR：DATA_DIR 单独不可写（root 所有、带外来 ACL，或就是一个普通文件）时
+    # 必须回落到用户数据目录，否则历史库/判重库永远写不进去（重启后重复转发）。
+    dd = rp.data_dir()
+    check("data_path 落在 data_dir() 之下",
+          rp.data_path("msg_log.json") == dd / "msg_log.json",
+          f"{rp.data_path('msg_log.json')} vs {dd}")
+    check("data_dir() 可写", rp._writable(dd), str(dd))
+    # 回落行为：把首选目录模拟成不可写，data_dir() 必须换到用户数据目录下的 data/。
+    old_writable, old_cache = rp._writable, rp._DATA_DIR_CACHE
+    old_reason = rp.DATA_DIR_REASON
+    try:
+        rp._DATA_DIR_CACHE = None
+        rp._writable = lambda d: False
+        fb = rp.data_dir()
+        check("首选数据目录不可写时回落到用户数据目录",
+              fb.parent == rp._user_data_dir(), str(fb))
+        check("回落路径不再指向首选数据目录", fb != rp.DATA_DIR, str(fb))
+    finally:
+        rp._writable = old_writable
+        rp._DATA_DIR_CACHE = old_cache
+        rp.DATA_DIR_REASON = old_reason
 
 
 def test_resource_lookup() -> None:

@@ -3,7 +3,7 @@
 #  Build machine-code single-file executables with Nuitka (Linux / macOS)
 #
 #  用法：
-#    bash packaging/nuitka/build_linux.sh                     # onefile，产物在 dist/
+#    bash packaging/nuitka/build_linux.sh                     # onefile，产物在仓库根 dist/
 #    bash packaging/nuitka/build_linux.sh --mode standalone   # 目录模式（启动更快）
 #    bash packaging/nuitka/build_linux.sh --check-env         # 只检查 Python/pyyaml/Nuitka/gcc
 #    bash packaging/nuitka/build_linux.sh --dry-run           # 只打印 nuitka 命令行
@@ -13,8 +13,12 @@
 # =============================================================================
 set -u
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SRC" || exit 1
+# 本脚本位于仓库的 packaging/nuitka/ 下，**上两级才是仓库根**：
+# build.py、.venv、dist/ 以及下面所有相对路径都以仓库根为基准。
+# 旧实现只 cd 到 packaging/nuitka/，再拼 "packaging/nuitka/build.py"，
+# 实际会去找 packaging/nuitka/packaging/nuitka/build.py（必然失败）。
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT" || exit 1
 
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
@@ -36,7 +40,7 @@ echo "============================================"
 echo "  Nuitka 编译（Linux / macOS）"
 echo "============================================"
 echo "[1/2] 检查编译环境 ..."
-if ! "$PY" packaging/nuitka/build.py --check-env; then
+if ! "$PY" "$REPO_ROOT/packaging/nuitka/build.py" --check-env; then
     echo
     echo "[提示] 需要：python3 -m pip install -U nuitka pyyaml"
     echo "       Linux 还要装 gcc/g++/python3-dev；macOS 需要 xcode-select --install"
@@ -45,12 +49,12 @@ fi
 
 echo
 echo "[2/2] 开始编译 ..."
-"$PY" packaging/nuitka/build.py "$@"
+"$PY" "$REPO_ROOT/packaging/nuitka/build.py" "$@"
 rc=$?
 echo
 if [ "$rc" != "0" ]; then
     echo "[退出] 编译失败，返回码 $rc"
 else
-    echo "[退出] 编译完成，产物在 dist/"
+    echo "[退出] 编译完成，产物在仓库根 dist/（$REPO_ROOT/dist/）"
 fi
 exit "$rc"

@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 import argparse
 import shutil
@@ -121,11 +122,18 @@ def verify_bundle() -> int:
 
     print("---- 可写目录 ----")
     runtime_paths.ensure_dirs()
+    # 必须探 data_dir() 而不是 DATA_DIR：DATA_DIR 只是**首选**位置，真正落盘的位置
+    # 可能是回落后的用户数据目录（data/ 被 root 占用、带外来 ACL、或本身是个文件时）。
+    # 探首选目录会在这种环境里报 FAIL，而实际上历史/判重完全正常，属于误诊。
+    real_dir = runtime_paths.data_dir()
     try:
-        probe = runtime_paths.DATA_DIR / ".verify_probe"
+        probe = real_dir / ".verify_probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        print(f"  数据目录可写 : OK  {runtime_paths.DATA_DIR}")
+        print(f"  数据目录可写 : OK  {real_dir}")
+        if real_dir != runtime_paths.DATA_DIR:
+            print(f"  数据目录回落 : 首选 {runtime_paths.DATA_DIR} 不可写，"
+                  f"已改用户数据目录（{runtime_paths.DATA_DIR_REASON}）")
     except OSError as e:
         ok = False
         print(f"  数据目录可写 : FAIL {e}")
@@ -178,6 +186,48 @@ def _apply_account_scope(cfg: dict) -> None:
 
     runtime_paths.set_account(_hashlib.sha256(key.encode("utf-8")).hexdigest()[:16])
     runtime_paths.ensure_dirs()
+
+
+def _load_dump_ui():
+    """加载 `tools/dump_ui.py`（供 `--debug dump-ui` 使用），失败时返回 None。
+
+    为什么不能直接 `from tools import dump_ui`：仓库根 `main.py` 的 `_bootstrap()`
+    为了让仓库里的 `packaging/` 不遮蔽第三方 `packaging` 包，特意把**仓库根目录
+    从 sys.path 里移除**；而本文件只把 `<repo>/src` 加进去。`tools/` 在仓库根下，
+    于是源码运行时 `import tools` 必然 ModuleNotFoundError（`--debug dump-ui`
+    直接崩溃，退出码 1）。
+
+    也不能把仓库根重新塞回 sys.path（会把 packaging 遮蔽问题带回来），所以这里
+    改按**文件路径**单独加载；冻结产物（Nuitka）已把 `tools.dump_ui` 编进二进制，
+    直接 import 即可。两处都找不到时返回 None，由调用方给出明确错误。
+    """
+    try:
+        from tools import dump_ui          # 冻结产物 / 仓库根恰好还在 sys.path 上
+        return dump_ui
+    except ImportError:
+        pass
+    # 按 runtime_paths 的资源查找顺序猜仓库根：只读资源目录 -> 可写数据目录
+    # （源码运行时就是仓库根）-> 源码根 -> 当前目录。同一路径只试一次。
+    seen: set[Path] = set()
+    for base in (runtime_paths.BUNDLE_DIR, runtime_paths.APP_DIR,
+                 runtime_paths.SOURCE_ROOT, Path.cwd()):
+        try:
+            script = (Path(base) / "tools" / "dump_ui.py").resolve()
+        except OSError:
+            continue
+        if script in seen:
+            continue
+        seen.add(script)
+        if not script.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(
+            "xtc_qq_bridge_dump_ui", script)
+        if spec is None or spec.loader is None:   # 极少见：路径不是常规 .py
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return None
 
 
 def main() -> None:
@@ -295,7 +345,14 @@ def main() -> None:
                         dump_deadline=adb_cfg.get("dump_deadline", 0.0) or 0.0)
 
     if args.debug == "dump-ui":
-        from tools import dump_ui
+        dump_ui = _load_dump_ui()
+        if dump_ui is None:
+            print("[错误] 找不到 tools/dump_ui.py（--debug dump-ui 需要它）。")
+            print("       源码运行：文件应位于 <仓库根>/tools/dump_ui.py，"
+                  "请确认没有被删除；")
+            print("       pip 安装态不含该开发工具，请改用源码运行或编译产物；")
+            print("       编译产物：构建时需带上 --include-module=tools.dump_ui。")
+            sys.exit(1)
         sys.exit(dump_ui.run(adb))
 
     if args.debug == "adb-info":
@@ -359,23 +416,6 @@ def main() -> None:
     from ..bridge import MessageBridge, make_forwarder
     bridge = MessageBridge(cfg, adb, xtc, make_forwarder(cfg, log), logger=log)
 
-    # 反向回调（NapCat / AstrBot 插件就绪后再启用 webhook.enabled）
-    webhook_server = None
-    wh_cfg = cfg.get("webhook") or {}
-    if wh_cfg.get("enabled"):
-        from ..qq_webhook import create_webhook_server
-        webhook_server = create_webhook_server(
-            bridge, host=wh_cfg.get("host", "127.0.0.1"),
-            port=int(wh_cfg.get("port", 5000)),
-            path=wh_cfg.get("path", "/qq_callback"),
-            token=wh_cfg.get("token", ""), logger=log)
-        threading.Thread(target=webhook_server.serve_forever, daemon=True).start()
-        log.info(f"反向回调已启动: http://{wh_cfg.get('host', '127.0.0.1')}:"
-                 f"{wh_cfg.get('port', 5000)}{wh_cfg.get('path', '/qq_callback')}")
-        if not (wh_cfg.get("allow_from") or wh_cfg.get("allow_groups")):
-            log.warning("webhook 白名单为空：QQ->小天才 将拒绝所有消息，"
-                        "请在 config.yaml -> webhook.allow_from（私聊）/ allow_groups（群聊）配置")
-
     if args.catchup is not None:
         # 一次性补发：不启动轮询/webhook，只把"库里没有"的消息按原顺序补发出去。
         # 用途：桥接停过一段时间（ADB 掉线、设备休眠）后，把积压的图片/文字补齐。
@@ -389,6 +429,36 @@ def main() -> None:
         bridge.stop()
         log.info("--once 测试完成")
         return
+
+    # 反向回调（NapCat / AstrBot 插件就绪后再启用 webhook.enabled）。
+    # **必须放在 catchup / once 分支之后**：这两个分支不会调用 bridge.start()，
+    # 任务队列没有消费者；先把 webhook 起起来的话，插件发来的入站消息会拿到
+    # 200 OK 却被静默丢弃（旧代码的注释写着"不启动 webhook"，实现却正好相反）。
+    # 顺带也避免端口被占用时 OSError 把 --catchup 补发流程直接打断。
+    webhook_server = None
+    wh_cfg = cfg.get("webhook") or {}
+    if wh_cfg.get("enabled"):
+        from ..qq_webhook import create_webhook_server
+        wh_host = wh_cfg.get("host", "127.0.0.1")
+        wh_port = int(wh_cfg.get("port", 5000))
+        try:
+            webhook_server = create_webhook_server(
+                bridge, host=wh_host, port=wh_port,
+                path=wh_cfg.get("path", "/qq_callback"),
+                token=wh_cfg.get("token", ""), logger=log)
+        except OSError as e:
+            # 端口被占用（旧实例没退干净、别的程序占了 5000）是最常见的部署事故。
+            # 裸抛 OSError 只有一句 "[Errno 98] Address already in use"，用户不知道该改哪里。
+            log.error(f"反向回调启动失败：无法监听 {wh_host}:{wh_port}（{e}）")
+            log.error("请关掉占用该端口的程序，或修改 config.yaml -> webhook.port；"
+                      "只做 QQ->手表 方向时可先把 webhook.enabled 设为 false。")
+            raise SystemExit(1) from e
+        threading.Thread(target=webhook_server.serve_forever, daemon=True).start()
+        log.info(f"反向回调已启动: http://{wh_host}:{wh_port}"
+                 f"{wh_cfg.get('path', '/qq_callback')}")
+        if not (wh_cfg.get("allow_from") or wh_cfg.get("allow_groups")):
+            log.warning("webhook 白名单为空：QQ->小天才 将拒绝所有消息，"
+                        "请在 config.yaml -> webhook.allow_from（私聊）/ allow_groups（群聊）配置")
 
     log.info("桥接运行中，Ctrl+C 退出")
     try:
@@ -423,8 +493,15 @@ def run_check(config_path=None) -> int:
             xtc_cfg = (_c.get("xiaotiancai") or {})
             print(f"速度档位: {_p}（套用 {len(_f)} 项默认值"
                   + (f"，另有 {len(_pinned)} 项在 config.yaml 里写死" if _pinned else "") + "）")
-    except Exception:  # noqa: BLE001 配置有问题时退回自动探测，别让自检本身失败
+    except (Exception, SystemExit) as e:  # noqa: BLE001 配置有问题时退回自动探测，别让自检本身失败
+        # 必须连 SystemExit 一起接住：load_config() 在配置非法时抛的是 SystemExit
+        # （它是 BaseException 的子类，`except Exception` 接不住）。旧代码于是只打印
+        # 一行解析错误就退出 1，平台/adb/UI dump/APK 等自检信息一条都看不到 ——
+        # 而自检的价值恰恰是在环境（含配置）异常时给出诊断。
         adb_cfg = {}
+        root_cfg = {}
+        xtc_cfg = {}
+        print(f"配置有误，已退回自动探测: {e}")
     try:
         adb = ADBController(adb_path=adb_cfg.get("path", ""),
                             host=adb_cfg.get("host", "127.0.0.1"),

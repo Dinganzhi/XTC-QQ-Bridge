@@ -80,6 +80,73 @@ class LoginMixin:
                 rows.append(n.get("text", "") or "")
         return rows
 
+    @staticmethod
+    def _edit_field_role(node) -> str:
+        """输入框的语义角色：`'password'` / `'account'` / `''`（认不出来）。
+
+        登录页不同版本/机型上输入框的**顺序**并不可靠（有用例把验证码框排在最前、
+        也有把密码框放在手机号上面的），所以必须按控件本身的语义定位：
+        - password="true"、resource-id 末段含 pwd/pass/password、文案含「密码」-> 密码框；
+        - resource-id 末段含 phone/mobile/tel/account/user/email、文案含
+          「手机号/账号/用户名/邮箱」-> 账号（手机号）框。
+        先判密码：账号框的提示文案有时也带"账号密码登录"这类底栏文字之外的内容，
+        密码特征更专一。
+        """
+        rid = ""
+        try:
+            rid = (node.get("resource-id", "") or "").split("/")[-1].lower()
+        except Exception:  # noqa: BLE001 个别假节点/异常属性不影响判定
+            rid = ""
+        blob = ((node.get("text", "") or "")
+                + (node.get("content-desc", "") or "")
+                + (node.get("hint", "") or ""))
+        if ((node.get("password", "") or "").lower() == "true"
+                or any(w in rid for w in ("password", "passwd", "pwd"))
+                or "密码" in blob):
+            return "password"
+        if (any(w in rid for w in ("phone", "mobile", "tel", "account", "user", "email"))
+                or any(w in blob for w in ("手机号", "手机", "账号", "账户", "用户名", "邮箱"))):
+            return "account"
+        return ""
+
+    def _pick_login_edits(self, root: ET.Element, edits: list | None = None) -> tuple:
+        """从登录页界面里挑出 (账号框, 密码框)；数量不足/无法定位时为 None。
+
+        **为什么不能按 y 序取前两个**（缺陷 A4）：旧实现只要求"至少 2 个 EditText"
+        就按 y 排序取前两个。一旦页面上多出一个输入框（验证码、搜索、版本差异留下的
+        隐藏框），或两个框的上下顺序变化，密码就会被填进错误的框 —— 轻则登录失败，
+        重则触发安全验证/风控。这里先按 resource-id / hint / 文案语义定位；
+        语义定位不全时才退回"按 y 序取前两个"，并记 debug 日志说明发生了退化。
+        """
+        if edits is None:
+            edits = self.adb.find_elements(root, class_name="EditText")
+        if len(edits) < 2:
+            return None, None
+        account = password = None
+        for n in edits:
+            role = self._edit_field_role(n)
+            if role == "password" and password is None:
+                password = n
+            elif role == "account" and account is None:
+                account = n
+        if account is not None and password is not None and account is not password:
+            return account, password
+        # 只识别出一个角色、且界面上正好两个输入框：另一个就是这个角色
+        if len(edits) == 2:
+            if account is not None and password is None:
+                password = edits[0] if edits[1] is account else edits[1]
+            elif password is not None and account is None:
+                account = edits[0] if edits[1] is password else edits[1]
+            if account is not None and password is not None:
+                self.log("debug", "登录页只按语义定位到一个输入框，另一个按剩余控件补齐")
+                return account, password
+        # 完全定位不到（或识别结果落在同一个节点）：退回按 y 序取前两个
+        ordered = sorted(edits, key=lambda n: (self._bounds(n) or (0, 0, 0, 0))[1])
+        self.log("debug",
+                 f"登录页输入框无法按 id/提示文案定位（共 {len(edits)} 个），"
+                 f"退回按 y 序取前两个（这是兜底路径，建议运行 tools/dump_ui.py 补充 ui 配置）")
+        return ordered[0], ordered[1]
+
     def fill_login_form(self, edits: list, values: list) -> tuple[bool, list[str]]:
         """按行填入登录表单，返回 (是否全部成功, 最终各行文本)。
 
@@ -180,17 +247,19 @@ class LoginMixin:
                     root = self._dump_fast()
                 else:
                     self.log("debug", "未找到账密入口（可能已在账密页）")
-            # 3) 找手机号 + 密码两个输入框（确认确实在账密页，避免把密码写进短信页）
-            edits = self.adb.find_elements(root, class_name="EditText")
-            edits.sort(key=lambda n: (self._bounds(n) or (0, 0, 0, 0))[1])
-            if len(edits) < 2:
+            # 3) 找手机号 + 密码两个输入框（确认确实在账密页，避免把密码写进短信页）。
+            #    按 resource-id/hint/文案语义定位，而不是按 y 序数前两个（缺陷 A4）：
+            #    页面上多一个输入框或顺序变化时，按 y 序会把密码填进错误的框。
+            phone_edit, password_edit = self._pick_login_edits(root)
+            if phone_edit is None or password_edit is None:
                 self.log("error", "未找到账密输入框（页面结构变化？运行 python tools/dump_ui.py 查看登录页）")
                 return "error"
+            edit_count = len(self.adb.find_elements(root, class_name="EditText"))
             self.log("debug",
-                     f"账密页就绪：前台={self.current_activity()} 输入框={len(edits)}")
+                     f"账密页就绪：前台={self.current_activity()} 输入框={edit_count}")
             # 4) 输入手机号、密码（点击聚焦 -> 清空 -> 注入 -> **按行精确校验**）
             ok_fill, final_rows = self.fill_login_form(
-                [edits[0], edits[1]], [phone, password])
+                [phone_edit, password_edit], [phone, password])
             if not ok_fill:
                 self.log("error",
                          f"登录表单输入未确认：输入框内容={final_rows!r}"
@@ -303,8 +372,14 @@ class LoginMixin:
         return "获取验证码" in texts or "短信验证码登录" in texts
 
     def _is_account_login_page(self, root: ET.Element) -> bool:
-        """是否为账密登录页：至少两个 EditText（手机号+密码）。"""
-        return len(self.adb.find_elements(root, class_name="EditText")) >= 2
+        """是否为账密登录页：能定位到「账号 + 密码」两个输入框。
+
+        旧实现只数 `len(EditText) >= 2`（缺陷 A4）：登录页多一个输入框（验证码、
+        搜索框等）就会被误认为账密页；改为与真正填表使用**同一套定位逻辑**
+        （`_pick_login_edits`），判定与填表就不会各说各话。
+        """
+        account, password = self._pick_login_edits(root)
+        return account is not None and password is not None
 
     def _find_account_login_entry(self, root: ET.Element):
         """切到账密登录的入口（短信页底部文案 '账号密码登录' 等）。"""

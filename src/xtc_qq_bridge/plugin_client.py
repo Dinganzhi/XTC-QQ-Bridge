@@ -20,8 +20,20 @@ import urllib.request
 class PluginClient:
     def __init__(self, base_url: str = "http://127.0.0.1:11452", token: str = "",
                  timeout: float = 35.0):
-        self.base_url = base_url.rstrip("/")
-        self.token = token
+        # 强制类型转换：config.yaml 里写成 `token:`（YAML null）或没加引号时，
+        # 传进来的可能是 None / 数字。旧实现直接把 token 塞进请求头，urllib 会抛
+        # `TypeError: expected string or bytes-like object, got 'NoneType'`，
+        # 每次发送都失败且错误信息完全指不到配置上。
+        self.token = str(token or "")
+        # base_url 同理：`base_url:` 为 null 时旧实现 `None.rstrip` 启动即崩，
+        # 在这里给出能直接照着修的报错，而不是让用户在栈里找 AttributeError。
+        raw_url = str(base_url or "").strip()
+        if not raw_url:
+            raise ValueError(
+                "config.yaml -> forward.plugin.base_url 为空：插件模式必须填写"
+                "插件监听地址（例如 http://127.0.0.1:11452），"
+                "或把 forward.mode 改回 \"log\" 先不接插件。")
+        self.base_url = raw_url.rstrip("/")
         self.timeout = timeout
 
     def ping(self) -> bool:

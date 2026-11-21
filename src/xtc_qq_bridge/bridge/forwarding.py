@@ -57,12 +57,18 @@ class ForwardingMixin:
             return True
         return self._recent_fwd_seen(contact, text)
 
-    def _plan_key(self, contact, text: str, label: str) -> tuple:
-        """补投计划的身份（**不含标签**）：标签会跳变，补投只认"谁 + 什么内容"。
+    def _plan_key(self, contact, text: str, label: str, identity: str = "") -> tuple:
+        """补投计划的身份：(联系人, 文本, 内容身份)。
 
-        计划里单独记着这条消息的显示标签，所以补投出去的时间抬头依然是对的。
+        为什么不能只用 (联系人, 文本)：照片的文本是固定占位"图片"、表情是"表情X"，
+        两条**不同**照片会得到同一个键。后一条登记时会覆盖前一条的 failed 列表，
+        前一条的失败目标就此永久丢失（实测：群 A 的补投被群 B 顶掉，且抬头时间串位、
+        tries 被重置导致重试预算无限续期）。因此把内容身份一并入键。
+
+        identity 优先用媒体内容哈希（同一张图稳定、不同图必然不同）；
+        没有哈希时退回时间标签，至少能把不同时段的消息区分开。
         """
-        return ("xtc", contact or "", text or "")
+        return ("xtc", contact or "", text or "", identity or label or "")
 
     def _order_hold_active(self) -> bool:
         """有图片/表情在等原图、且等的时间还在 `order_hold_secs` 内 -> 后面的消息先压一下。
@@ -185,7 +191,14 @@ class ForwardingMixin:
         sticker 给了就把图片原文件一并存进历史媒体仓库，消息库条目带上引用码，
         历史消息据此可以显示 `[图片 #code]` 并支持 `/小天才 查看图片 <code>` 取回。
         """
-        self.history.mark("xtc", contact or "", text, label or "")
+        # 媒体占位文本在所有照片/表情之间是**固定文案**（"图片"、"表情X"）。
+        # 一旦这条消息没有时间标签，身份就会退化成 ("xtc", 联系人, "图片", "")：
+        # 之后每一张无标签照片都命中同一个键，被判成"已处理"而**静默丢弃**
+        # （历史库 TTL 7 天，用户看到的是"第二张起再也收不到照片"）。
+        # 因此媒体占位必须拿到独立身份才允许写入历史：优先内容哈希，其次时间标签。
+        media_placeholder = self._is_media_placeholder(text)
+        if not (media_placeholder and not (label or media_hash)):
+            self.history.mark("xtc", contact or "", text, label or "")
         if media_hash:
             # 同一张图片/表情无论标签怎么变，都不再重复转发
             self.history.mark("xtc", contact or "", text, media_hash)
@@ -235,7 +248,8 @@ class ForwardingMixin:
                                f"（{'、'.join(f'{t}:{i}' for t, i in failed)}）：{text[:24]!r}；"
                                "forward.retry_max_tries=0 -> 不补投（只报这一次）")
             return
-        key = self._plan_key(contact, text, label)
+        # 媒体消息带上内容哈希，避免两条不同照片共用同一个计划键（见 _plan_key）
+        key = self._plan_key(contact, text, label, self._media_hash(sticker))
         gap = self._forward_retry_backoff
         with self._fwd_plan_lock:
             plan = self._fwd_plan.get(key)

@@ -467,7 +467,6 @@ class ChatMixin:
         注意：最新消息可能被输入栏遮挡（y 超出输入栏顶部），因此不做输入栏边界裁剪。
         """
         screen_w = self._chat_screen_w(root)
-        filter_own = bool(self.ui.get("filter_own_bubbles", True))
         junk = set(self.ui.get("chat_junk_texts", _DEFAULT_JUNK))
         # 收集时间标签（按 y 排序，供气泡取最近上方标签）；压缩 dump 里退化成从
         # 父容器 desc 还原（见 _time_labels），否则时间会全变成"当前时间"
@@ -492,19 +491,27 @@ class ChatMixin:
             # 下方带"发送失败"提示的气泡 = 未送达（手动发送失败等），跳过
             if any(fh_top - 60 <= b[3] <= fh_top + 30 for fh_top, _ in fail_hints):
                 continue
-            center_x = (b[0] + b[2]) / 2
+            # 归属判定与补发路径共用同一套逻辑（见 _bubble_ownership）。
+            # 本方法只返回"别人发来的最新一条"：自己发的气泡**一律**跳过，绝不能
+            # 当成对方消息返回 —— 否则桥接会把家长自己的话转发回 QQ（回声）。
+            # 注意这里**不再**用 `filter_own_bubbles` 开关决定要不要判归属：该开关的
+            # 语义是"转发/补发时要不要收自己发的气泡"，不是"要不要判断谁发的"。
+            # 以前写成 `if filter_own and center_x > ...`，关掉开关后右侧己方气泡就被
+            # 当成对方消息转发回 QQ（缺陷 A2）。家长侧命令仍由 `_own_texts_in_chat`
+            # （include_own=True）负责识别，不受这里影响。
+            is_own, _contact, desc_body = self._bubble_ownership(desc, b, screen_w)
             if "发的消息" in desc:
                 # App 标注了发送方：'XX发的消息,内容'（别人） / '你发的消息,内容'（自己）
-                if desc.startswith("你发的"):
+                if is_own:
                     continue
-                if not t and "," in desc:
-                    t = desc.split(",", 1)[1].strip()  # 表情/语音等从 desc 取内容类型
+                if not t and desc_body:
+                    t = desc_body  # 表情/语音等从 desc 取内容类型
             else:
                 # 无标注：按左右位置判断（自己发=右侧跳过）
                 if t in junk:
                     continue
-                if filter_own and center_x > screen_w * self._own_side_ratio():
-                    continue  # 右侧气泡 = 自己发的消息
+                if is_own:
+                    continue
             # 图片消息（照片）：气泡是 ImageView、没有文字，desc 里写"图片消息，双击查看"
             # （图片还没下完时 desc 可能只有"XX发的消息"）。以前这类消息 text 为空 -> 被
             # 静默丢弃，控制台一行日志都没有（用户报的"图片无法发送、也没提示"）。
@@ -668,6 +675,39 @@ class ChatMixin:
             return "image"
         return "text"
 
+    def _bubble_ownership(self, desc: str, bounds, screen_w: int) -> tuple[bool, str, str]:
+        """判定一条聊天气泡的归属：返回 (是否自己发, 对方名字, desc 正文)。
+
+        为什么要把这段抽成公共方法：实时路径（`_latest_in_chat`）与补发路径
+        （`_chat_bubbles`）**必须**用同一套判定，否则同一条气泡在两条路径上会被算成
+        不同的归属/内容 —— 实测就是这样出现"家长自己右侧的气泡被当成孩子消息转发回
+        QQ"的回声（缺陷 A2），以及表情被当成纯文本发出去（见 `_bubble_kind` 的说明）。
+
+        判定顺序：
+        ① content-desc 标注了发送方：`你发的消息,…` = 自己；`XX发的消息,…` = 对方
+           （名字取 "发的消息" 前的那段）；
+        ② 没有标注时按左右位置：气泡中心超过 屏宽 × own_side_ratio 视为自己发。
+
+        注意 ② **只按位置算，不受 `ui.filter_own_bubbles` 影响**：那个开关的语义是
+        "转发/补发时要不要把自己发的气泡也收进来"（由调用方的 include_own 决定过滤），
+        而不是"要不要判断谁发的"。此前写成 `filter_own and 位置判断`，于是关掉开关后
+        归属恒为"对方"，己方气泡被转发回 QQ（回声）、家长侧命令也识别不到。
+        """
+        is_own = False
+        contact = ""
+        desc_body = ""
+        if "发的消息" in (desc or ""):
+            if desc.startswith("你发的"):
+                is_own = True
+            else:
+                contact = desc.split("发的消息", 1)[0].strip()
+            if "," in desc:
+                desc_body = desc.split(",", 1)[1].strip()
+        else:
+            center_x = (bounds[0] + bounds[2]) / 2
+            is_own = center_x > screen_w * self._own_side_ratio()
+        return is_own, contact, desc_body
+
     def _chat_bubbles(self, root: ET.Element, include_own: bool = False) -> list[dict]:
         """解析一次 UI dump 的聊天消息气泡，按屏幕从上到下（旧->新）排序。
 
@@ -680,7 +720,6 @@ class ChatMixin:
         返回 [{text, is_own, contact, time_label, y_bottom}]。
         """
         screen_w = self._chat_screen_w(root)
-        filter_own = bool(self.ui.get("filter_own_bubbles", True))
         junk = set(self.ui.get("chat_junk_texts", _DEFAULT_JUNK))
         dates: list[tuple[int, int, str]] = self._time_labels(root)
         fail_hints: list[tuple[int, int]] = []
@@ -704,27 +743,12 @@ class ChatMixin:
                 continue
             if any(fh_top - 60 <= b[3] <= fh_top + 30 for fh_top, _ in fail_hints):
                 continue  # 气泡下方是发送失败提示 = 未送达
-            center_x = (b[0] + b[2]) / 2
-            is_own = False
-            contact = ""
-            desc_body = ""
-            if "发的消息" in desc:
-                if desc.startswith("你发的"):
-                    is_own = True
-                else:
-                    contact = desc.split("发的消息", 1)[0].strip()
-                if "," in desc:
-                    desc_body = desc.split(",", 1)[1].strip()
-                if not t and desc_body:
-                    t = desc_body                      # 表情/语音等从 desc 取类型
-            else:
-                # 无标注：右侧气泡 = 自己发的消息。
-                # `is_own` **只按位置算**，不受 filter_own_bubbles 影响：这个开关的语义是
-                # "要不要把自己发的气泡也收进来"（由调用方的 include_own 决定过滤），
-                # 而不是"不判断谁发的"。此前写成 `filter_own and ...`，于是关掉开关后
-                # is_own 恒为 False，`_own_texts_in_chat` 返回空 —— 家长侧在小天才里
-                # 输入的 `/小天才 …` 命令整体失效。
-                is_own = center_x > screen_w * self._own_side_ratio()
+            # 归属/内容标注与实时路径共用同一套判定（见 _bubble_ownership）：
+            # 两条路径若各写一份，就会再次出现"同一条气泡在实时路径算己方、在补发
+            # 路径算对方"这类不一致（回声 / 重复转发）。
+            is_own, contact, desc_body = self._bubble_ownership(desc, b, screen_w)
+            if "发的消息" in desc and not t and desc_body:
+                t = desc_body                          # 表情/语音等从 desc 取类型
             # 类型只按**气泡本身**判断（见 _bubble_kind）：表情/照片/文本三选一。
             # 注意传的是气泡**原始** text（`t` 可能已经被 desc 内容替换过）。
             kind = self._bubble_kind(cls, n.get("text", ""), desc, b)
@@ -912,10 +936,16 @@ class ChatMixin:
 
     def _own_texts_in_chat(self, root: ET.Element, limit: int = 8) -> list[tuple[str, str]]:
         """聊天页内最近若干条"自己发的"消息（新->旧，系统/垃圾已过滤）。
-        返回 [(text, time_label)]。命令可能被送达确认等后续消息盖过（不再是
-        "最新一条"），检测时扫最近几条；时间标签用于区分同文本的再次输入。"""
+        返回 [(text, own_label)]。命令可能被送达确认等后续消息盖过（不再是
+        "最新一条"），检测时扫最近几条；身份标签用于区分同文本的再次输入。
+
+        为什么用 `own_label` 而不是 `time_label`（缺陷 A3）：`time_label` 是气泡
+        上方"时间分组"的标签，同一分组里的多条消息共用同一个标签（App 只给组首画
+        标签）。用它当身份，同一时间分组内的两条相同命令会被 `_cmd_text_handled`
+        判成重复，第二条被静默跳过；`own_label` 是**这条消息自己的**时间（取法与
+        实时路径一致），同组内的不同消息不会碰撞。"""
         items = self._chat_bubbles(root, include_own=True)
-        return [(it["text"], it["time_label"]) for it in reversed(items)
+        return [(it["text"], it["own_label"]) for it in reversed(items)
                 if it["is_own"]][:max(1, limit)]
 
     def get_chat_history(self, count: int = 20,
