@@ -13,3 +13,4 @@
 | 独立小工具 | [`tools/README.md`](../tools/README.md) |
 | 开发脚本 / 构建脚本 | `scripts/`、`packaging/nuitka/` |
 | 测试 | `tests/`（`python tests/test_reported_bugs.py` 等） |
+| 发布说明的贡献者段落怎么写 | [`release-notes.md`](release-notes.md)、[`CONTRIBUTORS.md`](../CONTRIBUTORS.md) |

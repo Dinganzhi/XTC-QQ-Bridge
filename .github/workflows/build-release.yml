@@ -214,6 +214,31 @@ jobs:
       - name: List files
         run: ls -la artifacts
 
+      # 贡献者段落：预发布 = "新贡献者（自上一个预发布）" + "全部贡献者（自上一个稳定版）"；
+      # 正式版 = 只保留"全部贡献者"。规则与测试见 scripts/release_contributors.py
+      # 与 tests/test_release_contributors.py。手写说明（body_path）存在时追加其后；
+      # 不存在时改用 generate-notes 的变更正文当底稿（并剔除它自带的贡献者段，避免重复）。
+      - name: Compose release body（含贡献者段落）
+        id: compose
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+          tag="${{ inputs.tag_name || github.ref_name }}"
+          body="${{ inputs.body_path }}"
+          args=(--tag "${tag}" --out release_body.md)
+          if [ -n "${body}" ]; then
+            args+=(--base-body "${body}")
+          else
+            args+=(--auto-base)
+          fi
+          python3 scripts/release_contributors.py "${args[@]}"
+          echo "---- 正文预览（前 40 行）----"
+          head -40 release_body.md
+
       - name: Create/Update release
         uses: softprops/action-gh-release@v3
         with:
@@ -223,7 +248,9 @@ jobs:
           # alpha/beta/rc 勾选预发布；稳定版把 prerelease 输入设为 false
           prerelease: ${{ inputs.prerelease }}
           make_latest: "false"
-          body_path: ${{ inputs.body_path }}
-          generate_release_notes: ${{ inputs.body_path == '' }}
+          # 贡献者段落生成成功时用合成后的正文；失败则退回原来的手写文件，
+          # 若本来就没手写文件，再退回 GitHub 自动生成（保证不会发出空说明）。
+          body_path: ${{ steps.compose.outcome == 'success' && 'release_body.md' || inputs.body_path }}
+          generate_release_notes: ${{ steps.compose.outcome != 'success' && inputs.body_path == '' }}
           files: artifacts/*
           fail_on_unmatched_files: false
