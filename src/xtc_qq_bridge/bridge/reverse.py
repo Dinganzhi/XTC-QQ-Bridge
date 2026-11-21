@@ -5,8 +5,49 @@ from __future__ import annotations
 from .shared import *  # noqa: F401,F403
 
 
+def _allow_values(value, field: str, warn) -> set[str]:
+    """把 webhook 白名单配置归一成字符串集合（容错，绝不因配置写法差异崩溃）。
+
+    为什么必须归一：旧实现是 `{str(u) for u in (wh.get("allow_from") or [])}`，
+    它假设配置一定是列表，但 YAML/JSON 里很容易写成：
+      * 标量数字 `allow_from: 10001` -> 对 int 做迭代直接 TypeError，
+        而 `do_POST` 当时没有兜底，处理线程不返回任何 HTTP 状态就退出，
+        插件侧表现为"桥接未连接"；
+      * 带引号的字符串 `allow_from: "10001"` -> 被当成可迭代对象逐个字符拆成
+        {'1','0'}，配置里的号码被静默拒绝。
+    归一规则：str 视为**单个值**（不拆字符）；list/tuple 逐项转 str；
+    其它类型（int/dict/...）忽略并告警，让用户知道要加引号或写成列表。
+    """
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        v = value.strip()
+        return {v} if v else set()
+    if isinstance(value, (list, tuple)):
+        return {str(x).strip() for x in value
+                if x is not None and str(x).strip()}
+    warn(field, value)
+    return set()
+
+
 class ReverseMixin:
     """反向链路：QQ → 小天才 的命令执行与送达确认"""
+
+    def _warn_allow_field_once(self, field: str, value) -> None:
+        """白名单写法有问题时只告警一次（每条消息都刷屏反而看不到重点）。"""
+        warned = getattr(self, "_allow_field_warned", None)
+        if warned is None:
+            warned = set()
+            try:
+                self._allow_field_warned = warned
+            except Exception:  # noqa: BLE001 极端只读对象：退化成每次记
+                warned = set()
+        if field in warned:
+            return
+        warned.add(field)
+        self._log("warning",
+                  f"config.yaml -> webhook.{field} 的类型是 {type(value).__name__}，"
+                  "已按空白名单处理；请写成列表（如 [10001]）或给号码加引号")
 
     def qq_sender_allowed(self, qq: str, group: str = "") -> bool:
         """QQ->小天才 接收白名单（config.yaml -> webhook）：
@@ -15,13 +56,18 @@ class ReverseMixin:
         - 对应列表为空 = 该类消息全部拒绝（严格白名单）。
         """
         wh = self.cfg.get("webhook") or {}
+        if not isinstance(wh, dict):
+            self._warn_allow_field_once("webhook", wh)
+            wh = {}
         if group:
-            allow = {str(g) for g in (wh.get("allow_groups") or [])}
+            allow = _allow_values(wh.get("allow_groups"), "allow_groups",
+                                  self._warn_allow_field_once)
             ok = str(group) in allow
             if not ok:
                 self._log("info", f"群聊 {group} 不在白名单（webhook.allow_groups），已忽略")
             return ok
-        allow = {str(u) for u in (wh.get("allow_from") or [])}
+        allow = _allow_values(wh.get("allow_from"), "allow_from",
+                              self._warn_allow_field_once)
         ok = str(qq) in allow
         if not ok:
             self._log("info", f"私聊 {qq} 不在白名单（webhook.allow_from），已忽略")

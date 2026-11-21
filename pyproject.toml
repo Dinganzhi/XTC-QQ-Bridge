@@ -46,8 +46,29 @@ where = ["src"]
 version = { attr = "xtc_qq_bridge.version.__version__" }
 
 [tool.setuptools.package-data]
-# 捆绑 APK / 配置模板：随包分发（--install-plugin 会用到）
+# 包目录内的附带文件（如以后把资源挪进包里）随包分发
 "*" = ["*.apk", "*.yaml", "*.json", "*.md"]
+
+# 运行时资源（配置模板 / 捆绑 APK / AstrBot 插件源码）都在**仓库根**，不在包目录内。
+# package-data 只匹配包目录，管不到它们（旧配置的缺陷：wheel 里除 .py 外什么都没有，
+# pip 安装后首次运行写不出模板配置、--install-plugin 找不到插件源码、--verify 找不到 APK）。
+# 因此用 data-files：它们会被装到 <数据根>/share/xtc-qq-bridge/，目录结构与仓库根一致。
+[tool.setuptools.data-files]
+# 注意：这里**逐个列出文件**，不要写 `astrbot_plugin_xtc_bridge/*` 这类通配符 ——
+# 通配符会把运行时生成的 `__pycache__/` 目录也匹配进来，setuptools 的 install_data
+# 复制目录时直接报 "can't copy ...: not a regular file"，wheel 构建失败（已实测）。
+"share/xtc-qq-bridge" = ["config.example.yaml", "README.md", "LICENSE"]
+"share/xtc-qq-bridge/assets" = [
+    "assets/keyboardservice-debug.apk",
+    "assets/README.md",
+]
+"share/xtc-qq-bridge/astrbot_plugin_xtc_bridge" = [
+    "astrbot_plugin_xtc_bridge/main.py",
+    "astrbot_plugin_xtc_bridge/metadata.yaml",
+    "astrbot_plugin_xtc_bridge/_conf_schema.json",
+    "astrbot_plugin_xtc_bridge/plugin_config.example.json",
+    "astrbot_plugin_xtc_bridge/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

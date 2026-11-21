@@ -229,10 +229,15 @@ class StateMixin:
             except AdbError:
                 # 无法读取界面（息屏/空闲性/安全窗口）→ 无法判断，不缓存为"未登录"
                 return self.LOGIN_UNKNOWN
-        # 首启隐私协议弹窗 = 尚未进入 App
-        joined = "".join(n.get("text", "") or "" for n in root.iter("node"))
-        if "温馨提示" in joined and ("同意" in joined or "不同意" in joined):
-            return self._remember_login(self.NOT_LOGGED_IN)
+        # 首启隐私协议弹窗 = 尚未进入 App。
+        # **前置条件（缺陷 A1）**：界面一旦像聊天页（有聊天列表容器，或输入栏/气泡等
+        # 聊天页特征）本启发式就不生效 —— 聊天页的提示条/聊天气泡里也可能出现
+        # "温馨提示""同意"这类字眼，一旦命中就会把已登录的聊天页误判成未登录，
+        # 停止读消息/转发（真实登录页/首启隐私页不会有聊天页控件）。
+        if not (self._has_chat_list_container(root) or self.looks_like_chat_page(root)):
+            joined = "".join(n.get("text", "") or "" for n in root.iter("node"))
+            if "温馨提示" in joined and ("同意" in joined or "不同意" in joined):
+                return self._remember_login(self.NOT_LOGGED_IN)
         if self._looks_like_login_page(root):
             return self._remember_login(self.NOT_LOGGED_IN)
         if self._looks_like_main_ui(root):
@@ -273,6 +278,54 @@ class StateMixin:
     def invalidate_login_state(self) -> None:
         self._login_state = None
 
+    # 聊天列表容器（消息气泡所在的滚动列表）的 resource-id 末段。聊天页/消息列表页
+    # 一定有其中之一（或一个 class 为 RecyclerView 的容器），登录页没有。
+    _CHAT_LIST_ID_TAILS = ("rv_chat_msg_chat", "rv_chat_msg", "lv_chat_msg")
+
+    def _has_chat_list_container(self, root: ET.Element) -> bool:
+        """界面里是否存在**聊天列表容器**（消息气泡的滚动容器）。
+
+        为什么要单独判断：`_looks_like_login_page` 扫的是整棵界面树的文本，而聊天页
+        里既有聊天气泡（孩子完全可能说"验证码"三个字）又有聊天输入框（家长正在输入的
+        文字里可能有"密码"）。这些文案一旦参与匹配，聊天页就会被误判成登录页 ——
+        后果不是多打一行日志：`login_state()` 返回 not_logged_in、`require_login()`
+        返回 False、`get_latest_message()` 全空，读消息/转发彻底停摆，轮询还会触发
+        `recover()` 在聊天页上执行账密登录。所以"有没有聊天列表容器"是登录页判定的
+        前置排除项：有它就直接断定不是登录页（要求见缺陷 A1）。
+
+        判定口径：id 末段命中已知聊天列表 id，或**任意 RecyclerView**（App 版本换代时
+        这些 id 可能改名，而消息列表必然是 RecyclerView 控件）。这里只看节点本身，
+        不依赖 bounds：界面压缩/裁切时容器可能拿不到 bounds，但节点仍在。
+        """
+        for n in root.iter("node"):
+            if self._id_tail(n).lower() in self._CHAT_LIST_ID_TAILS:
+                return True
+            if (n.get("class", "") or "").endswith("RecyclerView"):
+                return True
+        return False
+
+    def _login_page_excluded_nodes(self, root: ET.Element) -> set:
+        """登录页判定必须**排除**的节点：聊天列表容器、消息气泡与聊天输入框。
+
+        为什么不能只靠"有容器就返回 False"：聊天页在某些 dump 里可能只剩输入框/气泡
+        而没有容器节点（压缩 dump、页面切换中的残缺快照），此时仍得把输入框里家长正在
+        输入的文字（例如"密码"）和气泡文案排除掉，否则登录页判定照样会被聊天内容污染
+        —— 聊天气泡里出现"获取验证码"、输入框里残留"密码"，都会被当成登录页。
+        """
+        excluded = set()
+        for n in root.iter("node"):
+            tail = self._id_tail(n).lower()
+            cls = n.get("class", "") or ""
+            if (tail in self._CHAT_LIST_ID_TAILS or cls.endswith("RecyclerView")
+                    or "chat_msg_item" in tail):
+                # 容器（及其中的气泡）/消息气泡：整棵子树排除
+                excluded.add(n)
+                excluded.update(n.iter("node"))
+            elif tail == "et_chat_text_content":
+                # 聊天输入框本身是 EditText：它里面的文字绝不能当成"密码框"证据
+                excluded.add(n)
+        return excluded
+
     def _looks_like_login_page(self, root: ET.Element) -> bool:
         """登录页判定：只认登录页**专属**特征，避免把已登录界面里的"登录"字样误判。
 
@@ -280,14 +333,26 @@ class StateMixin:
         1) 密码输入框（EditText 的 password="true"，或提示文案含"密码"）；
         2) 短信登录页元素（获取验证码 / 短信验证码登录）；
         3) 配置的 login_markers（默认只含「注册/登录」「立即登录」这类强标记）。
+
+        **前置排除（缺陷 A1）**：界面里有聊天列表容器就绝对不是登录页 —— 聊天页的
+        气泡/输入框文案会命中上面所有特征（"验证码登录""密码"等），不排除的话会把
+        聊天页误判成登录页，进而停止读消息、停止转发。聊天输入框与容器子树即使在
+        没有容器的残缺 dump 里也要排除（见 `_login_page_excluded_nodes`）。
         """
-        texts = [(n.get("text", "") or "") for n in root.iter("node")]
+        if self._has_chat_list_container(root):
+            return False
+        excluded = self._login_page_excluded_nodes(root)
+        texts = [(n.get("text", "") or "") for n in root.iter("node")
+                 if n not in excluded]
         hint = "".join(texts) + "".join(
-            (n.get("content-desc", "") or "") for n in root.iter("node"))
+            (n.get("content-desc", "") or "") for n in root.iter("node")
+            if n not in excluded)
         for marker in ("获取验证码", "短信验证码登录", "验证码登录"):
             if marker in hint:
                 return True
         for n in root.iter("node"):
+            if n in excluded:
+                continue                      # 聊天输入框不是登录页的密码框
             if not (n.get("class", "") or "").endswith("EditText"):
                 continue
             if (n.get("password", "") or "").lower() == "true":

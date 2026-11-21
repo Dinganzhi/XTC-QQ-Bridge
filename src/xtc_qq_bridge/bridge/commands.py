@@ -85,7 +85,11 @@ class CommandMixin:
             if len(self._cmd_seen_text) > 200:
                 recent = list(self._cmd_seen_text.items())[-200:]
                 self._cmd_seen_text = dict(recent)
-        self._cmd_pending[text] = (side, label)
+            # 登记"已入队"必须与上面的判重**在同一个临界区**内完成。
+            # 此前这行写在 with 之外：两个 webhook 线程可能同时通过
+            # `text in self._cmd_pending` 检查，于是同一条命令被入队两次、
+            # 执行两次（表现为重复 @提醒、历史写两遍）。
+            self._cmd_pending[text] = (side, label)
         self._log("info", f"[xtc命令] 收到: {text}")
         self._job_queue.put(("cmd", text))
 
@@ -384,11 +388,20 @@ class CommandMixin:
         return "login" if (phone and password) else "no_cred"
 
     def _log_once(self, key: str, text: str, interval: float = 600.0) -> None:
-        """同类日志按 key 节流（避免每 5 秒重复输出）。"""
+        """同类日志按 key 节流（避免每 5 秒重复输出）。
+
+        `_log_seen` 的 key 含消息文本片段（如 `stale:<文本前 16 字>`）与失败原因，
+        长期运行时条目只增不减 —— 每小时几百条新文本就能让它缓慢爬升，
+        属于无界内存增长。这里按容量淘汰最久未触发的条目。
+        """
         now = time.monotonic()
         if now - self._log_seen.get(key, float("-inf")) < interval:
             return
         self._log_seen[key] = now
+        if len(self._log_seen) > 200:
+            # 保留最近触发的 200 条：节流只关心"刚刚打过没有"，历史条目无用
+            keep = sorted(self._log_seen.items(), key=lambda kv: kv[1])[-200:]
+            self._log_seen = dict(keep)
         self._log("info", text)
 
     def _log_state(self, state: str) -> None:

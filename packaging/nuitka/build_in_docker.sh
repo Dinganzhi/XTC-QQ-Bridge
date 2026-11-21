@@ -3,21 +3,24 @@
 #  在 Docker 里编译 Linux 版单文件可执行程序（宿主机不用装 gcc/工具链）
 #
 #  用法（Linux / macOS / WSL 主机）：
-#    bash tools/build_in_docker.sh                     # x86_64，onefile
-#    bash tools/build_in_docker.sh --mode standalone   # 目录模式
-#    IMAGE=python:3.11-slim bash tools/build_in_docker.sh
-#    PLATFORM=linux/arm64 bash tools/build_in_docker.sh   # 编 arm64（需 QEMU/binfmt，较慢）
+#    bash packaging/nuitka/build_in_docker.sh                     # x86_64，onefile
+#    bash packaging/nuitka/build_in_docker.sh --mode standalone   # 目录模式
+#    IMAGE=python:3.11-slim bash packaging/nuitka/build_in_docker.sh
+#    PLATFORM=linux/arm64 bash packaging/nuitka/build_in_docker.sh   # 编 arm64（需 QEMU/binfmt，较慢）
 #
 #  说明：
 #  * 默认用轻量的 python:3.12-slim + 临时装 gcc/patchelf（产物 glibc 门槛 = Debian 12，2.36）；
 #    想要"老系统也能跑"（glibc 2.17）可换 Nuitka 官方编译镜像：
-#      IMAGE=androsh7/nuitka-compiler:latest bash tools/build_in_docker.sh
-#  * 产物落在宿主机 dist/（工作目录被挂载进容器）。
+#      IMAGE=androsh7/nuitka-compiler:latest bash packaging/nuitka/build_in_docker.sh
+#  * 产物落在宿主机仓库根 dist/（仓库根目录被挂载进容器 /app）。
 #  * Nuitka 不能交叉编译：Windows 产物必须在 Windows 上编，macOS 必须在 macOS 上编。
 # =============================================================================
 set -euo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 挂载的必须是**仓库根**：脚本在 packaging/nuitka/ 下，上两级才是仓库根。
+# 旧实现只回到 packaging/，把它挂成 /app，于是容器里既没有 requirements-build.txt
+# （在仓库根），也找不到 packaging/nuitka/build.py（会变成 /app/packaging/nuitka/build.py）。
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$SRC"
 
 IMAGE="${IMAGE:-python:3.12-slim}"
@@ -26,7 +29,7 @@ ARGS="${*:-}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "[错误] 没找到 docker。装 Docker Desktop / docker-ce 后再试；"
-    echo "        或者直接在 Linux 上跑： bash build.sh"
+    echo "        或者直接在 Linux 上跑： bash packaging/nuitka/build_linux.sh"
     exit 1
 fi
 

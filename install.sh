@@ -8,7 +8,10 @@
 #    4. 生成插件初始配置（已存在则不动）
 #  用法：  bash install.sh          （或 ./install.sh）
 # =============================================================================
-set -u
+# 必须开 -e：旧脚本只有 -u，于是 cp 失败（例如 ~/.astrbot/data/config 不可写）后
+# 仍继续往下打印 "[OK] 插件配置已初始化"，插件最终用默认配置启动、token 对不上，
+# 之后所有转发被拒 401 且没有任何提示 —— 安装"成功"其实是坏的。
+set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SRC" || exit 1
@@ -40,8 +43,10 @@ for cand in python3 python; do
         if "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then
             PY="$cand"; break
         fi
-        # 记录一个版本过低的候选，便于给出准确提示
-        [ -n "${PY_LOW:-}" ] || PY_LOW="$cand $("$cand" --version 2>&1)"
+        # 记录一个版本过低的候选，便于给出准确提示。
+        # `--version` 后面补 `|| true`：开了 set -e 之后，若该候选执行失败，
+        # 赋值语句会继承失败状态并让整个脚本静默退出。
+        [ -n "${PY_LOW:-}" ] || PY_LOW="$cand $("$cand" --version 2>&1 || true)"
     fi
 done
 if [ -z "$PY" ]; then
@@ -104,11 +109,22 @@ fi
 
 # ---------- 4. 复制 AstrBot 插件 ----------
 DEST="$HOME/.astrbot/data/plugins/xtc_qq_bridge"
-mkdir -p "$DEST" || { err "无法创建 $DEST"; exit 1; }
+if ! mkdir -p "$DEST"; then
+    err "无法创建插件目录: $DEST"
+    err "  请检查该路径的权限；用 sudo 运行本脚本，或手动创建目录后再试。"
+    exit 1
+fi
 copied=0
 for f in main.py metadata.yaml _conf_schema.json README.md; do
     if [ -f "$SRC/astrbot_plugin_xtc_bridge/$f" ]; then
-        cp -f "$SRC/astrbot_plugin_xtc_bridge/$f" "$DEST/" && copied=$((copied + 1))
+        # cp 失败必须当场报错退出：旧实现失败也继续，最后还打印 "[OK] 插件已复制"
+        if cp -f "$SRC/astrbot_plugin_xtc_bridge/$f" "$DEST/"; then
+            copied=$((copied + 1))
+        else
+            err "复制插件文件失败: astrbot_plugin_xtc_bridge/$f -> $DEST/"
+            err "  请检查 $DEST 的写权限（例如改用 sudo 运行，或手动复制该文件）。"
+            exit 1
+        fi
     fi
 done
 if [ "$copied" -gt 0 ]; then ok "插件已复制到 $DEST"; else warn "插件源码缺失（$SRC/astrbot_plugin_xtc_bridge/）"; fi
@@ -118,10 +134,22 @@ PCFG="$HOME/.astrbot/data/config/xtc_qq_bridge_config.json"
 if [ -f "$PCFG" ]; then
     ok "插件配置已存在 - 保持原样: $PCFG"
 else
-    mkdir -p "$(dirname "$PCFG")"
+    if ! mkdir -p "$(dirname "$PCFG")"; then
+        err "无法创建插件配置目录: $(dirname "$PCFG")"
+        err "  AstrBot 的 data/config 通常需要当前用户有写权限；"
+        err "  可改用 sudo 运行本脚本，或手动把 plugin_config.example.json 复制到该路径。"
+        exit 1
+    fi
     if [ -f "$SRC/astrbot_plugin_xtc_bridge/plugin_config.example.json" ]; then
-        cp -f "$SRC/astrbot_plugin_xtc_bridge/plugin_config.example.json" "$PCFG"
-        ok "插件配置已初始化: $PCFG"
+        # 失败时必须报错：否则插件用默认配置启动、token 不匹配，转发会被静默拒绝（401）
+        if cp -f "$SRC/astrbot_plugin_xtc_bridge/plugin_config.example.json" "$PCFG"; then
+            ok "插件配置已初始化: $PCFG"
+        else
+            err "写插件初始配置失败: $PCFG"
+            err "  请检查 $(dirname "$PCFG") 的写权限；可用 sudo 重试，"
+            err "  或手动执行: cp '$SRC/astrbot_plugin_xtc_bridge/plugin_config.example.json' '$PCFG'"
+            exit 1
+        fi
     else
         warn "找不到 plugin_config.example.json，插件首次启动时会自己生成默认配置"
     fi
@@ -131,8 +159,14 @@ fi
 if [ -f "$SRC/config.yaml" ]; then
     ok "config.yaml 已存在 - 保持原样"
 else
-    cp -f "$SRC/config.example.yaml" "$SRC/config.yaml"
-    ok "config.yaml 已从模板生成 - 运行前请先编辑"
+    if cp -f "$SRC/config.example.yaml" "$SRC/config.yaml"; then
+        ok "config.yaml 已从模板生成 - 运行前请先编辑"
+    else
+        err "从模板生成 config.yaml 失败: $SRC/config.yaml"
+        err "  请检查项目目录的写权限，或手动执行:"
+        err "  cp '$SRC/config.example.yaml' '$SRC/config.yaml'"
+        exit 1
+    fi
 fi
 
 # ---------- 7. ADBKeyBoard 本地 APK（仅提示，不联网下载） ----------

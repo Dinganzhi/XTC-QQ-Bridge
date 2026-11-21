@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -70,8 +71,56 @@ def _launcher_exe() -> Path | None:
     return None
 
 
+_INSTALLED_DIR_SENTINEL = object()
+_installed_dir_cache: object = _INSTALLED_DIR_SENTINEL
+
+
+def _installed_data_dir() -> Path | None:
+    """pip 安装态的资源根目录，取不到返回 None。
+
+    为什么需要：`[tool.setuptools.data-files]` 把 config.example.yaml、APK、插件源码
+    装到 `<数据根>/share/xtc-qq-bridge/`（venv 下是 `<venv>/share/...`，--user 下是
+    `~/.local/share/...`），已不在仓库根，也不是包目录内的 package-data。
+    此时 `SOURCE_ROOT = parents[2]` 会指向 `lib/pythonX.Y`，`resource()` 全部落空 ——
+    表现为 pip 安装的用户首次运行写占位配置、`--install-plugin` 找不到插件、`--verify`
+    找不到 APK。
+
+    定位方式用 dist-info 的 RECORD 反查（比猜路径可靠，venv/系统/--user 三种 scheme
+    都能解析）。源码运行时没有该 RECORD，返回 None，继续走原来的仓库根逻辑。
+    """
+    global _installed_dir_cache
+    if _installed_dir_cache is not _INSTALLED_DIR_SENTINEL:
+        return _installed_dir_cache            # type: ignore[return-value]
+    found: Path | None = None
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution
+        dist = None
+        for name in ("xtc-qq-bridge", PLUGIN_NAME):
+            try:
+                dist = distribution(name)
+                break
+            except PackageNotFoundError:
+                continue
+        if dist is not None:
+            # 从发行版根目录逐级向上找 `share/<APP_NAME>`：
+            #   venv / 系统安装：<venv>/lib/pythonX.Y/site-packages -> 向上三级才是 <venv>
+            #   --target 安装  ：<target> 本身就是数据根，本级即命中
+            # 比读 RECORD 稳：RECORD 里 data-files 用的是 `../../share/...` 相对路径，
+            # importlib.metadata 的 dist.files 在部分版本里不会把这类条目暴露出来（实测）。
+            root = Path(str(dist.locate_file(""))).resolve()
+            for base in (root, root.parent, root.parent.parent, root.parent.parent.parent):
+                cand = base / "share" / APP_NAME
+                if (cand / CONFIG_EXAMPLE_NAME).is_file():
+                    found = cand
+                    break
+    except Exception:      # noqa: BLE001 元数据不可用就当不是安装态
+        found = None
+    _installed_dir_cache = found
+    return found
+
+
 # 只读资源目录（config.example.yaml / assets/*.apk / 插件源码都在这里）：
-# 源码运行 = 仓库根目录；Nuitka = 可执行文件所在目录（onefile 下是真实 exe，不是临时目录）
+# 源码运行 = 仓库根目录；pip 安装 = share/xtc-qq-bridge；Nuitka = 可执行文件所在目录
 def _bundle_dir() -> Path:
     """只读资源目录（config.example.yaml / assets / 插件源码）。
 
@@ -81,7 +130,8 @@ def _bundle_dir() -> Path:
       因此要往上取一级；兼容扁平（无包目录）形态时再退一级。
     """
     if not IS_FROZEN:
-        return SOURCE_ROOT
+        installed = _installed_data_dir()
+        return installed if installed is not None else SOURCE_ROOT
     here = Path(__file__).resolve().parent      # 冻结时：<解包目录>/xtc_qq_bridge
     for cand in (here, here.parent):
         if (cand / CONFIG_EXAMPLE_NAME).exists():
@@ -135,6 +185,10 @@ def _resolve_app_dir() -> tuple[Path, str]:
             return base, f"exe 所在目录（{FROZEN_MODE}）"
         fallback = _user_data_dir()
         return fallback, "exe 所在目录不可写，改用用户数据目录"
+    if _installed_data_dir() is not None:
+        # pip 安装态：资源在 share/ 下只读，而 site-packages 不该写 config.yaml/logs/data
+        # （会污染环境、升级时被覆盖、多用户共享同一份配置）。直接用用户数据目录。
+        return _user_data_dir(), "pip 安装态，使用用户数据目录"
     base = SOURCE_ROOT
     if _writable(base):
         return base, "项目目录（源码运行）"
@@ -145,14 +199,68 @@ APP_DIR, APP_DIR_REASON = _resolve_app_dir()
 DATA_DIR = APP_DIR / "data"
 LOG_DIR = APP_DIR / "logs"
 
+# 数据目录的最终解析结果（惰性算一次并缓存）：
+# `DATA_DIR` 只是**首选**位置，它是否真的能写由 `data_dir()` 现场探测。
+_DATA_DIR_CACHE: Path | None = None
+DATA_DIR_REASON = "尚未探测"
+_DATA_DIR_LOCK = threading.Lock()
+
+
+def _resolve_data_dir() -> tuple[Path, str]:
+    """探测 `APP_DIR/data` 是否真的可写；不可写就回落到用户数据目录下的 `data`。
+
+    为什么必须单独探测：`_resolve_app_dir()` 只验证了 APP_DIR 本身可写，而消息库、
+    回声/历史缓存都写在 `APP_DIR/data/` 里。`data/` 完全可能单独不可写 ——
+    它被 root 或别的账户创建、带了外来 ACL、杀毒软件占着，甚至就是一个**普通文件**
+    （`mkdir` 只会抛 FileExistsError）。此时旧实现仍选中 APP_DIR，`ensure_dirs()` 把
+    异常吞掉，于是 msg_log 只警告一次、`EchoFilter`/`HistoryFilter` 完全静默失败，
+    `describe()`/`--paths` 还显示「可写: True」—— 表现为重启后历史判定失效、
+    积压消息被重复转发。
+
+    回落目录（`~/.local/share/xtc-qq-bridge/data` 等）会先 `mkdir(parents=True)` 建好，
+    与首选目录一样可直接使用。
+    """
+    primary = DATA_DIR
+    if _writable(primary):
+        return primary, "APP_DIR/data（项目/exe 目录下）"
+    fallback = _user_data_dir() / "data"
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    note = "APP_DIR/data 不可写，已回落到用户数据目录"
+    if not _writable(fallback):
+        note += "（注意：回落目录同样不可写，历史/判重将只保留在内存中）"
+    return fallback, note
+
+
+def data_dir() -> Path:
+    """真正可写的数据目录（优先 `APP_DIR/data`，不可写时用用户数据目录）。
+
+    所有持久化文件（消息库、回声缓存、历史缓存、图片仓库……）都必须经由它定位；
+    `data_path()` 已经统一改走这里，调用点无需再关心回落逻辑。
+    """
+    global _DATA_DIR_CACHE, DATA_DIR_REASON
+    if _DATA_DIR_CACHE is None:
+        with _DATA_DIR_LOCK:
+            if _DATA_DIR_CACHE is None:
+                _DATA_DIR_CACHE, DATA_DIR_REASON = _resolve_data_dir()
+    return _DATA_DIR_CACHE
+
 
 def ensure_dirs() -> None:
     """确保可写目录存在（日志/消息库/状态文件要用）。"""
-    for d in (APP_DIR, DATA_DIR, LOG_DIR):
+    for d in (APP_DIR, LOG_DIR):
         try:
             d.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
+    # 数据目录走 data_dir()：不可写时它已经回落到用户数据目录（并在解析时建好）
+    try:
+        data_dir().mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
 
 
 def resource(*parts: str) -> Path:
@@ -176,7 +284,8 @@ def resource_dir(name: str) -> Path | None:
 
 
 def data_path(name: str) -> Path:
-    return DATA_DIR / name
+    """数据文件的路径（落在**真正可写**的 data 目录里，见 `data_dir()`）。"""
+    return data_dir() / name
 
 
 def log_path(name: str) -> Path:
@@ -260,10 +369,14 @@ def describe() -> str:
         f"资源目录      : {BUNDLE_DIR}",
         f"数据目录      : {APP_DIR}  [{APP_DIR_REASON}]",
         f"  可写        : {_writable(APP_DIR)}",
+        # 数据子目录单独一行：APP_DIR 可写不代表 data/ 可写（见 `_resolve_data_dir`），
+        # 分开显示才能避免「显示可写、实际一直写不进去」的误导。
+        f"  数据子目录  : {data_dir()}  [{DATA_DIR_REASON}]",
+        f"  可写        : {_writable(data_dir())}",
         f"配置          : {resolve_config()}",
         f"  已存在      : {resolve_config().exists()}",
         f"日志          : {LOG_DIR / 'xtc-qq-bridge.log'}（每次启动另建带时间的文件）",
-        f"消息库        : {DATA_DIR / 'msg_log.json'}",
+        f"消息库        : {data_path('msg_log.json')}",
         f"捆绑 APK      : {bundled_apk() or '(未找到)'}",
         f"插件目录      : {plugin_dir()}",
         "------------------",

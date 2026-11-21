@@ -25,13 +25,51 @@ from urllib.parse import parse_qs, urlparse
 # 请求体上限（字节）：转发一张 2 MB 的图，base64 后约 2.7 MB，16 MB 足够宽松。
 _MAX_BODY = 16 * 1024 * 1024
 
+# 单个连接的读/写超时（秒）。ThreadingHTTPServer 每个连接占一个线程，客户端
+# 只建连不发数据（空闲连接）时，旧实现会一直把线程挂着；`StreamRequestHandler`
+# 会把 `timeout` 设到 socket 上，`handle_one_request` 捕获 socket.timeout 后
+# 关闭连接（超时不会变成异常风暴），线程随之释放。
+_CONNECTION_TIMEOUT = 10.0
+
+# 历史消息条数的夹取范围：JSON 里的 1e400 会被解析成 inf，`int(inf)` 抛 OverflowError；
+# 即便成功转成 int，超大值也会让桥接去读/渲染几万条历史，直接卡死界面。这里统一夹取。
+_HISTORY_COUNT_DEFAULT = 20
+_HISTORY_COUNT_MIN = 1
+_HISTORY_COUNT_MAX = 200
+
+
+def _norm_route(path: str) -> str:
+    """路由归一化：去掉尾部斜杠，根路径归成空串。
+
+    路由侧（配置 `webhook.path`）与请求侧（`parsed.path`）必须用**同一个**函数
+    归一，否则 `webhook.path: "/"` 时路由是 ""、请求是 "/"，所有回调都 404
+    （旧实现只在路由侧 `rstrip("/") or "/"`，请求侧 `rstrip("/")`）。
+    """
+    return (path or "").rstrip("/")
+
 
 def _token_ok(got: str, expected: str) -> bool:
-    """常量时间比较 token（长度不同也走 compare_digest，不会因前缀相同而早退）。"""
+    """常量时间比较 token（长度不同也走 compare_digest，不会因前缀相同而早退）。
+
+    按 **UTF-8 字节**比较：`hmac.compare_digest` 对 str 只接受 ASCII，
+    token 里带中文/emoji 时旧实现抛 TypeError，又被宽泛 except 吞成 False ——
+    配置完全正确也恒返回 401，日志却只说"token 不匹配"，极难排查。
+    """
     try:
-        return hmac.compare_digest(str(got or ""), str(expected or ""))
+        return hmac.compare_digest(str(got or "").encode("utf-8"),
+                                   str(expected or "").encode("utf-8"))
     except Exception:  # noqa: BLE001 非常规类型（如 surrogate）一律当不通过
         return False
+
+
+def _history_count(value) -> int:
+    """把请求体里的 history_count 转成安全的整数（异常值夹取到合法范围）。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return _HISTORY_COUNT_DEFAULT
+    return max(_HISTORY_COUNT_MIN, min(_HISTORY_COUNT_MAX, n))
+
 
 # 每个动作的中文名（日志用）
 _ACTION_NAMES = {
@@ -61,7 +99,7 @@ def _where(user: str, group: str) -> str:
 def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                           path: str = "/qq_callback", token: str = "",
                           logger=None) -> ThreadingHTTPServer:
-    route = path.rstrip("/") or "/"
+    route = _norm_route(path)
     # 同时在跑的回调后台线程上限。旧实现是"每来一个回调就起一个 daemon 线程"，
     # 一次刷屏/被重试风暴打中就会起几百个线程抢 ADB，界面直接乱。
     # 超限时明确回 503（NapCat 会重投），而不是把任务悄悄丢掉。
@@ -83,6 +121,10 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
         return True
 
     class Handler(BaseHTTPRequestHandler):
+        # 连接超时：只建连不说话的空闲客户端最多占住线程 10 秒
+        # （超时由 `handle_one_request` 捕获并关闭连接，见 _CONNECTION_TIMEOUT）。
+        timeout = _CONNECTION_TIMEOUT
+
         def log_message(self, fmt, *args):  # 静默访问日志（我们有自己的业务日志）
             pass
 
@@ -97,14 +139,33 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                 pass  # 客户端提前断开不影响处理结果
 
         def do_GET(self):
-            if urlparse(self.path).path.rstrip("/") == "/health":
+            if _norm_route(urlparse(self.path).path) == "/health":
                 self._send(200, b"OK")
             else:
                 self._send(404, b"not found")
 
         def do_POST(self):
+            """请求入口：整体兜底，任何未预料的异常都回 500 而不是让工作线程裸退出。
+
+            旧实现没有兜底：`allow_from: 10001`（YAML 标量）时构造集合抛 TypeError，
+            `do_POST` 直接带着未发送的响应退出线程 —— 插件侧只看到"桥接未连接"，
+            没有任何 HTTP 状态可排查。
+            """
+            try:
+                self._handle_post()
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                pass  # 客户端自己断开：不是错误
+            except Exception as e:  # noqa: BLE001 兜底：回 500 并留日志
+                _log(logger, "error",
+                     f"[QQ回调] 处理请求异常（已回 500）: {type(e).__name__}: {e}")
+                try:
+                    self._send(500, b"internal error")
+                except Exception:  # noqa: BLE001 响应发不出去就只能算了
+                    pass
+
+        def _handle_post(self):
             parsed = urlparse(self.path)
-            if parsed.path.rstrip("/") != route:
+            if _norm_route(parsed.path) != route:
                 _log(logger, "warning", f"[QQ回调] 收到未知路径的请求: {self.path}（已忽略）")
                 self._send(404, b"not found")
                 return
@@ -192,10 +253,10 @@ def create_webhook_server(bridge, host: str = "127.0.0.1", port: int = 5000,
                         return
                     self._send(200, b"OK")
                 elif action == "history":
-                    try:
-                        count = int(data.get("history_count") or 20)
-                    except (TypeError, ValueError):
-                        count = 20
+                    # 夹取范围并吞掉 OverflowError：JSON 里的 1e400/Infinity 会解析成
+                    # float('inf')，`int(inf)` 抛 OverflowError（旧实现只捕 TypeError/
+                    # ValueError），线程带着未发送的响应退出。
+                    count = _history_count(data.get("history_count"))
                     src = str(data.get("history_source") or "").strip()
                     if not _spawn(bridge.fetch_xtc_history,
                                   (count, request_id, False, src), "xtc-history"):

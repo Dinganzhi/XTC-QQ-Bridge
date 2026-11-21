@@ -113,6 +113,17 @@ class MediaMixin:
                 continue
             # 无时间标签时用内容哈希当身份，与实时路径、补发路径保持同一套规则
             ident = label or (mhash or "")
+            if not ident:
+                # 既没有时间标签、又等不到原图（give_up）：**不能留空身份**。
+                # 空身份会把 ("xtc", 联系人, "图片", "") 写进 7 天历史库，此后所有
+                # 无标签照片都会命中该键而静默丢失（见 forwarding._mark_forwarded 的说明）。
+                # 这里用一个一次性标识，保证不与其它消息撞键。代价是同一条消息若再次被
+                # 扫描到会重新走一轮"等待-重试"，其频率受 _media_retry_max 与
+                # _media_retry_max_wait 约束，不会无节制重复。
+                ident = "gv:%d" % int(time.monotonic() * 1000)
+                self._log("warning",
+                          f"[媒体] {text[:24]!r} 既无时间标签、也未取到原图，按文字转发；"
+                          "该条缺少可去重身份，若界面再次读到会重复尝试")
             self._log("info", f"[媒体] {'拿到图，补发' if sticker else '等太久了，按文字转发'}: "
                               f"{text[:24]!r}")
             self._queue_forward(contact, text, ident, sticker=sticker,
