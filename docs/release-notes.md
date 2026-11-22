@@ -12,10 +12,10 @@
 
 ## 一、三档策略
 
-| 版本类型 | `New Contributors` | `All Contributors` |
+| 版本类型 | 新增贡献者 | 全部贡献者 |
 |---|---|---|
-| 预发布（alpha / beta / rc） | ✅ 自**上一个预发布**以来 | ✅ 自**上一个稳定版**以来 |
-| 正式版（x.y.z） | ❌ 不出现 | ✅ 自**上一个稳定版**以来 |
+| 预发布（alpha / beta / rc） | 有，自**上一个预发布**以来 | 有，自**上一个稳定版**以来 |
+| 正式版（x.y.z） | 无 | 有，自**上一个稳定版**以来 |
 | 历史总册 | — | 由仓库根部 [`CONTRIBUTORS.md`](../CONTRIBUTORS.md) 承担 |
 
 `CONTRIBUTORS.md` 与 Release Notes 分工明确：
@@ -30,16 +30,12 @@
 ### 预发布：`1.1.0-alpha.2`
 
 ```markdown
-## 🎉 New Contributors（自 1.1.0-alpha.1 以来）
+## 新增贡献者（自 1.1.0-alpha.1 以来）
 
-感谢首次为本版本线做出贡献的开发者！
+- @alice：首次贡献 #101
+- @bob：首次贡献 #105
 
-- @alice made their first contribution in #101
-- @bob made their first contribution in #105
-
-## 🙌 All Contributors（自 1.0.0 以来）
-
-感谢每一位参与本版本周期的贡献者！
+## 全部贡献者（自 1.0.0 以来）
 
 - @alice
 - @bob
@@ -52,9 +48,7 @@
 ### 正式版：`1.1.0`
 
 ```markdown
-## 🙌 All Contributors（自 1.0.0 以来）
-
-感谢每一位参与本版本周期的贡献者！
+## 全部贡献者（自 1.0.0 以来）
 
 - @alice
 - @bob
@@ -64,7 +58,7 @@
 ```
 
 范围是 `1.0.0..1.1.0`，覆盖整个版本周期（含期间的 alpha / beta / rc 阶段）。
-不再出现 `New Contributors` 段。
+不再出现「新增贡献者」段。
 
 ---
 
@@ -76,8 +70,8 @@
 
 1. 从 tag 列表推断**上一个稳定版**与**上一个预发布**（同版本线内优先）；
 2. 用 compare 接口取"上一个稳定版 → 当前版本"的全部提交作者（去重、剔 bot）；
-3. 预发布时再调 generate-notes 接口，取其 `New Contributors` 段落的条目，
-   统一改写成 `- @user made their first contribution in #101`。
+3. 预发布时再调 generate-notes 接口，取其「New Contributors」段落的条目，
+   统一改写成 `- @user：首次贡献 #101`。
 
 bot 账号（`dependabot`、`github-actions`、`renovate`、`codecov`、`*[bot]` 等）一律剔除。
 
@@ -106,7 +100,7 @@ python scripts/release_contributors.py --tag 1.1.0-alpha.2 --offline \
 **Compose release body（含贡献者段落）** 步骤：
 
 - 传了 `body_path`（手写说明）→ 在其后追加贡献者段落；
-- 没传 → 先用 generate-notes 的变更正文当底稿（并剔除它自带的贡献者段，避免重复），
+- 没传 → 先用 generate-notes 的变更正文当底稿（并剔除其自带的贡献者段，避免重复），
   再追加我们生成的段落；
 - 该步骤失败时（如 token 权限不足）不阻断发布，自动退回原来的手写说明或
   GitHub 自动生成的说明 —— 发布不能因为"致谢排版"而失败。

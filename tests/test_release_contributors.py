@@ -122,13 +122,13 @@ def test_new_contributor_lines() -> None:
     line = "* @alice made their first contribution in https://github.com/o/r/pull/101"
     check("PR 链接归一成 #编号",
           rc.normalize_new_contributor_line(line)
-          == "- @alice made their first contribution in #101",
+          == "- @alice：首次贡献 #101",
           rc.normalize_new_contributor_line(line))
 
     line2 = "- @bob made their first contribution in #105"
     check("已是 #编号时保持不变",
           rc.normalize_new_contributor_line(line2)
-          == "- @bob made their first contribution in #105")
+          == "- @bob：首次贡献 #105")
 
     check("bot 条目被丢弃",
           rc.normalize_new_contributor_line(
@@ -152,7 +152,7 @@ https://github.com/o/r/compare/v1.0.0...v1.1.0
     entries = rc.parse_new_contributors(body)
     check("只取 New Contributors 段落", len(entries) == 2, str(entries))
     check("bot 已被剔除", all("dependabot" not in e for e in entries))
-    check("第一条已归一", entries[0] == "- @alice made their first contribution in #101",
+    check("第一条已归一", entries[0] == "- @alice：首次贡献 #101",
           entries[0])
 
 
@@ -187,26 +187,30 @@ def test_scenario_prerelease() -> None:
         tag="1.1.0-alpha.2",
         all_contributors=["alice", "bob", "carol", "dave"],
         new_contributor_entries=[
-            "- @alice made their first contribution in #101",
+            "- @alice：首次贡献 #101",
             "- @bob made their first contribution in #105",
         ],
         previous_stable="v1.0.0",
         previous_prerelease="1.1.0-alpha.1")
     body = rc.compose_body("", sections, stable=False)
 
-    check("包含 New Contributors 段", "## 🎉 New Contributors" in body)
+    check("包含 New Contributors 段", "## 新增贡献者" in body)
     check("New Contributors 注明范围（自 1.1.0-alpha.1）",
           "（自 1.1.0-alpha.1 以来）" in body)
-    check("包含 All Contributors 段", "## 🙌 All Contributors" in body)
+    check("包含 All Contributors 段", "## 全部贡献者" in body)
     check("All Contributors 注明范围（自 v1.0.0）",
           "（自 v1.0.0 以来）" in body)
     check("新贡献者在前、累计在后",
-          body.index("New Contributors") < body.index("All Contributors"))
+          body.index("新增贡献者") < body.index("全部贡献者"))
     check("alpha.1 的老贡献者仍在名单里",
           "- @carol" in body and "- @dave" in body)
     check("本次新贡献者也在累计名单里",
           body.count("- @alice") >= 2, f"alice 出现 {body.count('- @alice')} 次")
     check("新贡献者条目带 PR 编号", "#101" in body and "#105" in body)
+    check("标题为中文", "## 新增贡献者" in body and "## 全部贡献者" in body)
+    check("不含 emoji", not any(ch in body for ch in ("🎉", "🙌", "✨", "🚀")))
+    check("无感谢类填充语", "感谢" not in body)
+    check("不含英文标题", "New Contributors" not in body and "All Contributors" not in body)
 
 
 def test_scenario_stable() -> None:
@@ -219,11 +223,11 @@ def test_scenario_stable() -> None:
         previous_prerelease="1.1.0-rc.1")
     body = rc.compose_body("", sections, stable=True)
 
-    check("正式版不再出现 New Contributors 段", "New Contributors" not in body)
-    check("正式版只有累计名单", "## 🙌 All Contributors" in body)
+    check("正式版不再出现 New Contributors 段", "新增贡献者" not in body)
+    check("正式版只有累计名单", "## 全部贡献者" in body)
     check("整个版本周期的贡献者都在",
           all(f"- @{n}" in body for n in ("alice", "bob", "carol", "dave", "erin")))
-    check("只有一段贡献者标题", body.count("## 🙌") == 1)
+    check("只有一段贡献者标题", body.count("## 全部贡献者") == 1)
 
 
 def test_compose_body() -> None:
@@ -266,7 +270,7 @@ def test_offline_cli() -> None:
     out = buf.getvalue()
     check("离线模式返回 0", code == 0)
     check("离线模式输出两个段落",
-          "New Contributors" in out and "All Contributors" in out)
+          "新增贡献者" in out and "全部贡献者" in out)
 
 
 def main() -> int:
