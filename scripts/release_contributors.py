@@ -33,7 +33,7 @@ Release Notes 只负责"这次谁参与了"；想永久铭记全部历史贡献�
 --------
 - 只用标准库（urllib + json），与仓库其它脚本一致，CI 无需装依赖。
 - "新贡献者"的逐条文案由 GitHub 的 generate-notes 接口产出（它知道"首次贡献"
-  发生在哪个 PR），再统一改写为 `- @user made their first contribution in #101`。
+  发生在哪个 PR），再统一改写为 `- @user：首次贡献 #101`。
 - bot 账号（`[bot]` 后缀、`dependabot` / `github-actions` / `renovate` 等）一律剔除。
 """
 from __future__ import annotations
@@ -170,7 +170,7 @@ _NEW_CONTRIB_RE = re.compile(
 
 
 def normalize_new_contributor_line(line: str) -> str:
-    """把 generate-notes 的条目改写成 `- @user made their first contribution in #101`。
+    """把 generate-notes 的条目改写成 `- @user：首次贡献 #101`。
 
     PR 链接归一成 `#编号`：短、可点、与手写说明里的习惯一致。
     认不出来的行原样返回（去掉行首的 `* `），避免丢信息。
@@ -189,8 +189,8 @@ def normalize_new_contributor_line(line: str) -> str:
             what = "#" + pr.group(1)
         elif re.fullmatch(r"\d+", what):
             what = "#" + what
-        return f"- @{login} made their first contribution in {what}"
-    return f"- @{login} made their first contribution"
+        return f"- @{login}：首次贡献 {what}"
+    return f"- @{login}：首次贡献"
 
 
 def parse_new_contributors(release_notes_body: str) -> list[str]:
@@ -243,30 +243,26 @@ def _heading(text: str) -> str:
 
 
 def render_new_contributors(entries, previous_prerelease: str) -> str:
-    """「🎉 New Contributors（自 X 以来）」段落。没有条目时返回空串（整段省略）。"""
+    """「新增贡献者（自上一个预发布以来）」段落。没有条目时返回空串（整段省略）。"""
     items = [e for e in (entries or []) if e]
     if not items:
         return ""
     since = f"（自 {previous_prerelease} 以来）" if previous_prerelease else ""
     return "\n".join([
-        _heading(f"🎉 New Contributors{since}"),
-        "",
-        "感谢首次为本版本线做出贡献的开发者！",
+        _heading(f"新增贡献者{since}"),
         "",
         *items,
     ])
 
 
 def render_all_contributors(logins, since_tag: str) -> str:
-    """「🙌 All Contributors / Contributors（自 X 以来）」段落。"""
+    """「全部贡献者（自上一个稳定版以来）」段落。"""
     names = clean_logins(logins)
     if not names:
         return ""
     since = f"（自 {since_tag} 以来）" if since_tag else ""
     return "\n".join([
-        _heading(f"🙌 All Contributors{since}"),
-        "",
-        "感谢每一位参与本版本周期的贡献者！",
+        _heading(f"全部贡献者{since}"),
         "",
         *[f"- @{n}" for n in names],
     ])
@@ -457,7 +453,7 @@ def main(argv=None) -> int:
     if args.offline:
         all_names = [n for n in (args.all_contributors or "").split(",") if n.strip()]
         new_names = [n for n in (args.new_contributors or "").split(",") if n.strip()]
-        new_entries = [f"- @{n.strip().lstrip('@')} made their first contribution"
+        new_entries = [f"- @{n.strip().lstrip('@')}：首次贡献"
                        for n in new_names]
         sections = build_sections(
             tag=args.tag,
