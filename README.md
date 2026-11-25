@@ -88,7 +88,7 @@ dev ──┬──────────────────────�
 
 | 事项 | 说明 |
 |---|---|
-| **支持的平台** | **Windows / Linux / macOS** 都能跑。桥接本身只依赖 Python + `adb`；只要目标 Android 环境能被 `adb` 连上即可 |
+| **支持的平台** | **Windows / Linux / macOS** 都能跑。两种运行模式：**ADB 模式**（默认，依赖 Python + `adb`，需要目标 Android 环境能被 `adb` 连上）；**IM 直连模式**（`xiaotiancai.mode: im`，不需要 `adb`，但需要 `cryptography`） |
 | **支持的 Android 环境** | **Windows**：雷电、MuMu、其它带 ADB 端口的模拟器；**Linux**：Waydroid、Genymotion、Android-x86（含夜神 / 逍遥）；**macOS**：Genymotion、Android Studio 模拟器。**真机（USB 或网络调试）同样可用** |
 | **必须开启「ADB 调试」** | 模拟器：在其设置里打开 ADB 调试；真机：开发者选项 → USB 调试。不开的话 `adb devices` 为空，桥接无法连接 |
 | **adb 端口** | 通用 **5555**（Waydroid、雷电、MuMu、Genymotion、真机网络调试）；MuMu 另有 **16384**、夜神 **62001**、逍遥 **21503**、Waydroid 多实例 **5556**。用 `adb.port` / `adb.extra_ports` 指定 |
@@ -223,7 +223,8 @@ bash start.sh --debug adb-info
 **方式二：命令行**
 
 ```bash
-pip install -r requirements.txt         # 只需 pyyaml（无外网时可用 JSON 格式配置）
+pip install -r requirements.txt         # pyyaml 必需；IM 直连模式另需 cryptography
+                                        # （无外网时可用 JSON 格式配置，此时不需要 pyyaml）
 
 python tools/selftest.py                # (1) 环境自检（adb 发现/连接/UI dump/启动/登录检测）
 python main.py --check                  # (2) 或使用 --check
@@ -500,6 +501,11 @@ emoji:
 
 > 需要 yaml 格式就装 pyyaml：`pip install pyyaml`。**完全没有 pyyaml 时**桥接主程序无法启动
 > （除非把配置写成 JSON）。
+>
+> **IM 直连模式另需 `cryptography`**：`pip install cryptography`。它用于会话密钥的 RSA 交换
+> （`im/session.py` 在模块级导入），缺失时日志会报
+> 「IM 会话不可用：No module named 'cryptography'」并持续重连失败。
+> 两个依赖都已写进 `requirements.txt`。
 
 ### 2.1 root 权限（可选）
 

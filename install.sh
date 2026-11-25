@@ -2,7 +2,7 @@
 # =============================================================================
 #  XTC QQ Bridge - Linux / macOS 安装脚本（install.bat 的对应版本）
 #  做四件事：
-#    1. 检查 Python 3.10+，并确保 pyyaml（缺失时装到虚拟环境或用户目录）
+#    1. 检查 Python 3.10+，确保 pyyaml（必需）与 cryptography（IM 直连模式需要）
 #    2. 复制 AstrBot 插件到 ~/.astrbot/data/plugins/xtc_qq_bridge/
 #    3. 从 config.example.yaml 生成 config.yaml（已存在则不动）
 #    4. 生成插件初始配置（已存在则不动）
@@ -91,6 +91,22 @@ else
     fi
 fi
 RUN_PY="${PKG_PY:-$PY}"
+
+# ---------- 2b. cryptography（仅 IM 直连模式需要，缺失时尽力安装） ----------
+# ADB 模式用不到它，所以这里只做"能装就装、装不上给提示"，不中断安装流程。
+if "$RUN_PY" -c "import cryptography" >/dev/null 2>&1; then
+    ok "cryptography 已就绪"
+else
+    echo "[..] 缺少 cryptography（仅 IM 直连模式需要），尝试安装 ..."
+    if "$RUN_PY" -m pip install -q cryptography >/dev/null 2>&1 \
+       || "$RUN_PY" -m pip install -q --user cryptography >/dev/null 2>&1 \
+       || "$RUN_PY" -m pip install -q --break-system-packages cryptography >/dev/null 2>&1; then
+        ok "cryptography 已安装"
+    else
+        warn "cryptography 安装失败。用 ADB 模式可忽略；用 IM 直连模式则必须手动安装："
+        warn "  $RUN_PY -m pip install cryptography"
+    fi
+fi
 
 # ---------- 3. adb（不自动安装，只提示） ----------
 if command -v adb >/dev/null 2>&1; then
