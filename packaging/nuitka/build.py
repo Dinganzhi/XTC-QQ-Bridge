@@ -20,7 +20,7 @@
   python packaging/nuitka/build.py --lto yes              # 开启 LTO（更慢的构建、更快的程序）
 
 Windows 需要 Visual Studio 2022+（勾选"使用 C++ 的桌面开发"）；Python 3.13+ **不支持**
-MinGW64，所以本驱动在 Windows 上默认走 MSVC。Linux 需要 gcc 与 python3-dev。
+MinGW64，所以本驱动在 Windows 上默认走 MSVC。Linux 需要 gcc、python3-dev 与 patchelf。
 """
 from __future__ import annotations
 
@@ -324,6 +324,20 @@ def preflight(info: NuitkaInfo, *, strict: bool = False) -> tuple[bool, list[str
             f"（编译阶段会给出更准确的报错）")
         if strict:
             ok = False
+    # Linux 下 standalone 与 onefile 都需要 patchelf：onefile 内部先做 standalone，
+    # 两者都要用它改写打包进来的共享库的 RPATH（本项目依赖 cryptography，
+    # 其自带的 libssl/libcrypto 一定会走到这一步）。
+    # 缺它时 Nuitka 要等编译进行到 RPATH 修正阶段才抛 FATAL，
+    # 前面几分钟的编译时间全部作废，所以提到前置检查里。
+    if host_os() == "linux":
+        patchelf = shutil.which("patchelf")
+        if patchelf:
+            lines.append(f"patchelf    : {patchelf}")
+        else:
+            ok = False
+            lines.append("[错误] 缺 patchelf：Linux 下编译需要它改写共享库的 RPATH。"
+                         "安装：sudo apt install patchelf"
+                         "（或 sudo dnf install patchelf / sudo yum install patchelf）")
     if info.raw_version:
         lines.append("nuitka --version 原始输出（前 6 行，排障用）：")
         for line in info.raw_version.splitlines()[:6]:

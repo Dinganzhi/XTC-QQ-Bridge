@@ -8,8 +8,14 @@
 #    bash packaging/nuitka/build_linux.sh --check-env         # 只检查 Python/pyyaml/Nuitka/gcc
 #    bash packaging/nuitka/build_linux.sh --dry-run           # 只打印 nuitka 命令行
 #
-#  依赖（Debian/Ubuntu）：sudo apt install gcc g++ python3-dev
+#  依赖（Debian/Ubuntu）：sudo apt install gcc g++ python3-dev patchelf
+#  依赖（Fedora/RHEL）：sudo dnf install gcc gcc-c++ python3-devel patchelf
 #  依赖（macOS）：xcode-select --install
+#
+#  关于 patchelf：Linux 下 standalone 与 onefile 都需要它。onefile 内部先做 standalone，
+#  两者都要用它改写打包进来的共享库的 RPATH（本项目依赖 cryptography，其自带的
+#  libssl/libcrypto 一定会走到这一步）。缺它时 Nuitka 会在编译到一半才抛 FATAL，
+#  前面的编译时间全部作废，所以 build.py --check-env 已把它列为硬性检查项。
 # =============================================================================
 set -u
 
@@ -43,7 +49,7 @@ echo "[1/2] 检查编译环境 ..."
 if ! "$PY" "$REPO_ROOT/packaging/nuitka/build.py" --check-env; then
     echo
     echo "[提示] 需要：python3 -m pip install -U nuitka pyyaml"
-    echo "       Linux 还要装 gcc/g++/python3-dev；macOS 需要 xcode-select --install"
+    echo "       Linux 还要装 gcc/g++/python3-dev 与 patchelf；macOS 需要 xcode-select --install"
     exit 1
 fi
 

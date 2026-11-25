@@ -5837,6 +5837,46 @@ def test_build_driver_has_single_target() -> None:
           b.product_name("bridge", "1.0.0"))
 
 
+def test_build_checks_patchelf() -> None:
+    """Linux 编译缺 patchelf 会中途 FATAL，必须在前置检查里就拦住。
+
+    Nuitka 的 standalone（以及内部先做 standalone 的 onefile）要用 patchelf 改写
+    打包进来的共享库 RPATH。本项目依赖 cryptography，其自带的 libssl/libcrypto
+    一定会走到这一步；缺它时编译跑到 RPATH 修正阶段才报错，前面的编译时间全部作废。
+    """
+    import shutil as _shutil
+
+    import sys as _sys
+    _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
+    import build as b
+
+    info = b.NuitkaInfo().probe()
+    ok, lines = b.preflight(info)
+    joined = "\n".join(lines)
+    if info.available and b.host_os() == "linux":
+        check("Linux 前置检查列出 patchelf", "patchelf" in joined, joined[-120:])
+        if _shutil.which("patchelf"):
+            check("已安装 patchelf 时显示具体路径",
+                  any(line.startswith("patchelf") and "/" in line for line in lines),
+                  str([line for line in lines if line.startswith("patchelf")]))
+        else:
+            check("缺 patchelf 时给出安装命令",
+                  "apt install patchelf" in joined, joined[-160:])
+    elif info.available:
+        check("非 Linux 不要求 patchelf", "patchelf" not in joined)
+
+    # 文档同步：脚本与依赖清单必须写明，否则用户仍会踩同一个坑
+    sh = (Path.cwd() / "packaging" / "nuitka" / "build_linux.sh").read_text(encoding="utf-8")
+    req = (Path.cwd() / "requirements-build.txt").read_text(encoding="utf-8")
+    check("build_linux.sh 依赖说明含 patchelf", "patchelf" in sh)
+    check("requirements-build.txt 含 patchelf", "patchelf" in req)
+
+    # 源码级断言：不依赖本机是否装了 Nuitka 与 patchelf 也能守住这条检查
+    src = (Path.cwd() / "packaging" / "nuitka" / "build.py").read_text(encoding="utf-8")
+    check("build.py 在 Linux 分支探测 patchelf",
+          'shutil.which("patchelf")' in src and 'host_os() == "linux"' in src)
+
+
 def test_build_slimming_keeps_runtime() -> None:
     """瘦身必须只掐"从没用过"的模块，**运行时与 pyyaml 一律保留**。
 
@@ -6557,6 +6597,7 @@ def main() -> int:
                test_monotonic_sentinels_survive_fresh_boot,
                test_nuitka_version_args_are_numeric, test_build_driver_has_single_target,
                test_build_slimming_keeps_runtime,
+               test_build_checks_patchelf,
                test_backlog_walk_until_known,
                test_repeated_message_is_forwarded_again, test_backlog_runs_without_contact,
                test_msg_log_sharding_and_cap,

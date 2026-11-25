@@ -1548,11 +1548,11 @@ libyaml C 加速（`_yaml.so` 解压后 **2.6 MB**；纯 Python 解析器行为�
 |---|---|
 | 通用 | Python 3.10+（本项目在 3.14 上实测）、`python -m pip install -U -r requirements-build.txt`（Nuitka ≥4.1 + pyyaml；**Python 3.14 必须 Nuitka 4.1+**） |
 | Windows | **Visual Studio 2022+**，安装时勾选"使用 C++ 的桌面开发"。**MinGW64 不支持 Python 3.13+** |
-| Linux | `gcc` / `g++` 与 `python3-dev`（Debian/Ubuntu：`sudo apt install gcc g++ python3-dev`） |
+| Linux | `gcc` / `g++`、`python3-dev` 与 `patchelf`（Debian/Ubuntu：`sudo apt install gcc g++ python3-dev patchelf`）。**patchelf 必需**：standalone 与 onefile 都要用它改写共享库 RPATH，缺了会在编译中途才报错 |
 | macOS | `xcode-select --install`（clang） |
 
 `pyyaml` 必须装：配置是 YAML，编译时用 `--include-package=yaml` 打进产物，否则运行时会退化成只认 JSON。
-`packaging/nuitka/build.py --check-env` 会把 Python 版本、pyyaml、Nuitka 版本、C 编译器一次性列出来，
+`packaging/nuitka/build.py --check-env` 会把 Python 版本、pyyaml、Nuitka 版本、C 编译器与 patchelf 一次性列出来，
 缺什么直接给解决办法；编译器缺失时不会白等几十分钟。
 
 ## 3. 编译产物怎么用（和源码版完全不同，先看这段）

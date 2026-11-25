@@ -1,6 +1,6 @@
 # 编译期依赖（源码运行只需要 requirements.txt）
 #   Windows: 需要 Visual Studio 2022+ 的"使用 C++ 的桌面开发"（Python 3.13+ 不能用 MinGW64）
-#   Linux  : 需要 gcc/g++ 与 python3-dev
+#   Linux  : 需要 gcc/g++、python3-dev 与 patchelf
 #   macOS  : 需要 xcode-select --install
 nuitka[onefile]>=4.1
 # 为什么要带 [onefile]：它会把 zstandard 一起装上。缺 zstandard 时 onefile **不会压缩**，

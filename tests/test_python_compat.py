@@ -17,7 +17,11 @@ import sys
 import tokenize
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKIP_DIRS = {'.git', '__pycache__', 'build', 'dist', '.tmpvenv', 'node_modules'}
+SKIP_DIRS = {'.git', '__pycache__', 'build', 'dist', '.tmpvenv', 'node_modules',
+             # 本地虚拟环境：安装编译依赖（nuitka[onefile]）后 site-packages 里会有上千个
+             # 第三方 .py，它们带 shebang、用 3.11+ 语法都属正常，不该算进本项目的约定。
+             # build_linux.sh 优先使用 .venv，所以这里必须排除，否则本测试一装依赖就误报。
+             '.venv', 'venv', 'site-packages'}
 MIN_VERSION = (3, 10)
 ENTRY_SHEBANG = '#!/usr/bin/env python3'
 
