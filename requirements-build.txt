@@ -6,3 +6,7 @@ nuitka[onefile]>=4.1
 # 为什么要带 [onefile]：它会把 zstandard 一起装上。缺 zstandard 时 onefile **不会压缩**，
 # 而且只打一行 WARNING 不报错——实测 Linux 产物因此从 8MB 变成 62MB（Windows/macOS 恰好有）。
 pyyaml>=6.0
+# IM 直连模式的运行时依赖，同时也必须装进**构建用的解释器**：
+# Nuitka 只会打包当前解释器里能 import 到的模块，缺了它产物运行时报
+# 「IM 会话不可用：No module named 'cryptography'」，而编译阶段没有任何提示。
+cryptography>=41

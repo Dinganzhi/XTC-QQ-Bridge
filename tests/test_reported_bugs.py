@@ -5877,6 +5877,145 @@ def test_build_checks_patchelf() -> None:
           'shutil.which("patchelf")' in src and 'host_os() == "linux"' in src)
 
 
+def test_third_party_deps_declared() -> None:
+    """模块级导入的第三方包，必须写进 requirements.txt。
+
+    实机事故：im/session.py 在模块级 import cryptography，但 requirements.txt 只有
+    pyyaml。源码环境里恰好装着它所以不报错；编译产物则因为构建解释器里没有它，
+    根本没被打进包，运行时报「IM 会话不可用：No module named 'cryptography'」，
+    表现为持续重连失败、未登录。
+
+    这里只看**模块级**（顶层）导入：函数内或 try/except 里的可选依赖不算硬依赖。
+    """
+    import ast as _ast
+
+    stdlib = set(sys.stdlib_module_names)
+    local = {"xtc_qq_bridge", "tools", "tests", "packaging"}
+
+    roots = sorted((Path.cwd() / "src").rglob("*.py")) + [Path.cwd() / "main.py"]
+    undeclared: dict[str, str] = {}
+    for f in roots:
+        try:
+            tree = _ast.parse(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        for node in tree.body:
+            names: list[str] = []
+            if isinstance(node, _ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                names = [node.module]
+            for n in names:
+                top = n.split(".")[0]
+                if (not top or top.startswith("_") or top in stdlib or top in local
+                        or top == "__future__"):
+                    continue
+                undeclared.setdefault(top, str(f.relative_to(Path.cwd())))
+
+    req = (Path.cwd() / "requirements.txt").read_text(encoding="utf-8").lower()
+    missing = {k: v for k, v in undeclared.items() if k.lower() not in req}
+    check("模块级第三方依赖都已在 requirements.txt 声明", not missing,
+          "未声明: " + ", ".join(f"{k}({v})" for k, v in missing.items()))
+    check("cryptography 已声明（IM 直连模式必需）", "cryptography" in req)
+
+
+def test_aes_pure_fallback_without_cryptography() -> None:
+    """没装 cryptography 时必须能走纯 Python AES 回退。
+
+    实机事故：编译产物不带 cryptography（requirements.txt 只有 pyyaml），
+    api/sso.py 的回退分支把**仅关键字参数** encrypt 当位置参数传，
+    运行时报 "_aes_ecb_pure() takes 2 positional arguments but 3 were given"，
+    表现为 IM 续票失败、未登录。
+
+    开发机通常装了 cryptography，这条分支永远跑不到，所以必须显式屏蔽依赖来测。
+    """
+    import builtins
+
+    from xtc_qq_bridge.api import crypto as C
+    from xtc_qq_bridge.api import sso as S
+
+    key = bytes(range(16))
+    plain = b'{"hello":"world"}'
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "cryptography" or name.startswith("cryptography."):
+            raise ImportError("cryptography blocked by test")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = blocked
+    try:
+        # sso 的签名是 (key, data, *, encrypt)，crypto 的是 (data, key, *, encrypt)
+        enc = S._aes_ecb(key, plain, encrypt=True)
+        dec = S._aes_ecb(key, enc, encrypt=False)
+        check("无 cryptography 时 sso 回退可加密解密", dec == plain, repr(dec[:40]))
+
+        enc2 = C._aes_ecb(plain, key, encrypt=True)
+        dec2 = C._aes_ecb(enc2, key, encrypt=False)
+        check("无 cryptography 时 crypto 回退可加密解密", dec2 == plain, repr(dec2[:40]))
+        check("两处回退实现结果一致", enc2 == enc)
+        check("回退密文长度为 16 的倍数", len(enc) % 16 == 0, str(len(enc)))
+    finally:
+        builtins.__import__ = real_import
+
+    # 恢复后走 cryptography 分支，结果必须与纯 Python 实现一致（否则换环境会解不开）
+    enc3 = S._aes_ecb(key, plain, encrypt=True)
+    check("cryptography 分支与纯实现结果一致", enc3 == enc)
+
+
+def test_slim_list_matches_real_imports() -> None:
+    """瘦身排除名单里不能出现项目**真正导入**的模块。
+
+    实机事故：api/crypto.py 在模块级 import gzip（v3 请求体是 gzip -> AES -> base64），
+    而瘦身名单按"只有 shutil 会用"把它排掉了。产物能编译通过，但启动时报
+    「Module 'gzip' was actively excluded from Nuitka compilation」，
+    表现为续票失败、IM 登录不可用——编译期没有任何提示，只有运行到那一步才炸。
+
+    这里用 AST 扫描项目自己的全部 .py，取实际 import 的模块名，与排除名单求交集。
+    比手工维护"禁排除清单"可靠：以后谁引用了被排除的模块，这条用例立刻失败。
+    """
+    import ast as _ast
+
+    import sys as _sys
+    _sys.path.insert(0, str(Path.cwd() / "packaging" / "nuitka"))
+    import build as b
+
+    slim = set(b.SLIM_NOFOLLOW_MODULES)
+    patterns = ("src/**/*.py", "tools/**/*.py", "scripts/**/*.py",
+                "astrbot_plugin_xtc_bridge/**/*.py", "main.py")
+    files: list[Path] = []
+    for pat in patterns:
+        files.extend(Path.cwd().glob(pat))
+    check("能扫描到项目源文件", len(files) > 30, f"{len(files)} 个")
+
+    imported: dict[str, str] = {}
+    for f in files:
+        try:
+            tree = _ast.parse(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 解析不了的文件跳过，不影响主结论
+            continue
+        for node in _ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, _ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                names = [node.module]
+            for n in names:
+                imported.setdefault(n, str(f.relative_to(Path.cwd())))
+                imported.setdefault(n.split(".")[0], str(f.relative_to(Path.cwd())))
+
+    conflicts = sorted(m for m in slim if m in imported)
+    check("瘦身名单没有排除项目实际导入的模块", not conflicts,
+          "冲突: " + ", ".join(f"{m}({imported[m]})" for m in conflicts))
+
+    # 本事故的直接回归项
+    check("gzip 不在瘦身排除名单里（SSO v3 请求体要用）", "gzip" not in slim)
+    check("api/crypto.py 确实在模块级导入 gzip",
+          (Path.cwd() / "src" / "xtc_qq_bridge" / "api" / "crypto.py")
+          .read_text(encoding="utf-8").count("import gzip") >= 1)
+
+
 def test_build_slimming_keeps_runtime() -> None:
     """瘦身必须只掐"从没用过"的模块，**运行时与 pyyaml 一律保留**。
 
@@ -6598,6 +6737,9 @@ def main() -> int:
                test_nuitka_version_args_are_numeric, test_build_driver_has_single_target,
                test_build_slimming_keeps_runtime,
                test_build_checks_patchelf,
+               test_third_party_deps_declared,
+               test_aes_pure_fallback_without_cryptography,
+               test_slim_list_matches_real_imports,
                test_backlog_walk_until_known,
                test_repeated_message_is_forwarded_again, test_backlog_runs_without_contact,
                test_msg_log_sharding_and_cap,

@@ -140,7 +140,11 @@ def _aes_ecb(key: bytes, data: bytes, *, encrypt: bool) -> bytes:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     except ImportError:  # pragma: no cover - 环境相关
         from .crypto import _aes_ecb_pure
-        return _aes_ecb_pure(data, key, encrypt)
+        # encrypt 是**仅关键字参数**，这里必须用关键字传：写成位置参数会抛
+        # "takes 2 positional arguments but 3 were given"。
+        # 该分支只在没装 cryptography 的环境执行（编译产物就属于这种），
+        # 所以开发机上跑测试永远发现不了，直到产物运行时续票才暴露。
+        return _aes_ecb_pure(data, key, encrypt=encrypt)
     if encrypt:
         pad = 16 - len(data) % 16
         data = data + bytes([pad]) * pad

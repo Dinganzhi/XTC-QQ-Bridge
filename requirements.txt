@@ -1,5 +1,10 @@
-# 核心依赖（唯一必需；其余功能全部使用 Python 标准库）
+# 核心依赖
 pyyaml>=6.0.2
+# IM 直连模式（xiaotiancai.mode: im）必需：im/session.py 在模块级导入它，
+# 做公钥交换用的 RSA 序列化与 PKCS1v15 加密。ADB 模式用不到，但缺了会表现为
+# 「IM 会话不可用：No module named 'cryptography'」并持续重连失败。
+# 注意：**编译时的解释器也必须装**，否则 Nuitka 解析不到该导入，产物里不会带上它。
+cryptography>=41
 
 # ---------- 可选 ----------
 # OCR 兜底（Python 3.14 上大概率没有预编译轮子，装不上不影响主流程）：

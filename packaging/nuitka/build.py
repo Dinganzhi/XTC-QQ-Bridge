@@ -111,7 +111,12 @@ EXCLUDE_MODULES = {
 # try/except 或函数体内部，排除后运行时**只走 ImportError 分支**：
 #   * smtplib/imaplib/poplib/ftplib/nntplib/telnetlib —— 只有 logging.handlers 的邮件/
 #     远程 Handler 才会 import；本程序只用 StreamHandler/FileHandler。
-#   * tarfile/zipfile/bz2/lzma/gzip —— shutil 在函数体内按需 import（打包解包才用）。
+#   * tarfile/zipfile/bz2/lzma —— shutil 在函数体内按需 import（打包解包才用）。
+#   * gzip **不能排除**：SSO 登录（src/xtc_qq_bridge/api/crypto.py）在模块级 import gzip，
+#     v3 请求/响应体是 gzip -> AES-ECB -> base64。曾经按"只有 shutil 用"排掉它，
+#     结果编译产物启动时报「Module 'gzip' was actively excluded」，
+#     续票失败、IM 登录不可用。排除名单与项目实际导入必须保持一致，
+#     tests/test_reported_bugs.py 里有 AST 扫描守卫。
 #   * statistics/fractions/decimal —— random 的 stdev() 内部按需导入，本程序不用。
 #   * tomllib/pickletools/html.parser —— 编译时被当成"启动依赖"顺带带入，运行用不到
 #     （配置是 YAML，界面解析用 ElementTree）。
@@ -124,7 +129,7 @@ SLIM_NOFOLLOW_MODULES = (
     # 纯 Python 解析器行为完全一致，只是慢一点 —— 配置只在启动时读一次。
     "_yaml", "yaml.cyaml",
     "smtplib", "imaplib", "poplib", "ftplib", "nntplib", "telnetlib",
-    "tarfile", "zipfile", "bz2", "lzma", "gzip",
+    "tarfile", "zipfile", "bz2", "lzma",
     "tomllib", "pickletools", "html.parser",
     "statistics", "fractions", "decimal", "_decimal",
     "unittest", "pydoc", "doctest", "pdb", "curses", "pydoc_data",
@@ -304,6 +309,16 @@ def preflight(info: NuitkaInfo, *, strict: bool = False) -> tuple[bool, list[str
         ok = False
         lines.append("[错误] 缺 pyyaml：编译产物将无法读 YAML 配置。"
                      "请先 `python -m pip install pyyaml`")
+    try:
+        import cryptography as _cryptography  # noqa: F401
+        lines.append(f"cryptography: {_cryptography.__version__}"
+                     "（IM 直连模式必需，也会被打进产物）")
+    except ImportError:
+        ok = False
+        lines.append("[错误] 缺 cryptography：IM 直连模式在 im/session.py 模块级导入它"
+                     "做 RSA 公钥交换。**构建用的解释器也要装**"
+                     "（python -m pip install cryptography），否则产物运行时报"
+                     "「IM 会话不可用：No module named 'cryptography'」")
     if not info.available:
         ok = False
         lines.append("[错误] 未安装 Nuitka：`python -m pip install -U nuitka`（Python 3.14 需 4.1+）")
@@ -401,6 +416,11 @@ def build_command(info: NuitkaInfo, target: str, mode: str, out_dir: Path,
     # pyyaml 在 try/except 里 import，显式带上整个包
     if info.supports("--include-package"):
         cmd += ["--include-package=yaml"]
+    # cryptography 由 im/session.py 模块级导入（IM 直连模式的 RSA 公钥交换）。
+    # 正常会被自动跟随，但它带有 Rust 扩展、且历史上被 anti-bloat 规则影响过，
+    # 这里显式包含避免"编译成功、运行时 No module named 'cryptography'"。
+    if info.supports("--include-package"):
+        cmd += ["--include-package=cryptography"]
     # PyYAML 的 libyaml C 加速（2.6 MB）只在瘦身关闭时才带：
     # yaml/__init__.py 是 `try: from .cyaml import * except ImportError:`，
     # 纯 Python 解析器行为一致，只是配置解析慢几十毫秒（启动时只读一次）。

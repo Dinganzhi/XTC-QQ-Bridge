@@ -94,7 +94,13 @@ def verify_bundle() -> int:
                 "xtc_qq_bridge.qq_webhook", "xtc_qq_bridge.msg_log",
                 # 历史图片仓库：编进产物失败时，`/小天才 历史消息` 会看不到图，
                 # 但主流程照跑 —— 不在这里显式检查就没人会发现。
-                "xtc_qq_bridge.media_store"):
+                "xtc_qq_bridge.media_store",
+                # SSO 登录与 IM 协议层：不经 ADB 的能力都在这两个包里。
+                # 必须显式 import —— 实测漏检过：api/crypto.py 依赖 gzip，
+                # 而瘦身名单把 gzip 排掉了，`--verify` 因为没导入 api 包而一路绿灯，
+                # 直到运行时续票才发现「Module 'gzip' was actively excluded」。
+                # 编译后的冒烟测试会跑 --verify，把这两个包列进来就能在编译期暴露。
+                "xtc_qq_bridge.api", "xtc_qq_bridge.im"):
         try:
             __import__(mod)
             print(f"  {mod:<30}: OK")
